@@ -94,7 +94,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch glslang-tools
 
     - name: Configure (exact flags of the verified local build)
       run: >
