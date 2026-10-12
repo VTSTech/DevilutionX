@@ -27,16 +27,16 @@ int8_t AnimationInfo::getFrameToUseForRendering() const
 	if (currentFrame >= relevantFramesForDistributing_)
 		return currentFrame;
 
-	TicksFixed ticksSinceSequenceStarted = ticksSinceSequenceStarted_;
+	int16_t ticksSinceSequenceStarted = ticksSinceSequenceStarted_;
 	if (ticksSinceSequenceStarted_ < 0) {
-		ticksSinceSequenceStarted = TicksFixed::fromInt(0);
-		Log("getFrameToUseForRendering: Invalid ticksSinceSequenceStarted_ {}", ticksSinceSequenceStarted_.raw());
+		ticksSinceSequenceStarted = 0;
+		Log("getFrameToUseForRendering: Invalid ticksSinceSequenceStarted_ {}", ticksSinceSequenceStarted_);
 	}
 
 	// we don't use the processed game ticks alone but also the fraction of the next game tick (if a rendering happens between game ticks). This helps to smooth the animations.
-	const FixedPoint<int, 7U> totalTicksForCurrentAnimationSequence = getProgressToNextGameTick() + ticksSinceSequenceStarted;
+	const int32_t totalTicksForCurrentAnimationSequence = getProgressToNextGameTick() + ticksSinceSequenceStarted;
 
-	auto absoluteAnimationFrame = static_cast<int8_t>(totalTicksForCurrentAnimationSequence.multiplyWithoutWidening(tickModifier_).whole());
+	auto absoluteAnimationFrame = static_cast<int8_t>(totalTicksForCurrentAnimationSequence * tickModifier_ / baseValueFraction / baseValueFraction);
 	if (skippedFramesFromPreviousAnimation_ > 0) {
 		// absoluteAnimationFrames contains also the Frames from the previous Animation, so if we want to get the current Frame we have to remove them
 		absoluteAnimationFrame -= skippedFramesFromPreviousAnimation_;
@@ -61,8 +61,8 @@ int8_t AnimationInfo::getFrameToUseForRendering() const
 
 uint8_t AnimationInfo::getAnimationProgress() const
 {
-	TicksFixed ticksSinceSequenceStarted = std::max(TicksFixed::fromInt(0), ticksSinceSequenceStarted_);
-	RateFixed tickModifier = tickModifier_;
+	int16_t ticksSinceSequenceStarted = std::max<int16_t>(0, ticksSinceSequenceStarted_);
+	int32_t tickModifier = tickModifier_;
 
 	if (relevantFramesForDistributing_ <= 0) {
 		if (ticksPerFrame <= 0) {
@@ -71,15 +71,13 @@ uint8_t AnimationInfo::getAnimationProgress() const
 		}
 		// This logic is used if animation distribution is not active (see getFrameToUseForRendering).
 		// In this case the variables calculated with animation distribution are not initialized and we have to calculate them on the fly with the given information.
-		ticksSinceSequenceStarted = TicksFixed::fromInt((currentFrame * ticksPerFrame) + tickCounterOfCurrentFrame);
-		tickModifier = RateFixed(RateFixed::fromInt(1) / ticksPerFrame);
+		ticksSinceSequenceStarted = ((currentFrame * ticksPerFrame) + tickCounterOfCurrentFrame) * baseValueFraction;
+		tickModifier = baseValueFraction / ticksPerFrame;
 	}
 
-	const FixedPoint<int, 7> totalTicksForCurrentAnimationSequence = getProgressToNextGameTick() + ticksSinceSequenceStarted;
-	const FixedPoint<int, 7> progressInAnimationFrames = totalTicksForCurrentAnimationSequence.multiplyWithoutWidening(tickModifier);
-	// The returned fraction stays in the same baseValueFraction-raw scale (not a whole number):
-	// the fixed*fixed multiply above already performs the one rescale this needs.
-	const int animationFraction = (progressInAnimationFrames / numberOfFrames).raw();
+	const int32_t totalTicksForCurrentAnimationSequence = getProgressToNextGameTick() + ticksSinceSequenceStarted;
+	const int32_t progressInAnimationFrames = totalTicksForCurrentAnimationSequence * tickModifier;
+	const int32_t animationFraction = progressInAnimationFrames / numberOfFrames / baseValueFraction;
 	assert(animationFraction <= baseValueFraction);
 	return static_cast<uint8_t>(animationFraction);
 }
@@ -104,9 +102,9 @@ void AnimationInfo::setNewAnimation(OptionalClxSpriteList celSprite, int8_t numb
 	currentFrame = numSkippedFrames;
 	tickCounterOfCurrentFrame = 0;
 	this->ticksPerFrame = ticksPerFrame;
-	ticksSinceSequenceStarted_ = TicksFixed::fromInt(0);
+	ticksSinceSequenceStarted_ = 0;
 	relevantFramesForDistributing_ = 0;
-	tickModifier_ = RateFixed::fromInt(0);
+	tickModifier_ = 0;
 	isPetrified = false;
 
 	if (numSkippedFrames != 0 || flags != AnimationDistributionFlags::None) {
@@ -135,7 +133,7 @@ void AnimationInfo::setNewAnimation(OptionalClxSpriteList celSprite, int8_t numb
 			// The Animation Distribution Logic needs to account how many game ticks passed since the Animation started.
 			// Because processAnimation will increase this later (in same game tick as setNewAnimation), we correct this upfront.
 			// This also means Rendering should never happen with ticksSinceSequenceStarted_ < 0.
-			ticksSinceSequenceStarted_ = TicksFixed::fromInt(-1);
+			ticksSinceSequenceStarted_ = -baseValueFraction;
 		}
 
 		if ((flags & AnimationDistributionFlags::SkipsDelayOfLastFrame) == AnimationDistributionFlags::SkipsDelayOfLastFrame) {
@@ -161,30 +159,25 @@ void AnimationInfo::setNewAnimation(OptionalClxSpriteList celSprite, int8_t numb
 		// The truncated Frames from previous Animation will also be shown, so we also have to distribute them for the given time (game ticks)
 		relevantAnimationTicksForDistribution += (skippedFramesFromPreviousAnimation_ * ticksPerFrame);
 
-		// At this point we use fixed point math for the fragment calculations.
-		// relevantAnimationTicksForDistribution/WithSkipping are bounded by int8_t products
-		// (numberOfFrames/ticksPerFrame are each at most int8_t), so an int32_t-backed FixedPoint
-		// here has enough headroom on its own; we use divideWithoutWidening below to avoid
-		// promoting to a 64-bit intermediate that this bounded ratio never needs.
-		using WideTicksFixed = FixedPoint<int32_t, 7>;
-		WideTicksFixed relevantTicksForDistribution = WideTicksFixed::fromInt(relevantAnimationTicksForDistribution);
-		WideTicksFixed relevantTicksWithSkipping = WideTicksFixed::fromInt(relevantAnimationTicksWithSkipping);
+		// At this point we use fixed point math for the fragment calculations
+		relevantAnimationTicksForDistribution *= baseValueFraction;
+		relevantAnimationTicksWithSkipping *= baseValueFraction;
 
 		// The preview animation was shown some times (less than one game tick)
 		// So we overall have a longer time the animation is shown
-		ticksSinceSequenceStarted_ += TicksFixed::fromRaw(previewShownGameTickFragments);
-		relevantTicksWithSkipping += WideTicksFixed::fromRaw(previewShownGameTickFragments);
+		ticksSinceSequenceStarted_ += previewShownGameTickFragments;
+		relevantAnimationTicksWithSkipping += previewShownGameTickFragments;
 
 		// if we skipped Frames we need to expand the game ticks to make one game tick for this Animation "faster"
-		WideTicksFixed tickModifier = WideTicksFixed::fromInt(0);
-		if (relevantTicksWithSkipping != 0)
-			tickModifier = relevantTicksForDistribution.divideWithoutWidening(relevantTicksWithSkipping);
+		int32_t tickModifier = 0;
+		if (relevantAnimationTicksWithSkipping != 0)
+			tickModifier = baseValueFraction * relevantAnimationTicksForDistribution / relevantAnimationTicksWithSkipping;
 
 		// tickModifier specifies the Animation fraction per game tick, so we have to remove the delay from the variable
 		tickModifier /= ticksPerFrame;
 
 		relevantFramesForDistributing_ = relevantAnimationFramesForDistributing;
-		tickModifier_ = RateFixed(tickModifier);
+		tickModifier_ = static_cast<uint16_t>(tickModifier);
 	}
 }
 
@@ -199,9 +192,9 @@ void AnimationInfo::changeAnimationData(OptionalClxSpriteList celSprite, int8_t 
 
 		this->numberOfFrames = numberOfFrames;
 		this->ticksPerFrame = ticksPerFrame;
-		ticksSinceSequenceStarted_ = TicksFixed::fromInt(0);
+		ticksSinceSequenceStarted_ = 0;
 		relevantFramesForDistributing_ = 0;
-		tickModifier_ = RateFixed::fromInt(0);
+		tickModifier_ = 0;
 	}
 	this->sprites = celSprite;
 }
@@ -209,30 +202,30 @@ void AnimationInfo::changeAnimationData(OptionalClxSpriteList celSprite, int8_t 
 void AnimationInfo::processAnimation(bool reverseAnimation /*= false*/)
 {
 	tickCounterOfCurrentFrame++;
-	ticksSinceSequenceStarted_ += TicksFixed::fromInt(1);
+	ticksSinceSequenceStarted_ += baseValueFraction;
 	if (tickCounterOfCurrentFrame >= ticksPerFrame) {
 		tickCounterOfCurrentFrame = 0;
 		if (reverseAnimation) {
 			--currentFrame;
 			if (currentFrame == -1) {
 				currentFrame = numberOfFrames - 1;
-				ticksSinceSequenceStarted_ = TicksFixed::fromInt(0);
+				ticksSinceSequenceStarted_ = 0;
 			}
 		} else {
 			++currentFrame;
 			if (currentFrame >= numberOfFrames) {
 				currentFrame = 0;
-				ticksSinceSequenceStarted_ = TicksFixed::fromInt(0);
+				ticksSinceSequenceStarted_ = 0;
 			}
 		}
 	}
 }
 
-FixedPoint<uint8_t, 7> AnimationInfo::getProgressToNextGameTick() const
+uint8_t AnimationInfo::getProgressToNextGameTick() const
 {
 	if (isPetrified)
-		return FixedPoint<uint8_t, 7>::fromRaw(0);
-	return FixedPoint<uint8_t, 7>::fromRaw(ProgressToNextGameTick);
+		return 0;
+	return ProgressToNextGameTick;
 }
 
 } // namespace devilution

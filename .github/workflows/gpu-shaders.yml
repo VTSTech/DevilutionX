@@ -1,0 +1,143 @@
+name: GPU Shader Scalers (fork builds)
+
+on:
+  push:
+    branches:
+      - gpu-shaders
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86_64 (SDL3 + GPU shader scaler)
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build glslang-tools gettext smpq zip
+
+    - name: Configure
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DUSE_SDL3=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DBUILD_TESTING=OFF
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Package
+      run: |
+        mkdir -p pkg
+        cp build/devilutionx pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        cp Packaging/resources/COPYING.legend.txt pkg/ 2>/dev/null || true
+        cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64.zip . && cd ..
+        # regenerate SPIR-V blobs for review (requires glslang, installed above)
+        mkdir -p spv && find Source/engine/render/gpu/shaders/vulkan -name '*.frag' -o -name '*.vert' | while read f; do
+          glslangValidator -V "$f" -o "spv/$(basename "$f").spv" || exit 1
+        done
+        zip -r devilutionx-gpu-shaders-spirv-blobs.zip spv
+
+    - name: Upload Linux package
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-gpu-shaders-linux-x64
+        path: devilutionx-gpu-shaders-linux-x64.zip
+
+    - name: Upload SPIR-V blobs
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-gpu-shaders-spirv-blobs
+        path: devilutionx-gpu-shaders-spirv-blobs.zip
+
+  windows:
+    name: Windows x64 (MinGW cross, SDL3 + GPU shader scaler)
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 gettext smpq zip
+
+    - name: Configure
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/CMake/platforms/mingwcc64.toolchain.cmake
+        -DCROSS_PREFIX=/usr
+        -DUSE_SDL3=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DDEVILUTIONX_SYSTEM_ZLIB=OFF
+        -DDEVILUTIONX_SYSTEM_BZIP2=OFF
+        -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
+        -DBUILD_TESTING=OFF
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Package
+      run: |
+        mkdir -p pkg
+        cp build/devilutionx.exe pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        cd pkg && zip -r ../devilutionx-gpu-shaders-windows-x64.zip . && cd ..
+
+    - name: Upload Windows package
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-gpu-shaders-windows-x64
+        path: devilutionx-gpu-shaders-windows-x64.zip
+
+  macos:
+    name: macOS arm64 (SDL3 + GPU shader scaler)
+    runs-on: macos-14
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: brew install ninja gettext smpq zip
+
+    - name: Configure
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DUSE_SDL3=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DBUILD_TESTING=OFF
+
+    - name: Build
+      run: cmake --build build -j $(sysctl -n hw.ncpu)
+
+    - name: Package
+      run: |
+        mkdir -p pkg
+        cp build/devilutionx pkg/ 2>/dev/null || cp build/devilutionx.app pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        cd pkg && zip -r ../devilutionx-gpu-shaders-macos-arm64.zip . && cd ..
+
+    - name: Upload macOS package
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-gpu-shaders-macos-arm64
+        path: devilutionx-gpu-shaders-macos-arm64.zip

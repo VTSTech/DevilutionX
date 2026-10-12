@@ -33,6 +33,7 @@
 #include "engine/point.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/render/dun_render.hpp"
+#include "engine/render/gpu/gpu_scaler.hpp"
 #include "engine/render/light_render.hpp"
 #include "engine/render/text_render.hpp"
 #include "engine/trn.hpp"
@@ -1891,11 +1892,11 @@ void DrawAndBlit()
 	}
 	DrawXPBar(out);
 	if (*GetOptions().Gameplay.showHealthValues)
-		DrawFlaskValues(out, { mainPanel.position.x + 134, mainPanel.position.y + 28 }, MyPlayer->_pHitPoints.whole(), MyPlayer->_pMaxHP.whole());
+		DrawFlaskValues(out, { mainPanel.position.x + 134, mainPanel.position.y + 28 }, MyPlayer->_pHitPoints >> 6, MyPlayer->_pMaxHP >> 6);
 	if (*GetOptions().Gameplay.showManaValues)
 		DrawFlaskValues(out, { mainPanel.position.x + mainPanel.size.width - 138, mainPanel.position.y + 28 },
-		    (HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) || MyPlayer->hasNoMana()) ? 0 : MyPlayer->_pMana.whole(),
-		    HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) ? 0 : MyPlayer->_pMaxMana.whole());
+		    (HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) || MyPlayer->hasNoMana()) ? 0 : MyPlayer->_pMana >> 6,
+		    HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) ? 0 : MyPlayer->_pMaxMana >> 6);
 	if (*GetOptions().Gameplay.floatingInfoBox)
 		DrawFloatingInfoBox(out);
 
@@ -1905,6 +1906,10 @@ void DrawAndBlit()
 	DrawCursor(out);
 
 	DrawFPS(out);
+
+#ifdef USE_GPU_SCALER
+	gpu_scaler::DrawFilterOsd(out);
+#endif
 
 	lua::GameDrawComplete();
 

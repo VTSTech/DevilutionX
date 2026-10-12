@@ -9,7 +9,6 @@
 
 #include "data/file.hpp"
 #include "data/iterators.hpp"
-#include "utils/fixed_point.hpp"
 
 namespace devilution {
 
@@ -63,8 +62,9 @@ public:
 		failOnError(field.parseIntArray(out), name, field);
 	}
 
-	template <Fixed6Type T>
-	void readFixed6(std::string_view name, T &out)
+	template <typename T>
+	typename std::enable_if_t<std::is_integral_v<T>, void>
+	readFixed6(std::string_view name, T &out)
 	{
 		DataFileField field = nextField();
 		failOnError(field.parseFixed6(out), name, field);

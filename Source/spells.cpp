@@ -100,9 +100,9 @@ bool TargetsMonster(SpellID id)
 	    || id == SpellID::FlameWave;
 }
 
-Fixed26_6 GetManaAmount(const Player &player, SpellID sn)
+int GetManaAmount(const Player &player, SpellID sn)
 {
-	int ma; // whole mana amount
+	int ma; // mana amount
 
 	// mana adjust
 	int adj = 0;
@@ -123,21 +123,22 @@ Fixed26_6 GetManaAmount(const Player &player, SpellID sn)
 	if (sn == SpellID::Healing || sn == SpellID::HealOther) {
 		ma = (GetSpellData(SpellID::Healing).sManaCost + 2 * player.getCharacterLevel() - adj);
 	} else if (GetSpellData(sn).sManaCost == 255) {
-		ma = player._pMaxManaBase.whole() - adj;
+		ma = (player._pMaxManaBase >> 6) - adj;
 	} else {
 		ma = (GetSpellData(sn).sManaCost - adj);
 	}
 
-	Fixed26_6 manaAmount = Fixed26_6::fromInt(std::max(ma, 0));
+	ma = std::max(ma, 0);
+	ma <<= 6;
 
 	const ClassAttributes &classAttributes = GetClassAttributes(player._pClass);
-	manaAmount = manaAmount * classAttributes.manaCost;
+	ma = ma * classAttributes.manaCost >> 6;
 
-	if (GetSpellData(sn).sMinMana > manaAmount.whole()) {
-		manaAmount = Fixed26_6::fromInt(GetSpellData(sn).sMinMana);
+	if (GetSpellData(sn).sMinMana > ma >> 6) {
+		ma = GetSpellData(sn).sMinMana << 6;
 	}
 
-	return manaAmount;
+	return ma;
 }
 
 void ConsumeSpell(Player &player, SpellID sn)
@@ -157,17 +158,17 @@ void ConsumeSpell(Player &player, SpellID sn)
 		if (DebugGodMode)
 			break;
 #endif
-		Fixed26_6 ma = GetManaAmount(player, sn);
+		int ma = GetManaAmount(player, sn);
 		player._pMana -= ma;
 		player._pManaBase -= ma;
 		RedrawComponent(PanelDrawComponent::Mana);
 		break;
 	}
 	if (sn == SpellID::BloodStar) {
-		ApplyPlrDamage(DamageType::Physical, player, Fixed26_6::fromInt(5));
+		ApplyPlrDamage(DamageType::Physical, player, 5);
 	}
 	if (sn == SpellID::BoneSpirit) {
-		ApplyPlrDamage(DamageType::Physical, player, Fixed26_6::fromInt(6));
+		ApplyPlrDamage(DamageType::Physical, player, 6);
 	}
 }
 
@@ -255,14 +256,14 @@ void ApplyResurrect(Player &target)
 	target._pInvincible = false;
 	SyncInitPlrPos(target);
 
-	Fixed26_6 hp = Fixed26_6::fromInt(10);
-	if (target._pMaxHPBase < hp) {
+	int hp = 10 << 6;
+	if (target._pMaxHPBase < (10 << 6)) {
 		hp = target._pMaxHPBase;
 	}
 	SetPlayerHitPoints(target, hp);
 
 	target._pHPBase = target._pHitPoints + (target._pMaxHPBase - target._pMaxHP); // CODEFIX: does the same stuff as SetPlayerHitPoints above, can be removed
-	target._pMana = Fixed26_6::fromInt(0);
+	target._pMana = 0;
 	target._pManaBase = target._pMana + (target._pMaxManaBase - target._pMaxMana);
 
 	target._pmode = PM_STAND;
@@ -280,15 +281,15 @@ void DoHealOther(const Player &caster, Player &target)
 		return;
 	}
 
-	Fixed26_6 hp = Fixed26_6::fromInt(GenerateRnd(10) + 1);
+	int hp = (GenerateRnd(10) + 1) << 6;
 	for (unsigned i = 0; i < caster.getCharacterLevel(); i++) {
-		hp += Fixed26_6::fromInt(GenerateRnd(4) + 1);
+		hp += (GenerateRnd(4) + 1) << 6;
 	}
 	for (int i = 0; i < caster.GetSpellLevel(SpellID::HealOther); i++) {
-		hp += Fixed26_6::fromInt(GenerateRnd(6) + 1);
+		hp += (GenerateRnd(6) + 1) << 6;
 	}
 	const ClassAttributes &classAttributes = GetClassAttributes(caster._pClass);
-	hp = hp * classAttributes.healOtherRestoreLife;
+	hp = hp * classAttributes.healOtherRestoreLife >> 6;
 
 	target._pHitPoints = std::min(target._pHitPoints + hp, target._pMaxHP);
 	target._pHPBase = std::min(target._pHPBase + hp, target._pMaxHPBase);
