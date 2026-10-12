@@ -600,9 +600,12 @@ std::vector<PresetEntry> ScanPresets(const std::string &rootDir)
 	std::filesystem::recursive_directory_iterator end;
 	for (; it != end; it.increment(ec)) {
 		if (ec) {
+			// A failed increment may leave the iterator in place on some
+			// implementations; continuing would then spin forever. Stop
+			// the scan and return what was collected so far.
 			it.disable_recursion_pending();
 			ec.clear();
-			continue;
+			break;
 		}
 		const int depth = it.depth();
 		if (depth >= kMaxDepth) {

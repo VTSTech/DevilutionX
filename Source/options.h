@@ -352,6 +352,8 @@ class OptionEntryShaderFilter : public OptionEntryEnumBase {
 public:
 	OptionEntryShaderFilter();
 
+	void LoadFromIni(std::string_view category) override;
+
 	/** @brief Re-scans the runtime shaders folder, rebuilds the entry list
 	 *  for the browsed folder and syncs the active value with the persisted
 	 *  preset path. Safe to call repeatedly (settings menu opens). */

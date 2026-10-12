@@ -431,6 +431,17 @@ OptionEntryShaderFilter::OptionEntryShaderFilter()
 	AddEntry(static_cast<int>(ShaderFilter::ScaleFX3x), N_("ScaleFX 3x"));
 	AddEntry(static_cast<int>(ShaderFilter::ScaleFX4x), N_("ScaleFX 4x"));
 	builtinCount_ = entryValues.size();
+}
+
+void OptionEntryShaderFilter::LoadFromIni(std::string_view category)
+{
+	OptionEntryEnumBase::LoadFromIni(category);
+	// Deferred from the constructor on purpose: the ctor runs while the
+	// lazy `static Options options` inside GetOptions() is still being
+	// constructed, and RescanCustomEntries() reads GetOptions() --
+	// re-entering that uninitialized magic static deadlocks the process
+	// at startup (no window, no output, no crash). LoadFromIni runs
+	// after Options is fully constructed, so scanning here is safe.
 	RescanCustomEntries();
 }
 
