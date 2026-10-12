@@ -33,7 +33,16 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build glslang-tools gettext smpq zip patch
+        # The lib*-dev stack is required by the VENDORED SDL3's X11/Wayland/audio
+        # backends. Without it, configure aborts with:
+        #   "Couldn't find dependency package for XCURSOR"
+        # (the runner image has libx11/libxext but not the rest; upstream devilutionx
+        # CI gets the same stack transitively via libsdl2-dev).
+        sudo apt-get install -y ninja-build glslang-tools gettext smpq zip patch \
+          libasound2-dev libpulse-dev \
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+          libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
+          libudev-dev libdbus-1-dev
 
     - name: Configure
       run: >

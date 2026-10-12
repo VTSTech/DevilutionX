@@ -1411,11 +1411,18 @@ void DrawFilterOsd(const Surface &out)
         const std::string_view text = FilterOsdText();
         if (text.empty())
                 return;
+        // FontSizeDialog + ColorDialogWhite is the engine's standard in-game
+        // dialog text combo and reads correctly under BOTH the menu palette
+        // (raw glyph index 224 = white in ui_art palettes) and the game
+        // palettes (gamedialogwhite.trn maps 224 -> PAL16_GRAY white ramp).
+        // Plain ColorWhite maps into palette entries that are pure
+        // red/green/blue/... primaries in the menu palette ("rainbow" text).
+        constexpr GameFontTables OsdFontSize = FontSizeDialog;
         constexpr int Margin = 8;
-        const int textWidth = GetLineWidth(text);
-        const int textHeight = GetLineHeight(text, GameFont12);
+        const int textWidth = GetLineWidth(text, OsdFontSize);
+        const int textHeight = GetLineHeight(text, OsdFontSize);
         const Point position { out.w() - Margin - textWidth, out.h() - Margin - textHeight };
-        DrawString(out, text, position, { .flags = UiFlags::ColorWhite });
+        DrawString(out, text, position, { .flags = UiFlags::ColorDialogWhite | UiFlags::FontSizeDialog });
 }
 
 } // namespace gpu_scaler
