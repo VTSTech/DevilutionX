@@ -3,8 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <cstring>
+#include <deque>
 #include <forward_list>
 #include <functional>
 #include <initializer_list>
@@ -340,8 +340,8 @@ public:
 	OptionEntryShaderFilter();
 
 	/** @brief Re-scans the runtime shaders folder and rebuilds the custom
-     *  entries. Safe to call repeatedly (settings menu opens); names live in
-     *  stable storage. */
+	 *  entries. Safe to call repeatedly (settings menu opens); names live in
+	 *  stable storage. */
 	void RescanCustomEntries();
 
 	void SetActiveListIndex(size_t index) override;

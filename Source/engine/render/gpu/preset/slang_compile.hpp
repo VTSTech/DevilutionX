@@ -11,8 +11,8 @@ namespace gpu_scaler {
 namespace preset {
 
 struct PassSpirv {
-        std::vector<uint8_t> vertex;    // SPIR-V bytecode for the vertex stage.
-        std::vector<uint8_t> fragment;  // SPIR-V bytecode for the fragment stage.
+	std::vector<uint8_t> vertex;   // SPIR-V bytecode for the vertex stage.
+	std::vector<uint8_t> fragment; // SPIR-V bytecode for the fragment stage.
 };
 
 /**

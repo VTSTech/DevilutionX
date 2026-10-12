@@ -36,7 +36,7 @@ struct ScaleRule {
 
 /** @brief One shader pass of a preset (one .slang file). */
 struct PassDef {
-	std::string shaderPath;         // Relative to the preset file directory.
+	std::string shaderPath; // Relative to the preset file directory.
 	FilterMode filter = FilterMode::Nearest;
 	WrapMode wrap = WrapMode::ClampToEdge;
 	ScaleRule scaleX;
@@ -44,15 +44,15 @@ struct PassDef {
 	bool srgbFramebuffer = false;
 	bool floatFramebuffer = false;
 	bool mipmapInput = false;
-	std::string alias;              // Optional alias name for this pass output.
-	uint32_t frameCountMod = 0;     // FrameCount is pre-wrapped by this modulo.
-	std::string pragmaFormat;       // Optional #pragma format override from the .slang.
+	std::string alias;          // Optional alias name for this pass output.
+	uint32_t frameCountMod = 0; // FrameCount is pre-wrapped by this modulo.
+	std::string pragmaFormat;   // Optional #pragma format override from the .slang.
 };
 
 /** @brief A lookup texture declared by a preset. */
 struct TextureDef {
-	std::string name;               // Name the shaders reference (sampler2D NAME).
-	std::string path;               // Relative to the preset file directory.
+	std::string name; // Name the shaders reference (sampler2D NAME).
+	std::string path; // Relative to the preset file directory.
 	FilterMode filter = FilterMode::Nearest;
 	WrapMode wrap = WrapMode::ClampToEdge;
 	bool mipmap = false;
@@ -66,21 +66,21 @@ struct ParamOverride {
 
 /** @brief A parsed .slangp preset: a chain of shader passes plus resources. */
 struct Preset {
-	std::string filePath;           // Resolved absolute path of the .slangp file.
-	std::string dir;                // Directory of the .slangp file (with trailing separator).
-	std::string displayName;        // Human-readable name (file stem).
-	std::string relativePath;       // Relative to the shader root directory, forward slashes.
+	std::string filePath;     // Resolved absolute path of the .slangp file.
+	std::string dir;          // Directory of the .slangp file (with trailing separator).
+	std::string displayName;  // Human-readable name (file stem).
+	std::string relativePath; // Relative to the shader root directory, forward slashes.
 	std::vector<PassDef> passes;
 	std::vector<TextureDef> textures;
 	std::vector<ParamOverride> parameters;
-	int feedbackPass = -1;          // Pass whose output is fed back as feedback input.
-	int histories = 1;              // Chain input history depth (OriginalHistory#).
+	int feedbackPass = -1; // Pass whose output is fed back as feedback input.
+	int histories = 1;     // Chain input history depth (OriginalHistory#).
 };
 
 /** @brief One .slangp file discovered in the runtime shader folder. */
 struct PresetEntry {
-	std::string displayName;        // File stem; shown in the settings list.
-	std::string relativePath;       // Relative to the shader root directory, forward slashes.
+	std::string displayName;  // File stem; shown in the settings list.
+	std::string relativePath; // Relative to the shader root directory, forward slashes.
 };
 
 } // namespace preset

@@ -8,9 +8,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
-#include <deque>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <expected>
 #include <functional>
 #include <iterator>
