@@ -13,7 +13,6 @@
 #include "sound_effect_enums.h"
 #include "tables/itemdat.h"
 #include "tables/spelldat.h"
-#include "utils/fixed_point.hpp"
 
 namespace devilution {
 
@@ -75,33 +74,33 @@ struct ClassAttributes {
 	/* Class Maximum Vitality Stat */
 	uint8_t maxVit;
 	/* Class Life Adjustment */
-	Fixed10_6 adjLife;
+	int16_t adjLife;
 	/* Class Mana Adjustment */
-	Fixed10_6 adjMana;
+	int16_t adjMana;
 	/* Life gained on level up */
-	Fixed10_6 lvlLife;
+	int16_t lvlLife;
 	/* Mana gained on level up */
-	Fixed10_6 lvlMana;
+	int16_t lvlMana;
 	/* Life from base Vitality */
-	Fixed10_6 chrLife;
+	int16_t chrLife;
 	/* Mana from base Magic */
-	Fixed10_6 chrMana;
+	int16_t chrMana;
 	/* Life from item bonus Vitality */
-	Fixed10_6 itmLife;
+	int16_t itmLife;
 	/* Mana from item bonus Magic */
-	Fixed10_6 itmMana;
+	int16_t itmMana;
 	/* Mana cost multipler */
-	Fixed10_6 manaCost;
+	int16_t manaCost;
 	/* Life restore item multipler */
-	Fixed10_6 itmRestoreLife;
+	int16_t itmRestoreLife;
 	/* Mana restore item multipler */
-	Fixed10_6 itmRestoreMana;
+	int16_t itmRestoreMana;
 	/* Life restore spell multipler */
-	Fixed10_6 splRestoreLife;
+	int16_t splRestoreLife;
 	/* Mana restore spell multipler */
-	Fixed10_6 splRestoreMana;
+	int16_t splRestoreMana;
 	/* Life restore heal other multipler */
-	Fixed10_6 healOtherRestoreLife;
+	int16_t healOtherRestoreLife;
 };
 
 const ClassAttributes &GetClassAttributes(HeroClass playerClass);

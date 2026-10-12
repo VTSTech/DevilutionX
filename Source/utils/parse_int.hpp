@@ -6,8 +6,6 @@
 #include <string_view>
 #include <system_error>
 
-#include "utils/fixed_point.hpp"
-
 namespace devilution {
 
 enum class ParseIntError {
@@ -45,11 +43,9 @@ ParseIntResult<IntT> ParseInt(
  */
 uint8_t ParseFixed6Fraction(std::string_view str, const char **endOfParse = nullptr);
 
-template <Fixed6Type FixedT>
-ParseIntResult<FixedT> ParseFixed6(std::string_view str, const char **endOfParse = nullptr)
+template <typename IntT>
+ParseIntResult<IntT> ParseFixed6(std::string_view str, const char **endOfParse = nullptr)
 {
-	using StorageT = typename FixedT::StorageType;
-
 	if (endOfParse != nullptr) {
 		// To allow for early returns we set the end pointer to the start of the string, which is the common case for errors.
 		*endOfParse = str.data();
@@ -59,13 +55,13 @@ ParseIntResult<FixedT> ParseFixed6(std::string_view str, const char **endOfParse
 		return std::unexpected { ParseIntError::ParseError };
 	}
 
-	constexpr StorageT minIntegerValue = std::numeric_limits<StorageT>::min() >> 6;
-	constexpr StorageT maxIntegerValue = std::numeric_limits<StorageT>::max() >> 6;
+	constexpr IntT minIntegerValue = std::numeric_limits<IntT>::min() >> 6;
+	constexpr IntT maxIntegerValue = std::numeric_limits<IntT>::max() >> 6;
 
 	const char *currentChar; // will be set by the call to parseInt
-	ParseIntResult<StorageT> integerParseResult = ParseInt(str, minIntegerValue, maxIntegerValue, &currentChar);
+	ParseIntResult<IntT> integerParseResult = ParseInt(str, minIntegerValue, maxIntegerValue, &currentChar);
 
-	bool isNegative = std::is_signed_v<StorageT> && str[0] == '-';
+	bool isNegative = std::is_signed_v<IntT> && str[0] == '-';
 	bool haveDigits = integerParseResult.has_value() || integerParseResult.error() == ParseIntError::OutOfRange;
 	if (haveDigits) {
 		str.remove_prefix(static_cast<size_t>(std::distance(str.data(), currentChar)));
@@ -95,23 +91,23 @@ ParseIntResult<FixedT> ParseFixed6(std::string_view str, const char **endOfParse
 	if (!integerParseResult.has_value() && integerParseResult.error() == ParseIntError::OutOfRange) {
 		// if the integer parsing gave us an out of range value then we've done a bit of unnecessary
 		//  work parsing the fraction part, but it saves duplicating code.
-		return std::unexpected { integerParseResult.error() };
+		return integerParseResult;
 	}
 	// integerParseResult could be a ParseError at this point because of a string like ".123" or "-.1"
 	//  so we need to default to 0 (and use the result of the minus sign check when it's relevant)
-	StorageT integerPart = integerParseResult.value_or(0);
+	IntT integerPart = integerParseResult.value_or(0);
 
 	// rounding could give us a value of 64 for the fraction part (e.g. 0.993 rounds to 1.0) so we need to ensure this doesn't overflow
-	if (fractionPart >= 64 && (integerPart >= maxIntegerValue || (std::is_signed_v<StorageT> && integerPart <= minIntegerValue))) {
+	if (fractionPart >= 64 && (integerPart >= maxIntegerValue || (std::is_signed_v<IntT> && integerPart <= minIntegerValue))) {
 		return std::unexpected { ParseIntError::OutOfRange };
 	} else {
-		StorageT fixedValue = static_cast<StorageT>(integerPart << 6);
+		IntT fixedValue = integerPart << 6;
 		if (isNegative) {
-			fixedValue = static_cast<StorageT>(fixedValue - fractionPart);
+			fixedValue -= fractionPart;
 		} else {
-			fixedValue = static_cast<StorageT>(fixedValue + fractionPart);
+			fixedValue += fractionPart;
 		}
-		return FixedT::fromRaw(fixedValue);
+		return fixedValue;
 	}
 }
 
