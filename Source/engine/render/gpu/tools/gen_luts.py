@@ -31,15 +31,21 @@ def emit(f, name, path):
     assert len(palette) <= 256
     print(f"{name}: {w}x{h}, {len(palette)} palette entries")
     f.write(f"// {name}: {w}x{h} LUT, {len(palette)} distinct weight vectors\n")
+    # Generated data is exempt from clang-format (upstream clang-format CI
+    # would otherwise repack the tables); markers mirror the committed file.
+    f.write("// clang-format off\n")
     f.write(f"constexpr LutData {name} = {{\n    {w}, {h}, {len(palette)},\n    {{\n")
     for p in palette:
         f.write(f"        {{{p[0]}, {p[1]}, {p[2]}, {p[3]}}},\n")
     f.write("    },\n    {\n")
     for row in range(h):
-        f.write("        ")
-        f.write(",".join(str(index[row * w + col]) for col in range(w)))
-        f.write(",\n")
-    f.write("    }\n};\n\n")
+        for col0 in range(0, w, 32):
+            f.write("        ")
+            f.write("".join(f"{index[row * w + col]}," for col in range(col0, min(col0 + 32, w))))
+            f.write("\n")
+    f.write("    }\n")
+    f.write("};\n")
+    f.write("// clang-format on\n\n")
 
 
 def main():
@@ -65,11 +71,11 @@ def main():
 namespace devilution::gpu::luts {
 
 struct LutData {
-	int width;
-	int height;
-	int paletteSize;
-	std::uint8_t palette[256][4];
-	std::uint8_t indices[256 * 256];
+        int width;
+        int height;
+        int paletteSize;
+        std::uint8_t palette[256][4];
+        std::uint8_t indices[256 * 256];
 };
 
 """)

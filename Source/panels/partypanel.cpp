@@ -171,7 +171,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 
 			// Get the players remaining life
 			// If the player is using mana shield change the color
-			const int lifeTicks = ((player._pHitPoints * PortraitFrameSize.width) + (player._pMaxHP / 2)) / player._pMaxHP;
+			const int lifeTicks = ((player._pHitPoints.raw() * PortraitFrameSize.width) + (player._pMaxHP.raw() / 2)) / player._pMaxHP.raw();
 			const uint8_t hpBarColor = (player.pManaShield) ? PAL8_YELLOW + 5 : PAL8_RED + 4;
 			// Now draw the characters remaining life
 			DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, hpBarColor);
@@ -232,7 +232,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 
 			if (player._pMaxMana > 0) {
 				// Get the players remaining mana
-				const int manaTicks = ((player._pMana * PortraitFrameSize.width) + (player._pMaxMana / 2)) / player._pMaxMana;
+				const int manaTicks = ((player._pMana.raw() * PortraitFrameSize.width) + (player._pMaxMana.raw() / 2)) / player._pMaxMana.raw();
 				const uint8_t manaBarColor = PAL8_BLUE + 3;
 				// Now draw the characters remaining mana
 				DrawBar(gameScreen, { pos, { manaTicks, ManaBarHeight } }, manaBarColor);
@@ -287,7 +287,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 			RenderClxSprite(gameScreen, (*PartyMemberFrame)[0], pos);
 
 			// Get the monsters remaining life
-			const int lifeTicks = ((summoned->hitPoints * PortraitFrameSize.width) + (summoned->maxHitPoints / 2)) / summoned->maxHitPoints;
+			const int lifeTicks = ((summoned->hitPoints.raw() * PortraitFrameSize.width) + (summoned->maxHitPoints.raw() / 2)) / summoned->maxHitPoints.raw();
 			// Now draw the characters remaining life
 			DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, PAL8_RED + 4);
 

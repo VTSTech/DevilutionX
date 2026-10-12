@@ -29,6 +29,15 @@ class Surface;
 namespace gpu_scaler {
 
 /**
+ * @brief Preloads the system Direct3D shader compiler at process start
+ * (Windows only; a no-op elsewhere). Must run before any renderer or GPU
+ * device is created so that every later bare-name load of
+ * d3dcompiler_47.dll resolves to the genuine system copy instead of a
+ * stale DLL shipped next to the game.
+ */
+void PreloadD3DCompiler();
+
+/**
  * @brief Returns true when a shader filter is selected in the options,
  * regardless of whether the scaler initialized successfully. Callers use
  * this to keep the backbuffer setup (upscale-style) consistent.
@@ -84,9 +93,10 @@ void LogPhase(std::string_view line);
 /**
  * @brief Refreshes the persistent filter OSD label confirming which shader
  * filter the presentation path is actually running (e.g. "Shader Filter:
- * HQ2x (Vulkan)", "Shader Filter: Off"). Call after the renderer
- * (re)initialization has settled. The label is permanently visible in the
- * bottom-right corner of the game frame; this call only updates its text,
+ * HQ2x (Vulkan)"). Call after the renderer (re)initialization has settled.
+ * The label is visible in the bottom-right corner of the game frame only
+ * while a filter is selected; with the filter Off no label is shown. This
+ * call only updates its text,
  * which changes when the selected filter, its availability, or the active
  * GPU backend changes. Every text change is also logged to gpu-scaler.log.
  */
