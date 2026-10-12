@@ -176,7 +176,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	//    reference other passes' outputs by name during translation.
 	std::unordered_map<int, std::string> pragmaNames;
 	for (size_t i = 0; i < preset_.passes.size(); ++i) {
-		const std::string path = preset_.dir + preset_.passes[i].shaderPath;
+		const std::string path = ResolvePresetFilePath(preset_.dir, preset_.passes[i].shaderPath);
 		std::ifstream stream(path, std::ios::binary);
 		if (!stream) {
 			error = StrCat("cannot open shader file: ", path);
@@ -221,7 +221,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		auto pass = std::make_unique<PassRuntime>();
 		pass->def = def;
 
-		const std::string slangPath = preset_.dir + def.shaderPath;
+		const std::string slangPath = ResolvePresetFilePath(preset_.dir, def.shaderPath);
 		std::vector<ParamInfo> presetParams;
 		for (const ParamOverride &override : preset_.parameters) {
 			ParamInfo info;
@@ -666,7 +666,7 @@ void Runner::ReleaseTargets()
 
 bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 {
-	const std::string path = preset_.dir + lut.def.path;
+	const std::string path = ResolvePresetFilePath(preset_.dir, lut.def.path);
 	SDL_Surface *loaded = IMG_Load(path.c_str());
 	if (loaded == nullptr) {
 		error = StrCat("IMG_Load failed: ", SDL_GetError());

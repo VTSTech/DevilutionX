@@ -36,6 +36,10 @@
 #include "utils/enum_traits.h"
 #include "utils/string_view_hash.hpp"
 
+#ifdef USE_GPU_SCALER
+#include "engine/render/gpu/preset/preset_types.hpp"
+#endif
+
 namespace devilution {
 
 #ifndef DEFAULT_WIDTH
@@ -75,7 +79,7 @@ enum class ScalingQuality : uint8_t {
 };
 
 #ifndef USE_SDL1
-enum class ShaderFilter : uint8_t {
+enum class ShaderFilter : uint16_t {
 	/** @brief No shader filter, use the regular SDL_Renderer scaling. */
 	None = 0,
 	HQ2x = 1,
@@ -89,12 +93,12 @@ enum class ShaderFilter : uint8_t {
 /** @brief First enum value of the runtime-loaded custom preset range.
  *  Custom preset N in the settings list maps to value CustomBase + N;
  *  the actual preset file is identified by Graphics.shaderFilterPreset. */
-constexpr uint8_t kShaderFilterCustomBase = 100;
+constexpr uint16_t kShaderFilterCustomBase = 100;
 
 /** @brief Whether the given filter is a runtime-loaded folder preset. */
 constexpr bool IsCustomFilter(ShaderFilter filter)
 {
-	return static_cast<uint8_t>(filter) >= kShaderFilterCustomBase;
+	return static_cast<uint16_t>(filter) >= kShaderFilterCustomBase;
 }
 
 /** @brief Whether the given filter is a ScaleFX variant (arbitrary integer scale). */
@@ -254,6 +258,14 @@ public:
 	[[nodiscard]] virtual size_t GetActiveListIndex() const = 0;
 	virtual void SetActiveListIndex(size_t index) = 0;
 
+	/** @brief Whether selecting this list entry navigates (drills into/out of
+	 *  a folder) instead of changing the value; the settings list view is
+	 *  rebuilt in place for such entries. */
+	[[nodiscard]] virtual bool IsListNavigationEntry(size_t index) const
+	{
+		return false;
+	}
+
 	[[nodiscard]] OptionEntryType GetType() const override;
 	[[nodiscard]] std::string_view GetValueDescription() const override;
 
@@ -333,18 +345,21 @@ public:
 	std::string value;
 };
 
-/** @brief The GPU shader filter entry: the fixed built-in filters plus one
- *  entry per .slangp preset discovered in the runtime shaders folder. */
+/** @brief The GPU shader filter entry: the fixed built-in filters plus a
+ *  folder browser for the .slangp presets found in the runtime shaders
+ *  folder (subfolders are entered instead of listing everything flat). */
 class OptionEntryShaderFilter : public OptionEntryEnumBase {
 public:
 	OptionEntryShaderFilter();
 
-	/** @brief Re-scans the runtime shaders folder and rebuilds the custom
-	 *  entries. Safe to call repeatedly (settings menu opens); names live in
-	 *  stable storage. */
+	/** @brief Re-scans the runtime shaders folder, rebuilds the entry list
+	 *  for the browsed folder and syncs the active value with the persisted
+	 *  preset path. Safe to call repeatedly (settings menu opens). */
 	void RescanCustomEntries();
 
 	void SetActiveListIndex(size_t index) override;
+	[[nodiscard]] bool IsListNavigationEntry(size_t index) const override;
+	[[nodiscard]] size_t GetActiveListIndex() const override;
 
 	[[nodiscard]] ShaderFilter operator*() const
 	{
@@ -352,8 +367,20 @@ public:
 	}
 
 private:
-	/** @brief Number of fixed built-in entries (custom entries follow). */
+	/** @brief Rebuilds entryValues/entryNames below the fixed built-ins for
+	 *  the folder currently being browsed. */
+	void RebuildListEntries();
+
+	/** @brief Number of fixed built-in entries (browser entries follow). */
 	size_t builtinCount_ = 0;
+	/** @brief Folder currently browsed, relative to the shader root ("" = root). */
+	std::string currentDir_;
+	/** @brief Subdirectories of the browsed folder (navigation entries). */
+	std::vector<std::string> subdirs_;
+	/** @brief Presets directly inside the browsed folder (selection entries). */
+	std::vector<gpu_scaler::preset::PresetEntry> presets_;
+	/** @brief Entry index to focus after the next list rebuild (one-shot). */
+	mutable size_t pendingFocusIndex_ = static_cast<size_t>(-1);
 };
 #endif
 

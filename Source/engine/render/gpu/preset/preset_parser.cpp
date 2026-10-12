@@ -13,6 +13,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <string_view>
 
 #include <SDL3/SDL_filesystem.h>
 
@@ -32,6 +33,45 @@ std::string NormalizeSeparators(std::string path)
 			c = '/';
 	}
 	return path;
+}
+
+/** @brief True when the path is absolute in the Windows or the Unix sense
+ *  (drive letter, UNC or leading separator). */
+bool IsAbsolutePath(std::string_view path)
+{
+	if (path.empty())
+		return false;
+	if (path.front() == '/' || path.front() == '\\')
+		return true;
+	return path.size() >= 2 && path[1] == ':' && std::isalpha(static_cast<unsigned char>(path[0])) != 0;
+}
+
+/** @brief ASCII case-insensitive equality (folder name filtering). */
+bool EqualsIgnoreCase(const std::string &a, const char *b)
+{
+	size_t i = 0;
+	for (; i < a.size() && b[i] != '\0'; i++) {
+		if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i])))
+			return false;
+	}
+	return a.size() == i && b[i] == '\0';
+}
+
+/** @brief Human-friendly name for the settings list: underscores become
+ *  spaces and repeated whitespace collapses. Falls back to the raw stem when
+ *  nothing readable remains. */
+std::string PresetDisplayName(std::string stem)
+{
+	std::replace(stem.begin(), stem.end(), '_', ' ');
+	stem.erase(std::unique(stem.begin(), stem.end(), [](char a, char b) { return a == ' ' && b == ' '; }), stem.end());
+	const size_t first = stem.find_first_not_of(' ');
+	if (first == std::string::npos)
+		return stem; // whitespace-only stem; keep as-is rather than returning an empty name
+	if (first > 0)
+		stem.erase(0, first);
+	while (!stem.empty() && stem.back() == ' ')
+		stem.pop_back();
+	return stem;
 }
 
 } // namespace
@@ -166,7 +206,7 @@ int SplitPassKey(const std::string &key, std::string &baseKey)
 	return ParseInt(key.substr(end), -1);
 }
 
-void ApplyPassKey(PassDef &pass, const std::string &key, const std::string &value, const std::string &presetDir)
+void ApplyPassKey(PassDef &pass, const std::string &key, const std::string &value)
 {
 	if (key == "shader") {
 		pass.shaderPath = value;
@@ -200,12 +240,46 @@ void ApplyPassKey(PassDef &pass, const std::string &key, const std::string &valu
 		pass.scaleY.type = ParseScaleType(value, ScaleType::Source);
 	} else if (key == "shaderpath") {
 		// Unofficial convenience: absolute or preset-relative path override.
-		if (!value.empty() && value[0] != '/') {
-			pass.shaderPath = presetDir + value;
-		} else {
-			pass.shaderPath = value;
-		}
+		// Stored as-is; ResolvePresetFilePath() resolves it at load time
+		// (prefixing it here would double the preset folder at the join).
+		pass.shaderPath = value;
 	}
+}
+
+/** @brief How many folder levels the preset scan reaches below the root
+ *  (shared by ScanPresets and the settings browser's folder filter). */
+constexpr int kPresetScanDepth = 3;
+
+/** @brief Whether dir (recursively, up to maxDepth levels below it) contains
+ *  at least one .slangp preset file. The settings browser uses this to hide
+ *  folders that only carry shader sources or assets (e.g. a pack's
+ *  shaders-ng/ folder), so everything listed leads to presets. */
+bool DirContainsPreset(const std::filesystem::path &dir, int maxDepth)
+{
+	std::error_code ec;
+	std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec);
+	if (ec)
+		return false;
+	std::filesystem::directory_iterator end;
+	for (; it != end; it.increment(ec)) {
+		if (ec) {
+			ec.clear();
+			return false;
+		}
+		std::error_code entryEc;
+		if (it->is_directory(entryEc) && !entryEc) {
+			entryEc.clear();
+			if (maxDepth > 0 && DirContainsPreset(it->path(), maxDepth - 1))
+				return true;
+			continue;
+		}
+		entryEc.clear();
+		if (!it->is_regular_file(entryEc) || entryEc)
+			continue;
+		if (EqualsIgnoreCase(it->path().extension().string(), ".slangp"))
+			return true;
+	}
+	return false;
 }
 
 } // namespace
@@ -269,23 +343,30 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	// textures and parameter overrides accumulate, and this file's own keys
 	// are still applied on top afterwards.
 	for (const std::string &referencePath : referencePaths) {
-		std::filesystem::path parent = referencePath.front() == '/'
-		    ? std::filesystem::path(referencePath)
-		    : std::filesystem::path(preset.dir) / referencePath;
+		const std::string parentPath = ResolvePresetFilePath(preset.dir, referencePath);
 		Preset parentPreset;
 		std::string parentError;
-		if (!ParsePresetImpl(parent.string(), parentPreset, parentError, depth + 1, /*isReferenceTarget=*/true)) {
+		if (!ParsePresetImpl(parentPath, parentPreset, parentError, depth + 1, /*isReferenceTarget=*/true)) {
 			error = StrCat("referenced preset failed: ", parentError);
 			return false;
 		}
-		if (!parentPreset.passes.empty())
+		if (!parentPreset.passes.empty()) {
+			// The parent's pass shader paths are relative to the PARENT's
+			// folder; rebase them to absolute so they stay resolvable after
+			// the merge (the runner resolves pass paths against the folder
+			// of the referencing preset).
+			for (PassDef &pass : parentPreset.passes)
+				pass.shaderPath = ResolvePresetFilePath(parentPreset.dir, pass.shaderPath);
 			preset.passes = std::move(parentPreset.passes);
+		}
 		for (TextureDef &tex : parentPreset.textures) {
 			bool exists = false;
 			for (const TextureDef &existing : preset.textures)
 				exists = exists || ToLower(existing.name) == ToLower(tex.name);
-			if (!exists)
+			if (!exists) {
+				tex.path = ResolvePresetFilePath(parentPreset.dir, tex.path);
 				preset.textures.push_back(std::move(tex));
+			}
 		}
 		for (ParamOverride &param : parentPreset.parameters)
 			preset.parameters.push_back(std::move(param));
@@ -452,7 +533,7 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 		if (passIndex >= 0) {
 			if (static_cast<int>(preset.passes.size()) <= passIndex)
 				preset.passes.resize(static_cast<size_t>(passIndex) + 1);
-			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value, preset.dir);
+			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value);
 			continue;
 		}
 		// Implicit texture declaration (RetroArch-compat): a path-valued key
@@ -512,7 +593,7 @@ std::vector<PresetEntry> ScanPresets(const std::string &rootDir)
 	if (!std::filesystem::is_directory(rootDir, ec))
 		return entries;
 
-	constexpr int kMaxDepth = 3;
+	constexpr int kMaxDepth = kPresetScanDepth;
 	std::filesystem::recursive_directory_iterator it(rootDir, std::filesystem::directory_options::skip_permission_denied, ec);
 	if (ec)
 		return entries;
@@ -540,13 +621,56 @@ std::vector<PresetEntry> ScanPresets(const std::string &rootDir)
 			ec.clear();
 			continue;
 		}
-		entry.displayName = p.stem().string();
+		entry.displayName = PresetDisplayName(p.stem().string());
 		entries.push_back(std::move(entry));
 	}
 	std::sort(entries.begin(), entries.end(), [](const PresetEntry &a, const PresetEntry &b) {
 		return a.relativePath < b.relativePath;
 	});
 	return entries;
+}
+
+PresetDirListing ListPresetDir(const std::string &rootDir, const std::string &relativeDir)
+{
+	PresetDirListing listing;
+	std::error_code ec;
+	const std::filesystem::path dir = std::filesystem::path(rootDir) / std::filesystem::path(relativeDir);
+	if (!std::filesystem::is_directory(dir, ec))
+		return listing;
+
+	for (std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
+		if (ec) {
+			ec.clear();
+			break;
+		}
+		const std::filesystem::path &p = it->path();
+		const std::string fileName = p.filename().string();
+		std::error_code entryEc;
+		if (it->is_directory(entryEc) && !entryEc) {
+			// Hide hidden folders, the SPIR-V cache folder and any folder
+			// without .slangp presets below it (shader-source and asset
+			// folders would only clutter the browser).
+			if (!fileName.empty() && fileName.front() != '.' && !EqualsIgnoreCase(fileName, "cache")
+			    && DirContainsPreset(p, kPresetScanDepth))
+				listing.subdirs.push_back(fileName);
+			continue;
+		}
+		entryEc.clear();
+		if (!it->is_regular_file(entryEc) || entryEc)
+			continue;
+		if (p.extension() != ".slangp" && p.extension() != ".SLANGP")
+			continue;
+		PresetEntry entry;
+		entry.relativePath = NormalizeSeparators(relativeDir.empty() ? fileName : relativeDir + "/" + fileName);
+		entry.displayName = PresetDisplayName(p.stem().string());
+		listing.presets.push_back(std::move(entry));
+	}
+	ec.clear();
+	std::sort(listing.subdirs.begin(), listing.subdirs.end());
+	std::sort(listing.presets.begin(), listing.presets.end(), [](const PresetEntry &a, const PresetEntry &b) {
+		return a.relativePath < b.relativePath;
+	});
+	return listing;
 }
 
 std::string ShaderRootDir()
@@ -579,6 +703,58 @@ std::string ResolvePresetPath(const std::string &relativePath)
 	if (!std::filesystem::exists(p, ec) || ec)
 		return {};
 	return NormalizeSeparators(p.string());
+}
+
+std::string ResolvePresetFilePath(const std::string &presetDir, const std::string &referencedPath)
+{
+	if (referencedPath.empty())
+		return {};
+	if (IsAbsolutePath(referencedPath)) {
+		std::error_code ec;
+		const std::filesystem::path absolute(referencedPath);
+		if (std::filesystem::exists(absolute, ec) && !ec)
+			return NormalizeSeparators(absolute.lexically_normal().string());
+		return NormalizeSeparators(referencedPath);
+	}
+
+	std::string normalizedRef = NormalizeSeparators(referencedPath);
+	std::string dirStr = presetDir;
+	while (!dirStr.empty() && (dirStr.back() == '/' || dirStr.back() == '\\'))
+		dirStr.pop_back();
+
+	// Candidate base folders: the preset's own folder, then its ancestors
+	// (bounded), then the shader root. The nearest base wins, which resolves
+	// pack layouts like <pack>/Presets-4.1/*.slangp referencing
+	// <pack>/shaders-ng/*.slang at the first ancestor.
+	constexpr int kMaxAncestors = 6;
+	std::vector<std::filesystem::path> bases;
+	if (!dirStr.empty()) {
+		std::filesystem::path dir(dirStr);
+		bases.push_back(dir);
+		for (int i = 0; i < kMaxAncestors; i++) {
+			const std::filesystem::path parent = dir.parent_path();
+			if (parent.empty() || parent == dir)
+				break;
+			dir = parent;
+			bases.push_back(dir);
+		}
+	}
+	const std::filesystem::path shaderRoot(ShaderRootDir());
+	if (std::find(bases.begin(), bases.end(), shaderRoot) == bases.end())
+		bases.push_back(shaderRoot);
+
+	std::error_code ec;
+	for (const std::filesystem::path &base : bases) {
+		ec.clear();
+		const std::filesystem::path candidate = base / normalizedRef;
+		if (std::filesystem::exists(candidate, ec) && !ec)
+			return NormalizeSeparators(candidate.lexically_normal().string());
+	}
+
+	// Nothing found: keep the conventional preset-relative join so the
+	// "cannot open shader file" error shows the expected path.
+	const std::string baseDir = dirStr.empty() ? std::string() : dirStr + "/";
+	return NormalizeSeparators(std::filesystem::path(baseDir + normalizedRef).lexically_normal().string());
 }
 
 } // namespace preset

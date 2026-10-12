@@ -323,8 +323,16 @@ void ItemSelected(size_t value)
 		}
 	} break;
 	case ShownMenuType::ListOption: {
-		ChangeOptionValue(selectedOption, vecItemValue);
-		GoBackOneMenuLevel();
+		auto *pOptionList = static_cast<OptionEntryListBase *>(selectedOption);
+		if (pOptionList->IsListNavigationEntry(vecItemValue)) {
+			// Folder navigation inside the list (shader preset browser):
+			// rebuild this list view in place instead of closing it.
+			pOptionList->SetActiveListIndex(vecItemValue);
+			endMenu = true;
+		} else {
+			ChangeOptionValue(selectedOption, vecItemValue);
+			GoBackOneMenuLevel();
+		}
 	} break;
 	case ShownMenuType::KeyInput:
 	case ShownMenuType::PadInput:

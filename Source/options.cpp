@@ -376,6 +376,8 @@ void OptionEntryEnumBase::SetActiveListIndex(size_t index)
 }
 
 #ifdef USE_GPU_SCALER
+using gpu_scaler::preset::ListPresetDir;
+using gpu_scaler::preset::PresetDirListing;
 using gpu_scaler::preset::PresetEntry;
 using gpu_scaler::preset::ScanPresets;
 using gpu_scaler::preset::ShaderRootDir;
@@ -432,34 +434,171 @@ OptionEntryShaderFilter::OptionEntryShaderFilter()
 	RescanCustomEntries();
 }
 
+namespace {
+
+// Reserved negative entry values of the preset folder browser: selecting
+// them navigates the browser instead of changing the shader filter value.
+constexpr int kShaderFilterNavUp = -1;      // Go up one folder ("..").
+constexpr int kShaderFilterNavDirBase = -2; // Enter subdirectory N (base - N).
+
+/** @brief Joins a browsed folder with a subdirectory name. */
+std::string JoinShaderDir(const std::string &parent, const std::string &name)
+{
+	return parent.empty() ? name : parent + "/" + name;
+}
+
+/** @brief The parent folder of a browsed folder ("" for the root and root-level folders). */
+std::string ParentShaderDir(const std::string &dir)
+{
+	const size_t slash = dir.find_last_of('/');
+	if (slash == std::string::npos)
+		return {};
+	return dir.substr(0, slash);
+}
+
+/** @brief The last path component of a relative path. */
+std::string BaseShaderName(std::string_view path)
+{
+	const size_t slash = path.find_last_of('/');
+	if (slash == std::string::npos)
+		return std::string(path);
+	return std::string(path.substr(slash + 1));
+}
+
+} // namespace
+
+void OptionEntryShaderFilter::RebuildListEntries()
+{
+	// Drop the previous browser entries (their name string_views die with the
+	// storage strings below); the fixed built-in entries are kept untouched.
+	entryValues.erase(entryValues.begin() + static_cast<ptrdiff_t>(builtinCount_), entryValues.end());
+	entryNames.erase(entryNames.begin() + static_cast<ptrdiff_t>(builtinCount_), entryNames.end());
+
+	auto &storage = CustomPresetNameStorage();
+	storage.clear();
+
+	const PresetDirListing listing = ListPresetDir(ShaderRootDir(), currentDir_);
+	subdirs_ = listing.subdirs;
+	presets_ = listing.presets;
+
+	if (!currentDir_.empty()) {
+		entryValues.push_back(kShaderFilterNavUp);
+		entryNames.emplace_back("..");
+	}
+	size_t subdirNumber = 0;
+	for (const std::string &subdir : subdirs_) {
+		entryValues.push_back(kShaderFilterNavDirBase - static_cast<int>(subdirNumber));
+		storage.push_back(subdir + "/");
+		entryNames.emplace_back(storage.back());
+		subdirNumber++;
+	}
+	size_t presetNumber = 0;
+	for (const PresetEntry &entry : presets_) {
+		entryValues.push_back(kShaderFilterCustomBase + static_cast<int>(presetNumber));
+		storage.push_back(entry.displayName);
+		entryNames.emplace_back(storage.back());
+		presetNumber++;
+	}
+}
+
 void OptionEntryShaderFilter::RescanCustomEntries()
 {
-	// Drop the previous custom entries; their name string_views are dropped
-	// together with the storage strings below.
-	entryValues.resize(builtinCount_);
-	entryNames.resize(builtinCount_);
+	pendingFocusIndex_ = static_cast<size_t>(-1);
 
-	std::vector<PresetEntry> entries = ScanPresets(ShaderRootDir());
-	if (entryValues.size() + entries.size() != CustomPresetNameStorage().size()) {
-		// Rebuild the name storage so it holds exactly the current names.
-		CustomPresetNameStorage().clear();
+	// Seed the browsed folder from the persisted preset path so the browser
+	// reopens where the current preset lives, and keep the active value in
+	// sync with that path: the value alone is an index into a per-folder
+	// listing, which goes stale whenever the folder contents change.
+	const std::string &storedPath = GetOptions().Graphics.shaderFilterPreset.value;
+	std::string foundPath;
+	if (!storedPath.empty()) {
+		const std::vector<PresetEntry> all = ScanPresets(ShaderRootDir());
+		const auto it = std::find_if(all.begin(), all.end(), [&storedPath](const PresetEntry &entry) {
+			return entry.relativePath == storedPath;
+		});
+		if (it != all.end()) {
+			foundPath = it->relativePath;
+			currentDir_ = ParentShaderDir(foundPath);
+		}
 	}
-	for (PresetEntry &entry : entries) {
-		CustomPresetNameStorage().push_back(entry.displayName);
-		entryNames.emplace_back(CustomPresetNameStorage().back());
-		entryValues.emplace_back(kShaderFilterCustomBase + static_cast<int>(entryNames.size() - builtinCount_) - 1);
+	if (foundPath.empty()) {
+		currentDir_.clear();
+		if (GetValueInternal() >= kShaderFilterCustomBase) {
+			// The persisted preset no longer exists; self-heal to "Off" so
+			// the stale value cannot point at an unrelated preset.
+			LogWarn("Shader preset '{}' not found in the shaders folder; resetting Shader Filter", storedPath);
+			SetValueInternal(static_cast<int>(ShaderFilter::None));
+			GetOptions().Graphics.shaderFilterPreset.value.clear();
+		}
 	}
+
+	RebuildListEntries();
+
+	if (!foundPath.empty()) {
+		for (size_t i = 0; i < presets_.size(); i++) {
+			if (presets_[i].relativePath == foundPath) {
+				SetValueInternal(kShaderFilterCustomBase + static_cast<int>(i));
+				break;
+			}
+		}
+	}
+}
+
+bool OptionEntryShaderFilter::IsListNavigationEntry(size_t index) const
+{
+	return index < entryValues.size() && entryValues[index] < 0;
+}
+
+size_t OptionEntryShaderFilter::GetActiveListIndex() const
+{
+	if (pendingFocusIndex_ != static_cast<size_t>(-1)) {
+		const size_t index = pendingFocusIndex_;
+		pendingFocusIndex_ = static_cast<size_t>(-1);
+		return index < entryValues.size() ? index : 0;
+	}
+	return OptionEntryEnumBase::GetActiveListIndex();
 }
 
 void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 {
+	if (index >= entryValues.size())
+		return;
+	const int entryValue = entryValues[index];
+
+	if (entryValue == kShaderFilterNavUp) {
+		// Go up one folder; focus the entry of the folder we came from.
+		const std::string childName = BaseShaderName(currentDir_);
+		currentDir_ = ParentShaderDir(currentDir_);
+		RebuildListEntries();
+		pendingFocusIndex_ = builtinCount_ + (currentDir_.empty() ? 0 : 1);
+		for (size_t i = 0; i < subdirs_.size(); i++) {
+			if (subdirs_[i] == childName) {
+				pendingFocusIndex_ += i;
+				break;
+			}
+		}
+		return;
+	}
+
+	if (entryValue <= kShaderFilterNavDirBase) {
+		// Enter the selected subfolder; focus its first preset (or ".." when empty).
+		const size_t subdirIndex = static_cast<size_t>(kShaderFilterNavDirBase - entryValue);
+		if (subdirIndex >= subdirs_.size())
+			return;
+		currentDir_ = JoinShaderDir(currentDir_, subdirs_[subdirIndex]);
+		RebuildListEntries();
+		const size_t firstPresetIndex = builtinCount_ + (currentDir_.empty() ? 0 : 1) + subdirs_.size();
+		pendingFocusIndex_ = !presets_.empty() ? firstPresetIndex : (currentDir_.empty() ? 0 : builtinCount_);
+		return;
+	}
+
+	// Builtin filter or preset selection: regular value change.
+	pendingFocusIndex_ = static_cast<size_t>(-1);
 	OptionEntryEnumBase::SetActiveListIndex(index);
-	const int value = GetValueInternal();
-	if (static_cast<uint8_t>(value) >= kShaderFilterCustomBase) {
-		const size_t customIndex = static_cast<size_t>(value - kShaderFilterCustomBase);
-		std::vector<PresetEntry> entries = ScanPresets(ShaderRootDir());
-		if (customIndex < entries.size())
-			GetOptions().Graphics.shaderFilterPreset.value = entries[customIndex].relativePath;
+	if (entryValue >= kShaderFilterCustomBase) {
+		const size_t presetIndex = static_cast<size_t>(entryValue - kShaderFilterCustomBase);
+		if (presetIndex < presets_.size())
+			GetOptions().Graphics.shaderFilterPreset.value = presets_[presetIndex].relativePath;
 	} else {
 		GetOptions().Graphics.shaderFilterPreset.value.clear();
 	}

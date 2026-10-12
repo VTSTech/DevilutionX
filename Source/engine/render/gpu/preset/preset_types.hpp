@@ -79,8 +79,14 @@ struct Preset {
 
 /** @brief One .slangp file discovered in the runtime shader folder. */
 struct PresetEntry {
-	std::string displayName;  // File stem; shown in the settings list.
+	std::string displayName;  // Prettified file stem; shown in the settings list.
 	std::string relativePath; // Relative to the shader root directory, forward slashes.
+};
+
+/** @brief One directory level of the runtime shader folder (settings UI browsing). */
+struct PresetDirListing {
+	std::vector<std::string> subdirs; // Sorted subdirectory names (this level only).
+	std::vector<PresetEntry> presets; // .slangp files directly in this directory, sorted.
 };
 
 } // namespace preset

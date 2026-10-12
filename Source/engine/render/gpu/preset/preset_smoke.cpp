@@ -89,7 +89,7 @@ int main(int argc, char **argv)
 		bool presetOk = true;
 		std::string presetError;
 		for (size_t p = 0; p < preset.passes.size(); ++p) {
-			const std::string slangPath = preset.dir + preset.passes[p].shaderPath;
+			const std::string slangPath = ResolvePresetFilePath(preset.dir, preset.passes[p].shaderPath);
 			// Build the same known-name set the runner uses: lookup texture
 			// names declared by the preset plus every pass alias.
 			std::unordered_set<std::string> known;

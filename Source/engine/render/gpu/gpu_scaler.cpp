@@ -115,33 +115,125 @@ SDL_GPUTextureFormat gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
 
 // SDL_Log output is invisible for a GUI-subsystem application on Windows, so
 // GPU scaler diagnostics are also appended to gpu-scaler.log next to the
-// executable. The file opens lazily on first use.
-FILE *LogFile();
+// executable. The file opens lazily on first use and is size-capped: when a
+// write would push it past kMaxLogBytes, the current log is rotated to
+// gpu-scaler.log.old (one generation kept) and a fresh file starts.
+constexpr long kMaxLogBytes = 200 * 1024;
+
+FILE *gLogFile = nullptr;
+// Bytes currently in the log file, kept in step with the writes below so
+// that the cap check does not have to stat the file on every line.
+long gLogBytes = 0;
+
 void InstallSdlLogCapture();
 
-FILE *LogFile()
+std::string LogFilePath()
 {
-	static FILE *file = nullptr;
-	static bool initialized = false;
-	if (!initialized) {
-		initialized = true;
-		const char *basePath = SDL_GetBasePath();
-		if (basePath != nullptr) {
-			// SDL3 owns the returned string; it must not be freed.
-			const std::string path = std::string(basePath) + "gpu-scaler.log";
-			file = std::fopen(path.c_str(), "a");
-			if (file != nullptr) {
-				std::fprintf(file, "\n=== GPU scaler session (build %s %s) ===\n", __DATE__, __TIME__);
-				InstallSdlLogCapture();
-			}
-		}
+	const char *basePath = SDL_GetBasePath();
+	// SDL3 owns the returned string; it must not be freed.
+	return basePath != nullptr ? std::string(basePath) + "gpu-scaler.log" : std::string("gpu-scaler.log");
+}
+
+long LogFileSize(const std::string &path)
+{
+	FILE *file = std::fopen(path.c_str(), "rb");
+	if (file == nullptr)
+		return 0;
+	long size = 0;
+	if (std::fseek(file, 0, SEEK_END) == 0)
+		size = std::ftell(file);
+	std::fclose(file);
+	return size > 0 ? size : 0;
+}
+
+// Moves path aside as path.old (one generation kept). When the rename is
+// refused (e.g. a viewer holding the .old file on Windows), the current
+// file is removed instead so the cap holds either way.
+void RotateLogFile(const std::string &path)
+{
+	const std::string oldPath = path + ".old";
+	std::remove(oldPath.c_str());
+	if (std::rename(path.c_str(), oldPath.c_str()) != 0)
+		std::remove(path.c_str());
+}
+
+void LogClose()
+{
+	if (gLogFile != nullptr) {
+		std::fclose(gLogFile);
+		gLogFile = nullptr;
+	}
+}
+
+FILE *LogOpenAppended()
+{
+	const std::string path = LogFilePath();
+	// A leftover log from previous sessions must not push this session's
+	// file past the cap: rotate oversized leftovers once at open.
+	if (LogFileSize(path) > kMaxLogBytes)
+		RotateLogFile(path);
+	FILE *file = std::fopen(path.c_str(), "a");
+	if (file != nullptr && std::fseek(file, 0, SEEK_END) == 0) {
+		const long size = std::ftell(file);
+		gLogBytes = size > 0 ? size : 0;
+	} else {
+		gLogBytes = 0;
 	}
 	return file;
 }
 
+// Starts a fresh log mid-session, keeping the current one as
+// gpu-scaler.log.old.
+void RotateLog()
+{
+	LogClose();
+	RotateLogFile(LogFilePath());
+	gLogBytes = 0;
+	gLogFile = std::fopen(LogFilePath().c_str(), "a");
+	if (gLogFile != nullptr) {
+		const std::string marker = StrCat("=== gpu-scaler.log rotated (", kMaxLogBytes / 1024, " KB cap) ===\n");
+		std::fwrite(marker.data(), 1, marker.size(), gLogFile);
+		gLogBytes += static_cast<long>(marker.size());
+		std::fflush(gLogFile);
+	}
+}
+
+FILE *LogFile()
+{
+	static bool initialized = false;
+	if (!initialized) {
+		initialized = true;
+		gLogFile = LogOpenAppended();
+		if (gLogFile != nullptr) {
+			if (gLogBytes + 64 > kMaxLogBytes)
+				RotateLog(); // keep even the session header within the cap
+			if (gLogFile != nullptr) {
+				const std::string header = StrCat("\n=== GPU scaler session (build ", __DATE__, " ", __TIME__, ") ===\n");
+				std::fwrite(header.data(), 1, header.size(), gLogFile);
+				gLogBytes += static_cast<long>(header.size());
+				std::fflush(gLogFile);
+			}
+			InstallSdlLogCapture();
+		}
+	}
+	return gLogFile;
+}
+
+// Returns the log file for a write of `incomingBytes` more bytes, rotating
+// it first when that write would push the file past the size cap. Returns
+// nullptr when the log is unavailable.
+FILE *LogFileForWrite(size_t incomingBytes)
+{
+	if (LogFile() == nullptr)
+		return nullptr;
+	if (gLogBytes + static_cast<long>(incomingBytes) > kMaxLogBytes)
+		RotateLog();
+	return gLogFile;
+}
+
 void LogFileLine(std::string_view line)
 {
-	if (FILE *file = LogFile(); file != nullptr) {
+	if (FILE *file = LogFileForWrite(line.size() + 16); file != nullptr) {
 		std::fprintf(file, "[%10u ms] %.*s\n", static_cast<unsigned>(SDL_GetTicks()), static_cast<int>(line.size()), line.data());
 		std::fflush(file);
 	}
@@ -180,7 +272,8 @@ void SDLCALL SdlLogCapture(void *userdata, int category, SDL_LogPriority priorit
 {
 	if (gPrevSdlLogFunction != nullptr)
 		gPrevSdlLogFunction(gPrevSdlLogUserdata, category, priority, message);
-	if (FILE *file = LogFile(); file != nullptr) {
+	const size_t messageLen = message != nullptr ? std::strlen(message) : 0;
+	if (FILE *file = LogFileForWrite(messageLen + 16); file != nullptr) {
 		std::fprintf(file, "[       SDL] %s\n", message != nullptr ? message : "");
 		std::fflush(file);
 	}
