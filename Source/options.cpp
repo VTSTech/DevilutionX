@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
+#include <deque>
 #include <cstdio>
 #include <cstring>
 #include <expected>
@@ -34,6 +35,10 @@
 #include "controls/controller_buttons.h"
 #include "engine/assets.hpp"
 #include "engine/sound_defs.hpp"
+#ifdef USE_GPU_SCALER
+#include "engine/render/gpu/preset/preset_parser.hpp"
+#include "engine/render/gpu/preset/preset_types.hpp"
+#endif
 #include "platform/locale.hpp"
 #include "quick_messages.hpp"
 #include "utils/algorithm/container.hpp"
@@ -369,6 +374,97 @@ void OptionEntryEnumBase::SetActiveListIndex(size_t index)
 	this->value = entryValues[index];
 	this->NotifyValueChanged();
 }
+
+#ifdef USE_GPU_SCALER
+using gpu_scaler::preset::PresetEntry;
+using gpu_scaler::preset::ScanPresets;
+using gpu_scaler::preset::ShaderRootDir;
+
+// Stable storage for custom preset entry names: string_views handed to the
+// OptionEntryEnumBase point into these strings, so the deque must never
+// invalidate them (append-only, and cleared only together with the entries).
+static std::deque<std::string> &CustomPresetNameStorage()
+{
+	static std::deque<std::string> storage;
+	return storage;
+}
+
+OptionEntryShaderFilterPreset::OptionEntryShaderFilterPreset()
+    : OptionEntryBase("Shader Filter Preset", OptionEntryFlags::Invisible, N_("Shader preset path"),
+          N_("Relative path of the selected custom shader preset inside the shaders folder."))
+{
+}
+
+OptionEntryType OptionEntryShaderFilterPreset::GetType() const
+{
+	return OptionEntryType::List;
+}
+
+std::string_view OptionEntryShaderFilterPreset::GetValueDescription() const
+{
+	return value;
+}
+
+void OptionEntryShaderFilterPreset::LoadFromIni(std::string_view category)
+{
+	value = std::string(ini->getString(category, key));
+}
+
+void OptionEntryShaderFilterPreset::SaveToIni(std::string_view category) const
+{
+	ini->set(category, key, value);
+}
+
+OptionEntryShaderFilter::OptionEntryShaderFilter()
+    : OptionEntryEnumBase("Shader Filter", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI,
+          N_("Shader Filter"),
+          N_("GPU shader-based upscaling filter. Requires Upscale and a GPU with Vulkan, Direct3D 12 or Metal support."),
+          static_cast<int>(ShaderFilter::None))
+{
+	AddEntry(static_cast<int>(ShaderFilter::None), N_("Off"));
+	AddEntry(static_cast<int>(ShaderFilter::HQ2x), N_("HQ2x"));
+	AddEntry(static_cast<int>(ShaderFilter::HQ3x), N_("HQ3x"));
+	AddEntry(static_cast<int>(ShaderFilter::HQ4x), N_("HQ4x"));
+	AddEntry(static_cast<int>(ShaderFilter::ScaleFX2x), N_("ScaleFX 2x"));
+	AddEntry(static_cast<int>(ShaderFilter::ScaleFX3x), N_("ScaleFX 3x"));
+	AddEntry(static_cast<int>(ShaderFilter::ScaleFX4x), N_("ScaleFX 4x"));
+	builtinCount_ = entryValues.size();
+	RescanCustomEntries();
+}
+
+void OptionEntryShaderFilter::RescanCustomEntries()
+{
+	// Drop the previous custom entries; their name string_views are dropped
+	// together with the storage strings below.
+	entryValues.resize(builtinCount_);
+	entryNames.resize(builtinCount_);
+
+	std::vector<PresetEntry> entries = ScanPresets(ShaderRootDir());
+	if (entryValues.size() + entries.size() != CustomPresetNameStorage().size()) {
+		// Rebuild the name storage so it holds exactly the current names.
+		CustomPresetNameStorage().clear();
+	}
+	for (PresetEntry &entry : entries) {
+		CustomPresetNameStorage().push_back(entry.displayName);
+		entryNames.emplace_back(CustomPresetNameStorage().back());
+		entryValues.emplace_back(kShaderFilterCustomBase + static_cast<int>(entryNames.size() - builtinCount_) - 1);
+	}
+}
+
+void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
+{
+	OptionEntryEnumBase::SetActiveListIndex(index);
+	const int value = GetValueInternal();
+	if (static_cast<uint8_t>(value) >= kShaderFilterCustomBase) {
+		const size_t customIndex = static_cast<size_t>(value - kShaderFilterCustomBase);
+		std::vector<PresetEntry> entries = ScanPresets(ShaderRootDir());
+		if (customIndex < entries.size())
+			GetOptions().Graphics.shaderFilterPreset.value = entries[customIndex].relativePath;
+	} else {
+		GetOptions().Graphics.shaderFilterPreset.value.clear();
+	}
+}
+#endif
 
 void OptionEntryIntBase::LoadFromIni(std::string_view category)
 {
@@ -772,16 +868,8 @@ GraphicsOptions::GraphicsOptions()
           })
     , integerScaling("Integer Scaling", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI, N_("Integer Scaling"), N_("Scales the image using whole number pixel ratio."), false)
 #ifdef USE_GPU_SCALER
-    , shaderFilter("Shader Filter", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI, N_("Shader Filter"), N_("GPU shader-based upscaling filter. Requires Upscale and a GPU with Vulkan, Direct3D 12 or Metal support."), ShaderFilter::None,
-          {
-              { ShaderFilter::None, N_("Off") },
-              { ShaderFilter::HQ2x, N_("HQ2x") },
-              { ShaderFilter::HQ3x, N_("HQ3x") },
-              { ShaderFilter::HQ4x, N_("HQ4x") },
-              { ShaderFilter::ScaleFX2x, N_("ScaleFX 2x") },
-              { ShaderFilter::ScaleFX3x, N_("ScaleFX 3x") },
-              { ShaderFilter::ScaleFX4x, N_("ScaleFX 4x") },
-          })
+    , shaderFilter()
+    , shaderFilterPreset()
 #endif
 #endif
     , frameRateControl("Frame Rate Control",
@@ -835,6 +923,7 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
                 &integerScaling,
 #ifdef USE_GPU_SCALER
                 &shaderFilter,
+                &shaderFilterPreset,
 #endif
 #endif
                 &frameRateControl,

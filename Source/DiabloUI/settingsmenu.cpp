@@ -361,6 +361,10 @@ void FullscreenChanged()
 
 void UiSettingsMenu()
 {
+#ifdef USE_GPU_SCALER
+	// Refresh the custom shader preset list from the shaders folder.
+	GetOptions().Graphics.shaderFilter.RescanCustomEntries();
+#endif
 	backToMain = false;
 	shownMenu = ShownMenuType::Categories;
 	selectedCategory = nullptr;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <cstring>
 #include <forward_list>
 #include <functional>
@@ -84,6 +85,17 @@ enum class ShaderFilter : uint8_t {
 	ScaleFX3x = 5,
 	ScaleFX4x = 6,
 };
+
+/** @brief First enum value of the runtime-loaded custom preset range.
+ *  Custom preset N in the settings list maps to value CustomBase + N;
+ *  the actual preset file is identified by Graphics.shaderFilterPreset. */
+constexpr uint8_t kShaderFilterCustomBase = 100;
+
+/** @brief Whether the given filter is a runtime-loaded folder preset. */
+constexpr bool IsCustomFilter(ShaderFilter filter)
+{
+	return static_cast<uint8_t>(filter) >= kShaderFilterCustomBase;
+}
 
 /** @brief Whether the given filter is a ScaleFX variant (arbitrary integer scale). */
 constexpr bool IsScaleFX(ShaderFilter filter)
@@ -278,7 +290,7 @@ protected:
 
 	void AddEntry(int value, std::string_view name);
 
-private:
+protected:
 	int defaultValue;
 	int value;
 	std::vector<std::string_view> entryNames;
@@ -304,6 +316,46 @@ public:
 		SetValueInternal(static_cast<int>(value));
 	}
 };
+
+#ifdef USE_GPU_SCALER
+/** @brief Relative path (inside the runtime shaders folder) of the selected
+ *  custom preset. Hidden from the menus; serialized alongside
+ *  Graphics.shaderFilter so preset list changes cannot break saves. */
+class OptionEntryShaderFilterPreset : public OptionEntryBase {
+public:
+	OptionEntryShaderFilterPreset();
+
+	[[nodiscard]] OptionEntryType GetType() const override;
+	[[nodiscard]] std::string_view GetValueDescription() const override;
+	void LoadFromIni(std::string_view category) override;
+	void SaveToIni(std::string_view category) const override;
+
+	std::string value;
+};
+
+/** @brief The GPU shader filter entry: the fixed built-in filters plus one
+ *  entry per .slangp preset discovered in the runtime shaders folder. */
+class OptionEntryShaderFilter : public OptionEntryEnumBase {
+public:
+	OptionEntryShaderFilter();
+
+	/** @brief Re-scans the runtime shaders folder and rebuilds the custom
+     *  entries. Safe to call repeatedly (settings menu opens); names live in
+     *  stable storage. */
+	void RescanCustomEntries();
+
+	void SetActiveListIndex(size_t index) override;
+
+	[[nodiscard]] ShaderFilter operator*() const
+	{
+		return static_cast<ShaderFilter>(GetValueInternal());
+	}
+
+private:
+	/** @brief Number of fixed built-in entries (custom entries follow). */
+	size_t builtinCount_ = 0;
+};
+#endif
 
 class OptionEntryIntBase : public OptionEntryListBase {
 public:
@@ -590,7 +642,9 @@ struct GraphicsOptions : OptionCategoryBase {
 	OptionEntryBoolean integerScaling;
 #ifdef USE_GPU_SCALER
 	/** @brief GPU shader-based upscaling filter (SDL_GPU). */
-	OptionEntryEnum<ShaderFilter> shaderFilter;
+	OptionEntryShaderFilter shaderFilter;
+	/** @brief Relative path of the selected custom preset (see shaderFilter). */
+	OptionEntryShaderFilterPreset shaderFilterPreset;
 #endif
 #endif
 	/** @brief Limit frame rate either for vsync or CPU load. */
