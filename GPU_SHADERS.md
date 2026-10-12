@@ -35,14 +35,14 @@ stock renderer automatically if a compatible GPU device cannot be created.
    restored on the next launch. If the GPU device cannot be created on the
    next start (driver update, remote desktop, VM without GPU), the game logs
    the failure once and continues with the stock renderer.
-5. **Filter confirmation label**: a small label is permanently shown in the
-   bottom-right corner — e.g. `Shader Filter: HQ2x (Vulkan)`, `Shader
-   Filter: Off`, or `Shader Filter: HQ3x (unavailable)` if the scaler could
-   not start. The text updates whenever the filter, its availability, or
-   the GPU backend changes. The label is drawn into the game frame itself,
-   so it is upscaled by the active filter and each switch also lets you
-   compare text sharpness between filters. Filter changes are also logged
-   to `gpu-scaler.log` (`osd:` and `Reinit:` lines).
+5. **Filter confirmation label**: a white dialog-size label is permanently
+   shown in the bottom-right corner — e.g. `Shader Filter: HQ2x (Vulkan)`,
+   `Shader Filter: Off`, or `Shader Filter: HQ3x (unavailable)` if the
+   scaler could not start. The text updates whenever the filter, its
+   availability, or the GPU backend changes. The label is drawn into the
+   game frame itself, so it is upscaled by the active filter and each
+   switch also lets you compare text sharpness between filters. Filter
+   changes are also logged to `gpu-scaler.log` (`osd:` and `Reinit:` lines).
 
 ## What each filter does
 
@@ -112,8 +112,24 @@ to keep the vendored ZeroTier/miniupnpc C sources building (GCC 14 promotes
 those warnings to errors; upstream CI uses MSVC so this is mingw-specific).
 
 A GitHub Actions workflow is included (`.github/workflows/gpu-shaders.yml`)
-that builds Windows x64 (MinGW), Linux x64, and macOS arm64 artifacts on
-every push to this branch.
+that builds **Windows x64 and Linux x64 only** (no macOS job) on every push,
+on manual dispatch, and on releases. The Windows job reproduces the verified
+local cross-build exactly: MinGW-w64 cross toolchain, all dependencies
+vendored, GCC14+ diagnostic relaxation for the vendored C sources, and
+**fully static linking** (`-static -static-libgcc -static-libstdc++`) so the
+resulting `devilutionx.exe` depends on Windows system DLLs only and launches
+on a clean Windows install with no extra runtime DLLs. The workflow fails the
+build if a MinGW runtime DLL (libstdc++-6.dll, libgcc_s_seh-1.dll,
+libwinpthread-1.dll, ...) ever appears in the exe imports again — keep the
+`CMAKE_EXE_LINKER_FLAGS` line in the workflow when editing it.
+
+The upstream CI workflows (3ds, Android, PS4/PS5, Xbox, Vita, Switch, macOS,
+stock Linux/Windows variants, etc. — 31 files) are intentionally removed from
+this fork so only the GPU shader scaler pipeline runs. If your fork still has
+them, delete everything under `.github/workflows/` **except**
+`gpu-shaders.yml` — otherwise every push also builds stock devilutionX for a
+dozen platforms. Restore them from diasurgical/DevilutionX if you rebase onto
+a newer upstream and want stock CI back.
 
 To regenerate the SPIR-V blobs by hand: install `glslang-tools` (or place the
 Khronos glslang release on `PATH` / set `GLSLANG_DIR`), configure, and build
