@@ -45,17 +45,18 @@ std::string DescribeImageLoadFailure(const std::string &path)
 	std::error_code ec;
 	const std::uintmax_t size = std::filesystem::file_size(path, ec);
 	if (ec) {
-		StrAppend(result, " (file missing or unreadable)");
+		result += " (file missing or unreadable)";
 	} else {
-		StrAppend(result, " (", size, " bytes)");
+		result += " (";
+		result += std::to_string(size);
+		result += " bytes)";
 		std::ifstream in(path, std::ios::binary);
 		if (in) {
 			char head[32] {};
 			in.read(head, static_cast<std::streamsize>(sizeof(head)));
 			if (in.gcount() >= 23 && std::memcmp(head, "version https://git-lfs", 23) == 0) {
-				StrAppend(result,
-				    " [git-lfs POINTER file, not image data: run 'git lfs install && git lfs pull'"
-				    " in the shaders repository, or re-download the pack with real binary files]");
+				result += " [git-lfs POINTER file, not image data: run 'git lfs install && git lfs pull'";
+				result += " in the shaders repository, or re-download the pack with real binary files]";
 			}
 		}
 	}
