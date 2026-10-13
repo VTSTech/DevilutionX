@@ -546,7 +546,13 @@ void OptionEntryShaderFilter::RescanCustomEntries()
 	if (!foundPath.empty()) {
 		for (size_t i = 0; i < presets_.size(); i++) {
 			if (presets_[i].relativePath == foundPath) {
-				SetValueInternal(kShaderFilterCustomBase + static_cast<int>(i));
+				// Only notify when the value actually changes: listeners
+				// reinitialize the renderer synchronously, and the scaler
+				// resolves the preset from the path (unchanged here), so a
+				// reinit would be a no-op at best.
+				const int targetValue = kShaderFilterCustomBase + static_cast<int>(i);
+				if (GetValueInternal() != targetValue)
+					SetValueInternal(targetValue);
 				break;
 			}
 		}
@@ -603,14 +609,20 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 
 	// Builtin filter or preset selection: regular value change.
 	pendingFocusIndex_ = static_cast<size_t>(-1);
-	OptionEntryEnumBase::SetActiveListIndex(index);
+	// Commit the companion preset path BEFORE changing the value: listeners
+	// are notified synchronously (ResizeWindow -> ReinitializeRenderer ->
+	// gpu_scaler::Reinit) and resolve the preset from this path, so the
+	// restart must already see the new selection here. Assigning it after
+	// the value change made the restart run with the previous path (or
+	// none), and the scaler then resolved an unrelated preset from a
+	// different folder.
+	GetOptions().Graphics.shaderFilterPreset.value.clear();
 	if (entryValue >= kShaderFilterCustomBase) {
 		const size_t presetIndex = static_cast<size_t>(entryValue - kShaderFilterCustomBase);
 		if (presetIndex < presets_.size())
 			GetOptions().Graphics.shaderFilterPreset.value = presets_[presetIndex].relativePath;
-	} else {
-		GetOptions().Graphics.shaderFilterPreset.value.clear();
 	}
+	OptionEntryEnumBase::SetActiveListIndex(index);
 }
 #endif
 

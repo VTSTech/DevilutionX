@@ -72,6 +72,8 @@ SDL_GPUTexture *gGameTex = nullptr;
 // Runtime libretro slang preset chain (custom shader filters).
 preset::Runner gPresetRunner;
 std::string gPresetDisplayName;
+// The preset file the running chain was built from (resolved path).
+std::string gLoadedPresetPath;
 
 SDL_GPUSampler *gNearestSampler = nullptr;
 SDL_GPUSampler *gLinearSampler = nullptr;
@@ -547,24 +549,30 @@ bool EnsureShaders()
 // regular contract).
 bool EnsurePresetRunner()
 {
-	if (gPresetRunner.IsLoaded())
-		return true;
-
 	// The selected preset file: the path stored alongside the filter value
-	// wins; the value's index into a fresh folder scan is the fallback.
+	// is the single source of truth. The filter value itself is only an
+	// index into the browser's CURRENT folder listing, so it must never be
+	// resolved against a full-tree scan -- that loaded unrelated presets
+	// from other folders.
 	std::string path;
 	const std::string &storedPath = GetOptions().Graphics.shaderFilterPreset.value;
 	if (!storedPath.empty())
 		path = preset::ResolvePresetPath(storedPath);
 	if (path.empty()) {
-		const int customIndex = static_cast<int>(static_cast<uint8_t>(gFilter)) - kShaderFilterCustomBase;
-		const std::vector<preset::PresetEntry> entries = preset::ScanPresets(preset::ShaderRootDir());
-		if (customIndex >= 0 && customIndex < static_cast<int>(entries.size()))
-			path = preset::ResolvePresetPath(entries[static_cast<size_t>(customIndex)].relativePath);
-	}
-	if (path.empty()) {
-		LogFileLine("preset load failed: the configured preset file was not found in the shaders folder");
+		if (storedPath.empty())
+			LogFileLine("preset load failed: no preset path is stored for the selected custom filter");
+		else
+			LogFileLine(StrCat("preset load failed: preset file not found in the shaders folder: ", storedPath));
 		return false;
+	}
+	if (gPresetRunner.IsLoaded()) {
+		if (gLoadedPresetPath == path)
+			return true;
+		// The selection moved to a different preset: rebuild the chain from
+		// scratch instead of presenting the previously loaded one.
+		LogFileLine(StrCat("preset changed: ", gLoadedPresetPath, " -> ", path));
+		gPresetRunner.Unload();
+		gLoadedPresetPath.clear();
 	}
 
 	preset::Preset preset;
@@ -579,8 +587,10 @@ bool EnsurePresetRunner()
 	if (!gPresetRunner.Load(gDevice, driver != nullptr ? driver : "", preset, error)) {
 		LogFileLine(StrCat("preset load failed (", preset.displayName, "): ", error));
 		gPresetRunner.Unload();
+		gLoadedPresetPath.clear();
 		return false;
 	}
+	gLoadedPresetPath = path;
 	LogOk(StrCat("preset '", preset.displayName, "' loaded (", preset.passes.size(), " passes)"));
 	return true;
 }
@@ -870,6 +880,7 @@ void Shutdown()
 	ReleaseFrameResources();
 	ReleaseFilterResources();
 	gPresetRunner.Unload();
+	gLoadedPresetPath.clear();
 	gPresetDisplayName.clear();
 	if (gNearestSampler != nullptr) {
 		SDL_ReleaseGPUSampler(gDevice, gNearestSampler);
