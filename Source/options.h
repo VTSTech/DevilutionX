@@ -82,12 +82,6 @@ enum class ScalingQuality : uint8_t {
 enum class ShaderFilter : uint16_t {
 	/** @brief No shader filter, use the regular SDL_Renderer scaling. */
 	None = 0,
-	HQ2x = 1,
-	HQ3x = 2,
-	HQ4x = 3,
-	ScaleFX2x = 4,
-	ScaleFX3x = 5,
-	ScaleFX4x = 6,
 };
 
 /** @brief First enum value of the runtime-loaded custom preset range.
@@ -101,29 +95,6 @@ constexpr bool IsCustomFilter(ShaderFilter filter)
 	return static_cast<uint16_t>(filter) >= kShaderFilterCustomBase;
 }
 
-/** @brief Whether the given filter is a ScaleFX variant (arbitrary integer scale). */
-constexpr bool IsScaleFX(ShaderFilter filter)
-{
-	return filter == ShaderFilter::ScaleFX2x || filter == ShaderFilter::ScaleFX3x || filter == ShaderFilter::ScaleFX4x;
-}
-
-/** @brief The integer upscale factor of the given shader filter (0 for None). */
-constexpr int FilterScale(ShaderFilter filter)
-{
-	switch (filter) {
-	case ShaderFilter::HQ2x:
-	case ShaderFilter::ScaleFX2x:
-		return 2;
-	case ShaderFilter::HQ3x:
-	case ShaderFilter::ScaleFX3x:
-		return 3;
-	case ShaderFilter::HQ4x:
-	case ShaderFilter::ScaleFX4x:
-		return 4;
-	default:
-		return 0;
-	}
-}
 #endif
 
 enum class FrameRateControl : uint8_t {

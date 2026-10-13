@@ -464,6 +464,24 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	// Transfer ownership.
 	for (auto &pass : passStorage)
 		passes_.push_back(pass.release());
+
+	// Orientation/binding diagnostics for remote field testing: presets
+	// whose vertex stage ignores MVP compute positions in an unknown
+	// convention and may render rotated; sampler names surface any
+	// unresolved texture references.
+	for (size_t pi = 0; pi < passes_.size(); ++pi) {
+		const PassRuntime &p = *passes_[pi];
+		std::string textureNames;
+		for (const auto &tex : p.translation.fragment.textures) {
+			if (!textureNames.empty())
+				textureNames += ", ";
+			textureNames += tex.name;
+		}
+		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s textures=[%s]",
+		    static_cast<unsigned>(pi), p.def.shaderPath.c_str(), p.def.alias.c_str(),
+		    p.translation.vertex.usesMvp ? "yes" : "no", textureNames.c_str());
+	}
 	return true;
 }
 
@@ -1031,6 +1049,30 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 							sampler = SamplerFor(lut->def.filter, lut->def.wrap, lut->def.mipmap);
 							break;
 						}
+					}
+					if (tex == nullptr) {
+						// RetroArch lets a pass sample an EARLIER pass's output
+						// by its plain alias name (hqx.slangp: alias0 =
+						// hqx_refpass, used as texture = hqx_refpass). Only
+						// earlier passes have an output this frame.
+						for (size_t oi = 0; oi < i; ++oi) {
+							PassRuntime *other = passes_[oi];
+							if (!other->def.alias.empty() && other->def.alias == lutName) {
+								tex = other->outputTex[other->curBuffer];
+								break;
+							}
+						}
+					}
+					if (tex == nullptr) {
+						// Never bind a null texture: the backend dereferences
+						// it and crashes (access violation mid-frame).
+						static std::unordered_set<std::string> warnedNames;
+						if (warnedNames.insert(name).second)
+							SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+							    "GPU scaler preset: unresolved texture '%s' in pass %u; using the current input frame",
+							    name.c_str(), static_cast<unsigned>(i));
+						tex = sourceTex;
+						sampler = SamplerFor(FilterMode::Nearest, WrapMode::ClampToEdge, false);
 					}
 				}
 				bindings[b].texture = tex;

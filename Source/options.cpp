@@ -424,18 +424,16 @@ OptionEntryShaderFilter::OptionEntryShaderFilter()
           static_cast<int>(ShaderFilter::None))
 {
 	AddEntry(static_cast<int>(ShaderFilter::None), N_("Off"));
-	AddEntry(static_cast<int>(ShaderFilter::HQ2x), N_("HQ2x"));
-	AddEntry(static_cast<int>(ShaderFilter::HQ3x), N_("HQ3x"));
-	AddEntry(static_cast<int>(ShaderFilter::HQ4x), N_("HQ4x"));
-	AddEntry(static_cast<int>(ShaderFilter::ScaleFX2x), N_("ScaleFX 2x"));
-	AddEntry(static_cast<int>(ShaderFilter::ScaleFX3x), N_("ScaleFX 3x"));
-	AddEntry(static_cast<int>(ShaderFilter::ScaleFX4x), N_("ScaleFX 4x"));
 	builtinCount_ = entryValues.size();
 }
 
 void OptionEntryShaderFilter::LoadFromIni(std::string_view category)
 {
 	OptionEntryEnumBase::LoadFromIni(category);
+	// Builtin HQ2x/ScaleFX filters were removed; stale ini values from
+	// that range fall back to "Off".
+	if (const int v = GetValueInternal(); v > 0 && v < kShaderFilterCustomBase)
+		SetValueInternal(0);
 	// Deferred from the constructor on purpose: the ctor runs while the
 	// lazy `static Options options` inside GetOptions() is still being
 	// constructed, and RescanCustomEntries() reads GetOptions() --
