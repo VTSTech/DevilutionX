@@ -509,10 +509,11 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			textureNames += tex.name;
 		}
 		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s"
+		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s flipY=%s"
 		    " src=%u:%08x merged=%u:%08x fragFetch=%d/%d textures=[%s]",
 		    static_cast<unsigned>(pi), p.def.shaderPath.c_str(), p.def.alias.c_str(),
 		    p.translation.vertex.usesMvp ? "yes" : "no",
+		    (p.translation.vertex.usesMvp && pi + 1 < passes_.size()) ? "yes" : "no",
 		    static_cast<unsigned>(p.translation.sourceSize), p.translation.sourceHash,
 		    static_cast<unsigned>(p.translation.mergedSize), p.translation.mergedHash,
 		    p.translation.fragment.texelFetchCount, p.translation.fragment.textureGatherCount,
@@ -809,7 +810,7 @@ bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 }
 
 void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, float inputWidth, float inputHeight,
-    std::vector<uint8_t> &out) const
+    bool fragmentStage, std::vector<uint8_t> &out) const
 {
 	const UniformBlock &def = block.block;
 	uint32_t total = 0;
@@ -827,8 +828,11 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	const float inputW = inputWidth;
 	const float inputH = inputHeight;
 
-	// Identity MVP (column-major, matching GLSL convention).
+	// MVP matrices (column-major, matching GLSL convention). Passes that
+	// render into an intermediate target get kFlipY - see the MVP member
+	// write below for the orientation rationale.
 	static constexpr float kIdentity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+	static constexpr float kFlipY[16] = { 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
 	auto writeVec4 = [&](const UniformMember &member, float x, float y, float z, float w) {
 		WriteFloat(out, member.offset, x);
@@ -845,8 +849,28 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue; // Size members are never arrays; leave zeros.
 
 		if (name == "MVP") {
+			// Orientation calibration. The fullscreen quad pairs UV v=0 with
+			// clip-space y=-1, while SDL_GPU render targets map clip-space y=+1
+			// to the top row, so every preset pass draw composites one vertical
+			// mirror: it samples its input one way and stores the result the
+			// other way. A single pass never shows it because the shared present
+			// blit (fullscreen.vert anchors vUV the same GL-style way) mirrors
+			// once more on the way to the screen. Chains break that
+			// cancellation: N passes land mirrored iff N is even (field bisect
+			// A1/A2/C2/E1), and hqx-style presets add a mirror at any depth
+			// because their upscale pass reads colors from an aliased earlier
+			// pass (hqx_refpass) instead of the chain input (field bisect
+			// D1/D2). Cancel the per-draw mirror for every pass that feeds
+			// another pass; the LAST pass keeps the unmodified convention so
+			// the shared present blit still cancels it exactly as it always has
+			// (1-pass presets render identically to before this fix). Vertex
+			// stages without an MVP member skip this branch entirely and keep
+			// their own convention (the load log flags them as vertexMvp=no).
+			const float *mvp = kIdentity;
+			if (!fragmentStage && passIndex + 1 < static_cast<int>(passes_.size()))
+				mvp = kFlipY;
 			for (int i = 0; i < 16; ++i)
-				WriteFloat(out, member.offset + 4 * i, kIdentity[i]);
+				WriteFloat(out, member.offset + 4 * i, mvp[i]);
 			continue;
 		}
 		if (name == "OutputSize") {
@@ -962,7 +986,7 @@ void Runner::PushBlockUniforms(SDL_GPUCommandBuffer *cmd, bool fragmentStage, co
     int passIndex, float inputWidth, float inputHeight)
 {
 	std::vector<uint8_t> bytes;
-	FillBlockBytes(block, passIndex, inputWidth, inputHeight, bytes);
+	FillBlockBytes(block, passIndex, inputWidth, inputHeight, fragmentStage, bytes);
 	if (fragmentStage)
 		SDL_PushGPUFragmentUniformData(cmd, block.block.binding, bytes.data(), static_cast<Uint32>(bytes.size()));
 	else

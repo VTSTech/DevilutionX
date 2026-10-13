@@ -83,7 +83,7 @@ private:
 	void PushBlockUniforms(SDL_GPUCommandBuffer *cmd, bool fragmentStage, const UniformBlockRuntime &block,
 	    int passIndex, float inputWidth, float inputHeight);
 	void FillBlockBytes(const UniformBlockRuntime &block, int passIndex, float inputWidth, float inputHeight,
-	    std::vector<uint8_t> &out) const;
+	    bool fragmentStage, std::vector<uint8_t> &out) const;
 
 	SDL_GPUDevice *device_ = nullptr;
 	Preset preset_;
