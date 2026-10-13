@@ -1033,7 +1033,6 @@ endif()
 if(USE_GPU_SCALER)
   list(APPEND libdevilutionx_SRCS
     engine/render/gpu/gpu_scaler.cpp
-    engine/render/gpu/gpu_d3dcompile.cpp
     engine/render/gpu/preset/preset_parser.cpp
     engine/render/gpu/preset/slang_translate.cpp
     engine/render/gpu/preset/slang_compile.cpp
@@ -1079,7 +1078,6 @@ if(USE_GPU_SCALER)
     glslang::glslang-default-resource-limits
     spirv-cross-core
     spirv-cross-glsl
-    spirv-cross-hlsl
     SDL3_image::SDL3_image # LUT texture loading for runtime presets
   )
 endif()

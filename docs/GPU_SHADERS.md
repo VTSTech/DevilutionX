@@ -2,11 +2,11 @@
 
 This fork of [DevilutionX](https://github.com/diasurgical/DevilutionX) adds
 **GPU shader-based upscaling filters** — ScaleFX (2x/3x/4x) and HQ2x/HQ3x/HQ4x —
-implemented on the **SDL3 GPU API** (`SDL_GPU`, backed by Vulkan, Direct3D 12,
-or Metal). Unlike the stock SDL_Renderer path, which simply stretches the
-frame, these filters reconstruct pixel art detail on the GPU at up to 4x
-resolution, producing sharper edges, smoother diagonal lines, and cleaner
-corner transitions than plain linear scaling.
+implemented on the **SDL3 GPU API** (`SDL_GPU`, backed by Vulkan or Metal).
+Unlike the stock SDL_Renderer path, which simply stretches the frame, these
+filters reconstruct pixel art detail on the GPU at up to 4x resolution,
+producing sharper edges, smoother diagonal lines, and cleaner corner
+transitions than plain linear scaling.
 
 The feature is a drop-in addition: nothing about the stock rendering path
 changes unless a Shader Filter is selected, and the game falls back to the
@@ -17,10 +17,9 @@ stock renderer automatically if a compatible GPU device cannot be created.
 - A build with `USE_SDL3=ON` (SDL3 is only available on current master; the
   1.5.5 stable branch does not support SDL3). `USE_GPU_SCALER` is a dependent
   option that defaults to ON whenever `USE_SDL3` is ON and `USE_SDL1` is OFF.
-- A GPU with Vulkan, Direct3D 12, or Metal support, and a driver new enough
-  for one of those APIs. On Windows 8.1+ the D3D12 shaders are compiled at
-  runtime via `d3dcompiler_47.dll` (Win7 falls back to `d3dcompiler_43` and
-  shader model 5.0).
+- A GPU with Vulkan support (or Metal on macOS), and a driver new enough for
+  one of those APIs. Vulkan is the only actively-supported backend on
+  Windows and Linux.
 - The in-game **Upscale** option must be enabled (it is by default).
 
 ## Usage
@@ -70,13 +69,12 @@ initialization).
   frame and pushed through the filter chain, and the final pass letterboxes
   into the swapchain viewport (1:1 when it fits, linear sampling otherwise).
   The **Integer Scaling** option is honored by clamping the effective scale.
-- Shader sources are maintained in three dialects: Vulkan GLSL (compiled to
-  SPIR-V), HLSL (D3D12), and MSL (Metal). SPIR-V blobs are committed
-  prebuilt (`Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp`); if
+- Shader sources are maintained in two dialects: Vulkan GLSL (compiled to
+  SPIR-V) and MSL (Metal). SPIR-V blobs are committed prebuilt
+  (`Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp`); if
   `glslangValidator` is found at configure time, they are regenerated at
-  build time instead (custom target `gpu_scaler_spv`). HLSL and MSL are
-  compiled at runtime by the platform (d3dcompiler / SDL's Metal shader
-  compiler).
+  build time instead (custom target `gpu_scaler_spv`). MSL is compiled
+  at runtime by SDL's Metal shader compiler.
 - The SDL_GPU device, swapchain, and pipelines are created lazily and torn
   down on `Shutdown` and renderer reinitialization, so switching to
   `Off` (or losing the GPU) restores the exact stock path.
@@ -151,16 +149,12 @@ filter. The failure is recorded in `gpu-scaler.log`.
 
 ### Window claim failures ("Access is denied" / 0x80070005)
 
-On Windows, DXGI permits only one flip-model swapchain per window and refuses
-to create a new one from a different device even after the previous owner
-released its swapchain. Enabling a filter therefore hands the game a
-**freshly recreated window** before the D3D12 device claims it (and the same
-is done in reverse when switching back to the regular renderer), so the
-window switch is expected and costs a brief flicker. If the D3D12 claim still
-fails, the scaler automatically retries once with the **Vulkan** backend
-(shaders ship with prebuilt SPIR-V, no recompilation needed) before falling
-back to the regular renderer. All of these steps are recorded in
-`gpu-scaler.log`.
+On Windows, the GPU driver can refuse to create a swapchain on a window that
+a previous GPU device already claimed. Enabling a filter therefore hands
+the game a **freshly recreated window** before the Vulkan device claims it
+(and the same is done in reverse when switching back to the regular
+renderer), so the window switch is expected and costs a brief flicker.
+All of these steps are recorded in `gpu-scaler.log`.
 
 To get back to a clean state manually, set `Shader Filter=0` under the
 `[Graphics]` section of `diablo.ini`.
@@ -210,45 +204,16 @@ Additionally, a sound effect that cannot be loaded for any reason no longer
 raises a fatal error dialog: the game logs the failure and continues without
 that sound.
 
-As a workaround for a broken D3D12 or Vulkan driver, the backend can be
-forced with an environment variable, e.g.:
+As a workaround for a broken driver, the backend can be forced with an
+environment variable, e.g.:
 
     set DEVILUTIONX_GPU_BACKEND=vulkan   (cmd.exe)
     $env:DEVILUTIONX_GPU_BACKEND="vulkan"   (PowerShell)
 
-Supported values are the SDL GPU driver names: `direct3d12` and `vulkan`
-(`metal` on macOS). **Note:** on Windows, Vulkan is currently the more
-robust choice — if the D3D12 shader-compilation path hits a driver crash,
-the scaler automatically retries with the Vulkan backend and continues the
-session. HLSL shaders are compiled at runtime with Shader Model 5.0 targets
-(5.1 fallback); if `d3dcompiler_47.dll` cannot compile a shader, the exact
+Supported values are the SDL GPU driver names: `vulkan` (and `metal` on
+macOS). Vulkan is the only actively-supported backend on Windows and
+Linux; if the shader-compilation path hits a driver crash, the exact
 compiler error is recorded in `gpu-scaler.log`.
-
-**D3D12 fault forensics.** If a fault happens inside `d3dcompiler` during
-shader compilation, the compile guard contains it (the session continues on
-Vulkan or the regular renderer) and now records the full crash context in
-`gpu-scaler.log` before doing so: the exception code, whether the access
-violation was a read/write/execute, the faulting instruction pointer
-**resolved to its containing module** (`devilutionx.exe+0x…`,
-`C:\…\d3dcompiler_47.dll+0x…`, an injected DLL's name, or an explicit
-"not in any loaded module"), the raw stack the same way, and the list of
-loaded modules that live outside the Windows directory (overlays, capture
-tools and antivirus products inject or hook DLLs into the game process).
-That data splits the candidate causes: a fault inside `d3dcompiler_47.dll`
-itself points at the machine (corrupt or patched system DLL, forced Exploit
-Protection/ACG); a fault inside a named non-system module points at that
-injector; an address outside any module is a genuine wild jump.
-
-`tools/d3dcompiler_smoke.c` is a standalone test with no game or SDL
-dependencies that loads the system d3dcompiler by absolute path and
-compiles the exact vertex shader the scaler compiles first (plus a tiny
-and a heavy realistic fragment shader). If the tool faults, the problem is
-machine-level; if the tool passes while the game faults, the problem is
-process-context and the module scan in the game's log names the interferer.
-Build it with MinGW (`x86_64-w64-mingw32-gcc -O2 -o d3dcompiler_smoke.exe
-d3dcompiler_smoke.c -lversion`) or MSVC (`cl /O2 d3dcompiler_smoke.c
-version.lib`), run it next to the game, and share
-`d3dcompiler-smoke.log`.
 
 ## Known limitations
 
