@@ -5,10 +5,15 @@
 #include <algorithm>
 #include <csetjmp>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <string_view>
 
 #include <windows.h>
+
+// tlhelp32.h needs the windows.h types (HANDLE, DWORD, MAX_PATH); it does not
+// include windows.h itself, so keep it below. The blank line keeps clang-format
+// from sorting it above windows.h.
 #include <tlhelp32.h>
 
 #include "engine/render/gpu/gpu_scaler.hpp"
