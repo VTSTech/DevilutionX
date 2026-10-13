@@ -1,6 +1,6 @@
 # DevilutionX GPU Shaders — Session Handoff
 
-**Last updated:** 2026-10-13 evening (America/Toronto).
+**Last updated:** 2026-10-14 (America/Toronto).
 
 ## 1. Mission (TL;DR)
 
@@ -21,7 +21,7 @@ Fork feature line on **VTSTech/DevilutionX**, targeted at **diasurgical/Deviluti
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `2c29042` | feature line + flip fix + d3dcompile forensics (incl. mingw include-order fix) + `docs/diablo-handoff.md` |
+| fork `master` (what CI builds) | `2c29042` | feature line + flip fix + d3dcompile forensics v1/v2 (incl. mingw include-order fix) + `docs/diablo-handoff.md`; forensics v3 (patch 0013) ready to apply on top |
 | PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | OPEN, awaiting review; 18 commits ahead of upstream master; still contains baked filters + WAV fix |
 | upstream **SDL_mixer PR #906** | `30034b15` | OPEN; fixes zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode); tarball SHA256 `6d175afd…` (needed for pin bump) |
 | fork branch `wav-mixer-fix` | `658e948` | standalone DevilutionX-side WAV fix; optional stopgap, superseded by #906 + pin bump |
@@ -54,8 +54,8 @@ release exists).
   (`devilutionx-gpu-fixes-for-master-v9.zip` latest), WAV-fix/upstream packages
   (`0001-WAV-*.patch`, `decoder_wav.c`, `SDL_mixer-upstream-PR-draft.md`,
   `PR8737-course-correction.md`, `SDL3-mixer-pin-bump.md`),
-  `0011-d3dcompile-fault-forensics-*.patch`,
-  `d3dcompile-forensics-changed-files-2026-10-13.zip`.
+  `0011-*`/`0012-*`/`0013-d3dcompile-forensics-*.patch`,
+  `d3dcompile-forensics-v3-2026-10-14.zip` (latest).
 
 ## 4. Design decisions (confirmed with VTSTech — do not re-litigate)
 
@@ -67,7 +67,7 @@ release exists).
 | Multi-pass | Per-pass scale rules, filter/wrap, sRGB & float FBOs, aliases, `Original`/`OriginalHistory#`/feedback, LUT PNGs, `#pragma` params at defaults, `frame_count_mod`, minimal history depth |
 | **Pass orientation** | Every pass rendering into an INTERMEDIATE target gets a Y-mirror MVP (`diag(1,-1,1,1)`); last pass keeps the legacy convention so the present blit cancels — even/odd chain flips fixed (`7ea8e6e93`, field-verified); vertex stages without an MVP uniform keep their own
   (unknown) orientation — flagged `vertexMvp=no` in the load log, none seen in the field |
-| D3D12 | SPIR-V → SPIRV-Cross → HLSL → guarded d3dcompiler (`gpu_d3dcompile.*`); forensics round 1 done, cause narrowed (§7) |
+| D3D12 | SPIR-V → SPIRV-Cross → HLSL → guarded d3dcompiler (`gpu_d3dcompile.*`); forensics v1–v2 field-tested, v3 shipped locally (`2c64dd9`/0013); OBS exonerated; wild ip = imageBase−1GiB exactly (§7) |
 | Metal | Not done (baked MSL path still exists, unused by filters) |
 | Built-ins | REMOVED (user request, `77c53bf35`): no ScaleFX/HQx pipelines/list entries/`gpu_luts.hpp`; stale ini values 1–6 sanitize to Off; only shared `Vertex`/`Blit` programs remain baked |
 | UI | Shader Filter = Off + folder-browser entries; enum `100+N` is an index into the CURRENT listing; durable selection = stored relative path (`Graphics.shaderFilterPreset.value`, hidden ini); path committed BEFORE the value change |
@@ -112,35 +112,67 @@ worklog).
 
 ## 7. D3D12 — active diagnosis (resumed 2026-10-13, was parked)
 
-Symptom: first `D3DCompile` faults on the RX 560 box; Vulkan unaffected. Forensics
-build (patch 0011, on fork master via `cae0454` + include fix `2c29042`) + standalone
-smoke tool produced the field data:
+Symptom: first `D3DCompile` faults on the RX 560 box; Vulkan unaffected. The standalone
+smoke tool (no game, no SDL, same system d3dcompiler_47.dll 6.2.26100.9549, the exact
+game shaders) passes → machine-level causes ruled out. The compile guard contains every
+fault (6/6 in every run), the session falls back to the regular renderer, the game never
+dies — ship-safe while we diagnose.
 
-- **Machine-level causes ruled out:** the smoke tool (no game, no SDL, same system
-  d3dcompiler_47.dll 6.2.26100.9549, exact game shaders) compiles all stages OK.
-- **Field crash record:** `0xC0000005, execute of 0x7FF5D4750000` — faulting IP **not in
-  any loaded module** (same address all 6 faults). The captured "stack:" is the HANDLER's
-  stack (exe+0x28DA1A/0x28E3FB are LogCrashDetails/ScalerCrashHandler frames, then
-  exception dispatch, then the wild IP as the machine frame) — the real pre-fault call
-  chain is NOT captured yet.
-- **Only non-system module:** `C:\ProgramData\obs-studio-hook\graphics-hook64.dll`
-  (OBS capture hook; injects when a D3D device is created — the smoke tool creates none,
-  which is exactly why it passes).
-- **Containment works in the field:** all 6 faults contained, session fell back to the
-  regular renderer, OSD showed "Custom (unavailable)". Ship-safe as-is.
+Evidence so far (forensics v1 = patch 0011, v2 = patch 0012 / `f133253`):
 
-Next steps: (1) 5-min experiment — fully exit OBS and rerun with
-`DEVILUTIONX_GPU_BACKEND=direct3d12`; (2) forensics v2 (designed, NOT yet shipped):
-`VirtualQuery` on the faulting IP (free/reserve/committed-exec? image/private?),
-dump of the resolved `pD3DCompile` pointer + its module, faulting-CONTEXT stack walk via
-`RtlVirtualUnwind` (yields the real call site, addr2line-able), byte dump at the target
-(MZ header → HMODULE-as-pointer type confusion; E9/E8 → trampoline), known-injector
-verdict line in the module scan. Failed-HLSL dumps for post-mortem land in
-`shaders/cache/failed-p*.hlsl`.
+- **OBS hook exonerated:** OBS fully unloaded → only devilutionx.exe is foreign in the
+  module list; the crash is identical.
+- **pD3DCompile provenance clean (v2):** `0x7FF8821756E0` = d3dcompiler_47.dll+0x1256E0,
+  inside the loaded image; the DLL is still mapped at fault time. Corrupted
+  GetProcAddress result: ruled out.
+- **Wild ip = imageBase − 0x40000000 EXACTLY (v2 memory verdict):** e.g. fault
+  `0x7FF5CA8E0000` vs exe base `0x7FF60A8E0000` — the base of the 1 GiB FREE region
+  `[exeBase−1GiB, exeBase)`. 64 KiB-aligned (allocation granularity), moves per run with
+  ASLR, fixed within a run, not derived from preset content or input.
+- **Pre-fault call chain is pure devilutionx (v2, `RtlVirtualUnwind`):** no d3dcompiler,
+  no ntdll heap frames. `[Rsp]` at fault = return address into devilutionx (`+0x7D264F` /
+  `+0x7D26A7` / `+0x293D62` — three guarded call sites), then the preset-load path down
+  to the CRT. The v1 reading ("d3dcompiler's internal heap allocation went wild") is
+  DEAD — those ntdll addresses were raw-scan artifacts.
+- Remaining readings: **(a)** devilutionx executed the indirect call itself and the
+  pointer variable holds a stale 64 KiB-aligned allocation base; **(b)** the real
+  D3DCompile was entered and jumped wild with an unchanged stack. `apphelp.dll` in the
+  module map keeps a compat-shim/IFEO entry live as a corrupter candidate (name-keyed —
+  the smoke exe passing doesn't clear it).
+
+**Forensics v3 SHIPPED (local master `2c64dd9`, patch 0013):** register file at fault
+(flags a register still holding the wild target), raw stack top, **call-site decode** —
+the indirect call/jmp ending at the return address is decoded and its memory slot read
+NOW: slot==wild ip ⇒ reading (a) (addr2line the slot address → variable name);
+slot==valid D3DCompile ⇒ reading (b). Plus imageBase-delta logging (is −1GiB exact
+across runs?), a pre-compile address-space probe of the 2 GiB below the image base, a
+D3DCompile byte-vs-disk integrity check (closes the inline-hook family), shim needles
+(apphelp/aclayers/acgenral/detoured) in the module map, and module-map cap 64→160 (the
+AMD driver DLLs were truncated away in v2 logs).
+
+Next steps, in order:
+
+1. **Symbolize the v2 offsets on the exact binary** (build 16:22:03): addr2line/objdump
+   `0x7D264F 0x7D26A7 0x293D62 0x29C5B4 0x29C5BC 0x29C5CC 0x28C41F 0x28C749 0x290D70
+   0x26A3D9 0x26AAC4 0x1B68BC 0x1B96AF 0x1AA6A5 0x1BEDBF 0xCE4250` (PE VMA = image base
+   + RVA; default mingw base 0x140000000) — or upload `devilutionx.exe` for offline
+   disassembly of the three call sites.
+2. **Zero-rebuild shim/IFEO check:** `reg query "HKCU\Software\Microsoft\Windows
+   NT\CurrentVersion\AppCompatFlags\Layers" /s` (and HKLM, and
+   `Image File Execution Options\devilutionx.exe`), then the RENAME test — run a copy as
+   `devilutionx_t.exe`: a name-keyed shim/hook disappears.
+3. **Run the v3 build** (`DEVILUTIONX_GPU_BACKEND=direct3d12` + preset) — the call-site
+   decode decides (a) vs (b).
+4. If (a): **PageHeap** (elevated): `gflags /p /enable devilutionx.exe /full` → repro →
+   `/p /disable devilutionx.exe` — trips at the corrupting write instead of the wild jump.
+5. Optional A/B: one run with the D3D11 backend.
 
 ## 8. Remaining tasks
 
-- ⬜ D3D12 §7: OBS-exit experiment → forensics v2 → decode → fix or document
+- ⬜ D3D12 §7: v2 run ✅ (wild ip = imageBase−1GiB exactly; chain pure devilutionx;
+  pD3DCompile clean) → symbolize v2 offsets / upload exe + shim/IFEO & rename test →
+  run v3 (patch 0013 / `2c64dd9`) — call-site decode decides (a) vs (b) → PageHeap if
+  (a) → fix or document
 - ⬜ #8737 course correction (§2), then refresh the PR branch from fork master:
   `git push --force-with-lease origin origin/master:gpu-shaders-combined` (drop
   `.github/workflows/gpu-shaders.yml` + `cleanup-fork-workflows.*` noise first)
@@ -175,6 +207,8 @@ verdict line in the module scan. Failed-HLSL dumps for post-mortem land in
   `git format-patch` has no `--keep-cr` (am-side only).
 - Helpers at the TOP of a TU (before `namespace devilution`) cannot use
   `StrCat`/`StrAppend`/`Log*` — keep them pure std.
+- mingw's `IMAGE_NT_HEADERS` has NO `Sections[]` member (MSVC extension) — use
+  `IMAGE_FIRST_SECTION(nt)`; compiles on MSVC, fails on mingw CI otherwise.
 - Cross builds have NO system libpng: SDL_image without the STB backend and without
   vendored libpng silently has NO PNG codec (IMG_Load/IMG_SavePNG fail). Vendored
   libpng+zlib is mandatory (`SDLIMAGE_VENDORED=ON` + `GIT_SUBMODULES` — release tarballs

@@ -226,7 +226,7 @@ void LogForeignModules(uintptr_t faultingIp)
 				LogFileLine(StrCat("    path: ", NarrowPath(entry.szExePath)));
 			for (const char *needle :
 			    { "graphics-hook", "rtsshooks", "rtss64", "fraps", "gameoverlayrenderer", "reshade", "specialk",
-			        "overwolf" }) {
+			        "overwolf", "apphelp", "aclayers", "acgenral", "detoured" }) {
 				if (WcsIContains(entry.szModule, needle))
 					LogFileLine(StrCat("    note: known overlay/capture hook present: ", needle));
 			}
@@ -240,8 +240,8 @@ void LogForeignModules(uintptr_t faultingIp)
 					    HexU64(static_cast<uint64_t>(faultingIp - base))));
 			}
 			logged += 1;
-			if (logged >= 64) {
-				LogFileLine("  (module map truncated)");
+			if (logged >= 160) {
+				LogFileLine("  (module map truncated at 160 entries - later modules, e.g. driver DLLs, are missing)");
 				break;
 			}
 		} while (Module32NextW(snapshot, &entry));
@@ -388,6 +388,277 @@ void LogContextCallChain(EXCEPTION_POINTERS *info)
 	LogFileLine(chain);
 }
 
+// --- v3: fault microarchitecture -----------------------------------------
+// The v2 field log fixed the SHAPE of the wild transfer: at fault time [Rsp]
+// holds a devilutionx return address and no d3dcompiler or ntdll frame sits
+// between the wild ip and our code. Two readings remain: (a) devilutionx
+// called a corrupted/stale pointer directly, or (b) execution entered the
+// real D3DCompile and jumped wild without touching the stack. The probes
+// below separate (a) from (b): the register file, the raw stack top, and a
+// decode of the indirect call/jmp that ends at the return address, including
+// the CURRENT contents of the memory slot that supplied the target.
+
+// Read helper for the decode probes: only touches committed, readable
+// memory, so a bad slot cannot turn the forensics itself into a crash.
+bool SafeRead(uintptr_t address, void *out, size_t size)
+{
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT
+	    || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+		return false;
+	const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+	if (address + size > regionEnd)
+		return false;
+	std::memcpy(out, reinterpret_cast<const void *>(address), size);
+	return true;
+}
+
+void LogFaultRegisters(EXCEPTION_POINTERS *info)
+{
+	const CONTEXT &ctx = *info->ContextRecord;
+	LogFileLine(StrCat("  registers: rip=0x", HexU64(ctx.Rip), " rsp=0x", HexU64(ctx.Rsp), " rbp=0x", HexU64(ctx.Rbp),
+	    " rax=0x", HexU64(ctx.Rax), " rbx=0x", HexU64(ctx.Rbx), " rcx=0x", HexU64(ctx.Rcx), " rdx=0x", HexU64(ctx.Rdx),
+	    " rsi=0x", HexU64(ctx.Rsi), " rdi=0x", HexU64(ctx.Rdi)));
+	LogFileLine(StrCat("  registers: r8=0x", HexU64(ctx.R8), " r9=0x", HexU64(ctx.R9), " r10=0x", HexU64(ctx.R10),
+	    " r11=0x", HexU64(ctx.R11), " r12=0x", HexU64(ctx.R12), " r13=0x", HexU64(ctx.R13), " r14=0x", HexU64(ctx.R14),
+	    " r15=0x", HexU64(ctx.R15)));
+	if (info->ExceptionRecord != nullptr && info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION
+	    && info->ExceptionRecord->NumberParameters >= 2) {
+		const uintptr_t target = static_cast<uintptr_t>(info->ExceptionRecord->ExceptionInformation[1]);
+		if (target == 0)
+			return;
+		const unsigned long long regs[] = { ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rbp, ctx.Rsi, ctx.Rdi, ctx.R8,
+			ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15 };
+		const char *names[] = { "rax", "rcx", "rdx", "rbx", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
+			"r13", "r14", "r15" };
+		for (size_t i = 0; i < sizeof(regs) / sizeof(regs[0]); ++i) {
+			if (regs[i] == target)
+				LogFileLine(StrCat("  note: ", names[i],
+				    " still holds the faulting target - the wild transfer was \"call ", names[i],
+				    "\" through a corrupt/stale pointer (or the register kept the callee pointer)"));
+		}
+	}
+}
+
+void LogRawStackTop(EXCEPTION_POINTERS *info)
+{
+	const CONTEXT &ctx = *info->ContextRecord;
+	uint64_t slots[6] = {};
+	if (!SafeRead(static_cast<uintptr_t>(ctx.Rsp), slots, sizeof(slots)))
+		return;
+	std::string line = "  stack top:";
+	for (size_t i = 0; i < 6; ++i)
+		line += StrCat(" [+0x", HexU64(static_cast<uint64_t>(i * sizeof(uint64_t))), "]=0x", HexU64(slots[i]));
+	LogFileLine(line);
+}
+
+// Once per process, verify the resolved D3DCompile entry against the
+// on-disk DLL: an inline hook (driver/shim/AV layer) rewrites exactly the
+// first bytes of the export. MATCH closes the whole hooked-d3dcompiler
+// family; a MISMATCH names the hook outright.
+void LogD3DCompilerIntegrity(HMODULE mod, uintptr_t procAddress)
+{
+	static bool done = false;
+	if (done || mod == nullptr || procAddress == 0)
+		return;
+	done = true;
+	const uintptr_t base = reinterpret_cast<uintptr_t>(mod);
+	const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+	if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+		return;
+	const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+	const uintptr_t rva = procAddress - base;
+	const IMAGE_SECTION_HEADER *sec = nullptr;
+	const auto *sections = IMAGE_FIRST_SECTION(nt);
+	for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+		const IMAGE_SECTION_HEADER &s = sections[i];
+		const uintptr_t span = s.Misc.VirtualSize != 0 ? s.Misc.VirtualSize : 1;
+		if (rva >= s.VirtualAddress && rva < s.VirtualAddress + span) {
+			sec = &s;
+			break;
+		}
+	}
+	if (sec == nullptr) {
+		LogFileLine("  d3dcompiler integrity: D3DCompile RVA outside all sections; skipped");
+		return;
+	}
+	uint8_t mem[24] = {};
+	uint8_t disk[24] = {};
+	const bool haveMem = SafeRead(procAddress, mem, sizeof(mem));
+	wchar_t path[MAX_PATH] = {};
+	GetModuleFileNameW(mod, path, MAX_PATH);
+	HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+	bool haveDisk = false;
+	if (file != INVALID_HANDLE_VALUE) {
+		LARGE_INTEGER pos;
+		pos.QuadPart = static_cast<LONGLONG>(sec->PointerToRawData + (rva - sec->VirtualAddress));
+		haveDisk = SetFilePointer(file, pos.LowPart, &pos.HighPart, FILE_BEGIN) != INVALID_SET_FILE_POINTER;
+		DWORD got = 0;
+		haveDisk = haveDisk && ReadFile(file, disk, sizeof(disk), &got, nullptr) && got == sizeof(disk);
+		CloseHandle(file);
+	}
+	if (!haveMem || !haveDisk) {
+		LogFileLine("  d3dcompiler integrity: read failed; skipped");
+		return;
+	}
+	int diff = -1;
+	for (size_t i = 0; i < sizeof(mem); ++i) {
+		if (mem[i] != disk[i]) {
+			diff = static_cast<int>(i);
+			break;
+		}
+	}
+	if (diff < 0) {
+		LogFileLine("  d3dcompiler integrity: first 24 bytes of D3DCompile match the on-disk file (no inline hook)");
+		return;
+	}
+	std::string line = StrCat("  d3dcompiler integrity: MISMATCH at byte ", diff, " - in-memory:");
+	for (size_t i = 0; i < sizeof(mem); ++i)
+		line += StrCat(" ", HexByte(mem[i]));
+	line += " on-disk:";
+	for (size_t i = 0; i < sizeof(disk); ++i)
+		line += StrCat(" ", HexByte(disk[i]));
+	LogFileLine(line + "  (an inline hook rewrote the export)");
+}
+
+// Once per session, right before the first guarded compile: record the
+// state of imageBase-1GiB (the exact wild-ip offset observed in the field)
+// and of every non-free region in the 2 GiB window below the image base.
+void ProbeAddressSpaceBeforeCompile()
+{
+	static bool done = false;
+	if (done)
+		return;
+	done = true;
+	const uintptr_t exeBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+	if (exeBase == 0 || exeBase < 0x80000000ull)
+		return;
+	MEMORY_BASIC_INFORMATION mbi = {};
+	const uintptr_t point = exeBase - 0x40000000ull;
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(point), &mbi, sizeof(mbi)) != 0) {
+		const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+		LogFileLine(StrCat("  probe: image base 0x", HexU64(static_cast<uint64_t>(exeBase)), "; imageBase-1GiB=0x",
+		    HexU64(static_cast<uint64_t>(point)), " region 0x", HexU64(static_cast<uint64_t>(regionBase)), "-0x",
+		    HexU64(static_cast<uint64_t>(regionBase + mbi.RegionSize - 1)), " state=0x", HexU32(mbi.State), " type=0x",
+		    HexU32(mbi.Type), mbi.State == MEM_FREE ? " (FREE before any compile)" : " (in use before any compile)"));
+	}
+	LogFileLine("  probe: non-free regions in the 2 GiB below the image base:");
+	int lines = 0;
+	for (uintptr_t addr = exeBase - 0x80000000ull; addr < exeBase && lines < 24;) {
+		if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0)
+			break;
+		const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+		const uintptr_t next = regionBase + mbi.RegionSize;
+		if (mbi.State != MEM_FREE) {
+			lines++;
+			LogFileLine(StrCat("    0x", HexU64(static_cast<uint64_t>(regionBase)), "-0x",
+			    HexU64(static_cast<uint64_t>(next - 1)), " state=0x", HexU32(mbi.State), " type=0x", HexU32(mbi.Type),
+			    " size=0x", HexU64(static_cast<uint64_t>(mbi.RegionSize))));
+		}
+		if (next <= addr)
+			break;
+		addr = next;
+	}
+	if (lines == 0)
+		LogFileLine("    (none - the whole window is free)");
+}
+
+void LogSlotVerdict(uintptr_t slot, uintptr_t target, const std::string &mnemonic)
+{
+	LogFileLine(StrCat("  call-site decode: ", mnemonic, " -> slot ", DescribeAddress(slot)));
+	uint64_t value = 0;
+	if (!SafeRead(slot, &value, sizeof(value))) {
+		LogFileLine("    slot not readable");
+		return;
+	}
+	LogFileLine(StrCat("    slot now holds 0x", HexU64(value), " (", DescribeAddress(static_cast<uintptr_t>(value)), ")"));
+	if (target != 0 && value == target)
+		LogFileLine("    verdict: the slot ITSELF holds the wild target - the pointer variable was corrupt/stale "
+		            "when called (reading a); addr2line the slot address for the variable name");
+	else if (gD3DCompileProcAddress != 0 && value == gD3DCompileProcAddress)
+		LogFileLine("    verdict: the slot holds the valid D3DCompile entry - the real compiler was entered; the "
+		            "wild jump happened inside it with an unchanged stack (reading b)");
+	else
+		LogFileLine("    verdict: slot holds neither the wild target nor D3DCompile - decode the raw bytes above");
+}
+
+void LogRegVerdict(uint64_t regValue, const char *regName, uintptr_t target)
+{
+	LogFileLine(StrCat("  call-site decode: call/jmp ", regName, " -> ", regName, " now holds 0x", HexU64(regValue),
+	    " (", DescribeAddress(static_cast<uintptr_t>(regValue)), ")"));
+	if (target != 0 && regValue == target)
+		LogFileLine(StrCat("    verdict: ", regName, " holds the wild target - call/jmp ", regName,
+		    " through a corrupt/stale pointer (reading a)"));
+	else if (gD3DCompileProcAddress != 0 && regValue == gD3DCompileProcAddress)
+		LogFileLine(StrCat("    verdict: ", regName,
+		    " still holds the valid D3DCompile entry - the call entered the real compiler; the wild jump happened "
+		    "inside it (reading b)"));
+	else
+		LogFileLine("    verdict: register was clobbered after the transfer (execution progressed inside the callee)");
+}
+
+// Decode the control transfer that ends at the return address stored at
+// [Rsp] of the faulting context. pre[8] is the byte at retAddr-1, so an
+// instruction of length L starts at pre[9-L] and every disp32 form puts its
+// displacement at pre[5..8]. Register-relative slots use the faulting
+// context's registers (clobbered if the callee progressed; the raw bytes
+// allow re-decode either way). SIB forms are skipped.
+void LogCallSiteDecode(EXCEPTION_POINTERS *info)
+{
+	const CONTEXT &ctx = *info->ContextRecord;
+	uintptr_t target = 0;
+	if (info->ExceptionRecord != nullptr && info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION
+	    && info->ExceptionRecord->NumberParameters >= 2)
+		target = static_cast<uintptr_t>(info->ExceptionRecord->ExceptionInformation[1]);
+	uint64_t ret = 0;
+	if (!SafeRead(static_cast<uintptr_t>(ctx.Rsp), &ret, sizeof(ret)) || ret < 0x10000)
+		return;
+	const uintptr_t retAddr = static_cast<uintptr_t>(ret);
+	uint8_t pre[9] = {};
+	if (!SafeRead(retAddr - sizeof(pre), pre, sizeof(pre)))
+		return;
+	std::string bytes = "  call-site bytes:";
+	for (size_t i = 0; i < sizeof(pre); ++i)
+		bytes += StrCat(" ", HexByte(pre[i]));
+	LogFileLine(bytes + "  (9 bytes ending at return-1)");
+	const unsigned long long regs[] = { ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi,
+		ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15 };
+	const char *regNames[] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
+		"r12", "r13", "r14", "r15" };
+	const auto le32 = [&](size_t i) -> int32_t {
+		return static_cast<int32_t>(static_cast<uint32_t>(pre[i]) | (static_cast<uint32_t>(pre[i + 1]) << 8)
+		    | (static_cast<uint32_t>(pre[i + 2]) << 16) | (static_cast<uint32_t>(pre[i + 3]) << 24));
+	};
+	if (pre[2] == 0x48 && pre[3] == 0xFF && pre[4] == 0x15) { // REX.W FF /2: call qword [rip+disp32]
+		const uintptr_t slot = retAddr + static_cast<int64_t>(le32(5));
+		LogSlotVerdict(slot, target, "call qword ptr [rip+disp32] (REX.W)");
+	} else if (pre[3] == 0xFF && (pre[4] == 0x15 || pre[4] == 0x25)) { // FF /2, FF /4: call/jmp qword [rip+disp32]
+		const uintptr_t slot = retAddr + static_cast<int64_t>(le32(5));
+		LogSlotVerdict(slot, target, pre[4] == 0x15 ? "call qword ptr [rip+disp32]" : "jmp qword ptr [rip+disp32]");
+	} else if (pre[3] == 0xFF && (pre[4] & 0xF8) == 0x90 && (pre[4] & 7) != 4) { // FF /2 mod=10: call [reg+disp32]
+		const int r = pre[4] & 7;
+		const uintptr_t slot = static_cast<uintptr_t>(regs[r]) + static_cast<uint64_t>(le32(5));
+		LogSlotVerdict(slot, target, StrCat("call qword ptr [", regNames[r], "+disp32]"));
+	} else if (pre[4] == 0xE8) { // E8 rel32: direct call
+		const uintptr_t callee = retAddr + static_cast<int64_t>(le32(5));
+		LogFileLine(StrCat("  call-site decode: direct call rel32 -> ", DescribeAddress(callee)));
+		if (target != 0 && callee == target)
+			LogFileLine("    verdict: a DIRECT call reached the wild target - image relocations are suspect");
+	} else if (pre[6] == 0xFF && (pre[7] & 0xF8) == 0x50 && (pre[7] & 7) != 4) { // FF /2 mod=01: call [reg+disp8]
+		const int r = pre[7] & 7;
+		const uintptr_t slot = static_cast<uintptr_t>(regs[r]) + static_cast<uint64_t>(static_cast<int8_t>(pre[8]));
+		LogSlotVerdict(slot, target, StrCat("call qword ptr [", regNames[r], "+disp8]"));
+	} else if (pre[6] == 0x41 && pre[7] == 0xFF && ((pre[8] & 0xF8) == 0xD0 || (pre[8] & 0xF8) == 0xE0)) {
+		// REX.B FF /2 or FF /4: call/jmp r8-r15
+		LogRegVerdict(regs[(pre[8] & 7) + 8], regNames[(pre[8] & 7) + 8], target);
+	} else if (pre[7] == 0xFF && ((pre[8] & 0xF8) == 0xD0 || (pre[8] & 0xF8) == 0xE0)) { // FF /2, /4: call/jmp reg
+		LogRegVerdict(regs[pre[8] & 7], regNames[pre[8] & 7], target);
+	} else {
+		LogFileLine(
+		    "  call-site decode: no recognizable indirect transfer ends at this return address ([rsp] may hold a stale value)");
+	}
+}
+
 // Full forensics for one native exception. Called in two situations:
 //  - a compile-guard fault (context non-empty): always reported, BEFORE the
 //    guard longjmps back and the session continues on another backend. This
@@ -445,6 +716,13 @@ void LogCrashDetails(std::string_view context, EXCEPTION_POINTERS *info)
 		// "jumped into data" from "manually mapped code page".
 		LogFileLine(DescribeMemoryRegion(faultingIp));
 		LogTargetBytes(faultingIp);
+		const uintptr_t exeBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+		if (exeBase != 0 && faultingIp < exeBase)
+			LogFileLine(StrCat("  note: faulting ip is 0x", HexU64(static_cast<uint64_t>(exeBase - faultingIp)),
+			    " BELOW the image base (0x", HexU64(static_cast<uint64_t>(exeBase)), ")"));
+		else if (exeBase != 0)
+			LogFileLine(StrCat("  note: faulting ip is 0x", HexU64(static_cast<uint64_t>(faultingIp - exeBase)),
+			    " ABOVE the image base (0x", HexU64(static_cast<uint64_t>(exeBase)), ")"));
 		if (gD3DCompileProcAddress != 0) {
 			LogFileLine(StrCat("  pD3DCompile: 0x", HexU64(static_cast<uint64_t>(gD3DCompileProcAddress)), " (",
 			    DescribeAddress(gD3DCompileProcAddress), ")"));
@@ -454,6 +732,9 @@ void LogCrashDetails(std::string_view context, EXCEPTION_POINTERS *info)
 		// The real pre-fault call chain (the backtrace below only shows the
 		// handler's own frames).
 		LogContextCallChain(info);
+		LogFaultRegisters(info);
+		LogRawStackTop(info);
+		LogCallSiteDecode(info);
 	}
 	// The explicit verdict users ask for first: did we die inside the system
 	// HLSL compiler itself?
@@ -554,6 +835,7 @@ D3DCompileFn LoadD3DCompile()
 	    HexU64(static_cast<uint64_t>(modEnd))));
 	if (gD3DCompileProcAddress < reinterpret_cast<uintptr_t>(mod) || gD3DCompileProcAddress >= modEnd)
 		LogFileLine("WARNING: D3DCompile export resolved outside the d3dcompiler image range");
+	LogD3DCompilerIntegrity(mod, gD3DCompileProcAddress);
 	return fn;
 }
 
@@ -624,6 +906,7 @@ std::vector<uint8_t> CompileHLSL(const char *source, const char *target)
 		LogError("GPU scaler: d3dcompiler not found, cannot compile shaders for D3D12");
 		return blob;
 	}
+	ProbeAddressSpaceBeforeCompile();
 	FakeD3DBlob *code = nullptr;
 	FakeD3DBlob *errors = nullptr;
 	const long hr = InvokeD3DCompile(d3dCompile, source, target, &code, &errors);
