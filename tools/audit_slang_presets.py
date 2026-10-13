@@ -51,26 +51,28 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 # .slangp top-level keys. The ones we care about for feature extraction:
-RE_SHADERS = re.compile(r'^\s*shaders\s*=\s*(\d+)\s*$', re.MULTILINE)
-RE_FILTER  = re.compile(r'^\s*filter\d+\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_WRAP    = re.compile(r'^\s*wrap\d+\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_SCALE_TYPE = re.compile(r'^\s*scale_type[_xy]?\d*\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_SCALE_X  = re.compile(r'^\s*scale_x\d+\s*=\s*([\d.]+)\s*$', re.MULTILINE)
-RE_SCALE_Y  = re.compile(r'^\s*scale_y\d+\s*=\s*([\d.]+)\s*$', re.MULTILINE)
-RE_FLOAT_FB = re.compile(r'^\s*float_framebuffer\d+\s*=\s*true\s*$', re.MULTILINE | re.IGNORECASE)
-RE_SRGB_FB  = re.compile(r'^\s*srgb_framebuffer\d+\s*=\s*true\s*$', re.MULTILINE | re.IGNORECASE)
-RE_MIPMAP   = re.compile(r'^\s*mipmap_input\d+\s*=\s*true\s*$', re.MULTILINE | re.IGNORECASE)
-RE_ALIAS    = re.compile(r'^\s*alias\d+\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_FCMOD    = re.compile(r'^\s*frame_count_mod\s*=\s*(\d+)\s*$', re.MULTILINE)
-RE_FEEDBACK = re.compile(r'^\s*feedback_pass\s*=\s*(-?\d+)\s*$', re.MULTILINE)
-RE_HISTORY  = re.compile(r'^\s*history_size_exp\s*=\s*(\d+)\s*$', re.MULTILINE)  # rare
+# libretro allows both `key = value` and `key = "value"` (quoted), so every
+# regex below accepts an optional pair of double quotes around the value.
+RE_SHADERS = re.compile(r'^\s*shaders\s*=\s*"?(\d+)"?\s*$', re.MULTILINE)
+RE_FILTER  = re.compile(r'^\s*filter\d+\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_WRAP    = re.compile(r'^\s*wrap\d+\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_SCALE_TYPE = re.compile(r'^\s*scale_type[_xy]?\d*\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_SCALE_X  = re.compile(r'^\s*scale_x\d+\s*=\s*"?([\d.]+)"?\s*$', re.MULTILINE)
+RE_SCALE_Y  = re.compile(r'^\s*scale_y\d+\s*=\s*"?([\d.]+)"?\s*$', re.MULTILINE)
+RE_FLOAT_FB = re.compile(r'^\s*float_framebuffer\d+\s*=\s*"?true"?\s*$', re.MULTILINE | re.IGNORECASE)
+RE_SRGB_FB  = re.compile(r'^\s*srgb_framebuffer\d+\s*=\s*"?true"?\s*$', re.MULTILINE | re.IGNORECASE)
+RE_MIPMAP   = re.compile(r'^\s*mipmap_input\d+\s*=\s*"?true"?\s*$', re.MULTILINE | re.IGNORECASE)
+RE_ALIAS    = re.compile(r'^\s*alias\d+\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_FCMOD    = re.compile(r'^\s*frame_count_mod\s*=\s*"?(\d+)"?\s*$', re.MULTILINE)
+RE_FEEDBACK = re.compile(r'^\s*feedback_pass\s*=\s*"?(-?\d+)"?\s*$', re.MULTILINE)
+RE_HISTORY  = re.compile(r'^\s*history_size_exp\s*=\s*"?(\d+)"?\s*$', re.MULTILINE)  # rare
 RE_REFERENCE = re.compile(r'^\s*#reference\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
-RE_SHADER_N = re.compile(r'^\s*shader\d+\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
+RE_SHADER_N = re.compile(r'^\s*shader\d+\s*=\s*"?([^"\s]+)"?\s*$', re.MULTILINE)
 RE_TEXTURE_LUT = re.compile(r'^\s*textures\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 RE_LUT_PATH = re.compile(r'^\s*(\w+)\s*=\s*"([^"]+\.png)"\s*$', re.MULTILINE)
-RE_LUT_FILTER = re.compile(r'^\s*(\w+)_filter\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_LUT_WRAP   = re.compile(r'^\s*(\w+)_wrap_mode\s*=\s*(\w+)\s*$', re.MULTILINE)
-RE_LUT_MIPMAP = re.compile(r'^\s*(\w+)_mipmap\s*=\s*true\s*$', re.MULTILINE | re.IGNORECASE)
+RE_LUT_FILTER = re.compile(r'^\s*(\w+)_filter\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_LUT_WRAP   = re.compile(r'^\s*(\w+)_wrap_mode\s*=\s*"?(\w+)"?\s*$', re.MULTILINE)
+RE_LUT_MIPMAP = re.compile(r'^\s*(\w+)_mipmap\s*=\s*"?true"?\s*$', re.MULTILINE | re.IGNORECASE)
 RE_PARAM     = re.compile(r'^\s*(\w+)\s*=\s*"?\S+"?\s*$', re.MULTILINE)
 
 # .slang shader features (slang -> GLSL translation concerns)
