@@ -8,8 +8,8 @@
 #include <string>
 #include <string_view>
 
-#include <tlhelp32.h>
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include "engine/render/gpu/gpu_scaler.hpp"
 #include "utils/log.hpp"
