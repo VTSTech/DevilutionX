@@ -224,6 +224,32 @@ session. HLSL shaders are compiled at runtime with Shader Model 5.0 targets
 (5.1 fallback); if `d3dcompiler_47.dll` cannot compile a shader, the exact
 compiler error is recorded in `gpu-scaler.log`.
 
+**D3D12 fault forensics.** If a fault happens inside `d3dcompiler` during
+shader compilation, the compile guard contains it (the session continues on
+Vulkan or the regular renderer) and now records the full crash context in
+`gpu-scaler.log` before doing so: the exception code, whether the access
+violation was a read/write/execute, the faulting instruction pointer
+**resolved to its containing module** (`devilutionx.exe+0x…`,
+`C:\…\d3dcompiler_47.dll+0x…`, an injected DLL's name, or an explicit
+"not in any loaded module"), the raw stack the same way, and the list of
+loaded modules that live outside the Windows directory (overlays, capture
+tools and antivirus products inject or hook DLLs into the game process).
+That data splits the candidate causes: a fault inside `d3dcompiler_47.dll`
+itself points at the machine (corrupt or patched system DLL, forced Exploit
+Protection/ACG); a fault inside a named non-system module points at that
+injector; an address outside any module is a genuine wild jump.
+
+`tools/d3dcompiler_smoke.c` is a standalone test with no game or SDL
+dependencies that loads the system d3dcompiler by absolute path and
+compiles the exact vertex shader the scaler compiles first (plus a tiny
+and a heavy realistic fragment shader). If the tool faults, the problem is
+machine-level; if the tool passes while the game faults, the problem is
+process-context and the module scan in the game's log names the interferer.
+Build it with MinGW (`x86_64-w64-mingw32-gcc -O2 -o d3dcompiler_smoke.exe
+d3dcompiler_smoke.c -lversion`) or MSVC (`cl /O2 d3dcompiler_smoke.c
+version.lib`), run it next to the game, and share
+`d3dcompiler-smoke.log`.
+
 ## Known limitations
 
 - **macOS/MSL is untested.** The Metal shaders were written conservatively
