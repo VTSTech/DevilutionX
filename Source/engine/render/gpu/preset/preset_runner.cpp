@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <regex>
@@ -30,6 +32,34 @@ bool CaseInsensitiveEqual(const std::string &a, const std::string &b)
 			return false;
 	}
 	return true;
+}
+
+/** @brief Context for a failed IMG_Load: resolved path, file size, and
+ *         an explicit hint when the file is a git-lfs pointer instead of
+ *         image data (shader packs host their LUT PNGs in git-lfs, so
+ *         archive downloads and non-LFS checkouts leave small text files
+ *         in their place). */
+std::string DescribeImageLoadFailure(const std::string &path)
+{
+	std::string result = path;
+	std::error_code ec;
+	const std::uintmax_t size = std::filesystem::file_size(path, ec);
+	if (ec) {
+		StrAppend(result, " (file missing or unreadable)");
+	} else {
+		StrAppend(result, " (", size, " bytes)");
+		std::ifstream in(path, std::ios::binary);
+		if (in) {
+			char head[32] {};
+			in.read(head, static_cast<std::streamsize>(sizeof(head)));
+			if (in.gcount() >= 23 && std::memcmp(head, "version https://git-lfs", 23) == 0) {
+				StrAppend(result,
+				    " [git-lfs POINTER file, not image data: run 'git lfs install && git lfs pull'"
+				    " in the shaders repository, or re-download the pack with real binary files]");
+			}
+		}
+	}
+	return result;
 }
 } // namespace
 
@@ -687,7 +717,7 @@ bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 	const std::string path = ResolvePresetFilePath(preset_.dir, lut.def.path);
 	SDL_Surface *loaded = IMG_Load(path.c_str());
 	if (loaded == nullptr) {
-		error = StrCat("IMG_Load failed: ", SDL_GetError());
+		error = StrCat("IMG_Load failed: ", DescribeImageLoadFailure(path), "; SDL: ", SDL_GetError());
 		return false;
 	}
 	SDL_Surface *rgba = SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_ABGR8888);
