@@ -694,6 +694,39 @@ void main()
 )";
 }
 
+/** @brief FNV-1a 32-bit content fingerprint for remote field diagnostics. */
+unsigned Fnv1a32(const std::string &data)
+{
+	unsigned hash = 2166136261u;
+	for (const char c : data) {
+		hash ^= static_cast<unsigned char>(c);
+		hash *= 16777619u;
+	}
+	return hash;
+}
+
+/** @brief Whole-file bytes for fingerprinting (binary-safe). */
+bool ReadWholeFileBytes(const std::string &path, std::string &out)
+{
+	std::ifstream in(path, std::ios::binary);
+	if (!in)
+		return false;
+	std::ostringstream buffer;
+	buffer << in.rdbuf();
+	out = buffer.str();
+	return true;
+}
+
+/** @brief Non-overlapping substring count. */
+int CountOccurrences(const std::string &text, const char *needle)
+{
+	int count = 0;
+	const size_t len = std::strlen(needle);
+	for (size_t pos = text.find(needle); pos != std::string::npos; pos = text.find(needle, pos + len))
+		++count;
+	return count;
+}
+
 bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
     const std::unordered_set<std::string> &knownTextureNames, const std::vector<ParamInfo> &parameters,
     StageTranslation &stage, std::string &error)
@@ -726,6 +759,8 @@ bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
 		error = "slang: fragment stage has no main()";
 		return false;
 	}
+	stage.texelFetchCount = CountOccurrences(glsl, "texelFetch");
+	stage.textureGatherCount = CountOccurrences(glsl, "textureGather");
 	stage.glsl = std::move(glsl);
 	stage.present = true;
 	return true;
@@ -744,6 +779,17 @@ bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std:
 	if (!ResolveIncludes(shaderPath, 0, includeStack, merged, error)) {
 		out.error = error;
 		return false;
+	}
+	// Field diagnostics: fingerprint the raw file and the include-resolved
+	// source so a remote log can be diffed against known shader-pack versions.
+	{
+		std::string fileBytes;
+		if (ReadWholeFileBytes(shaderPath, fileBytes)) {
+			out.sourceSize = static_cast<int>(fileBytes.size());
+			out.sourceHash = Fnv1a32(fileBytes);
+		}
+		out.mergedSize = static_cast<int>(merged.size());
+		out.mergedHash = Fnv1a32(merged);
 	}
 
 	std::vector<ParamInfo> parameters;

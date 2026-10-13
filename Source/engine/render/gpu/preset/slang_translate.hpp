@@ -67,6 +67,9 @@ struct StageTranslation {
 	bool usesFrameDirection = false;
 	bool usesFrameTime = false;
 	bool usesPassIndex = false;
+	// Field diagnostics: raw sampling-style usage counts of the stage GLSL.
+	int texelFetchCount = 0;
+	int textureGatherCount = 0;
 };
 
 struct SlangTranslation {
@@ -75,6 +78,11 @@ struct SlangTranslation {
 	std::vector<ParamInfo> parameters; // #pragma parameter metadata.
 	std::string pragmaName;            // #pragma name
 	std::string pragmaFormat;          // #pragma format
+	// Field diagnostics: content fingerprints (raw file, include-resolved merge).
+	int sourceSize = 0;
+	unsigned sourceHash = 0;
+	int mergedSize = 0;
+	unsigned mergedHash = 0;
 	std::string error;
 
 	bool ok() const { return error.empty() && (vertex.present || fragment.present); }

@@ -509,9 +509,14 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			textureNames += tex.name;
 		}
 		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s textures=[%s]",
+		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s"
+		    " src=%u:%08x merged=%u:%08x fragFetch=%d/%d textures=[%s]",
 		    static_cast<unsigned>(pi), p.def.shaderPath.c_str(), p.def.alias.c_str(),
-		    p.translation.vertex.usesMvp ? "yes" : "no", textureNames.c_str());
+		    p.translation.vertex.usesMvp ? "yes" : "no",
+		    static_cast<unsigned>(p.translation.sourceSize), p.translation.sourceHash,
+		    static_cast<unsigned>(p.translation.mergedSize), p.translation.mergedHash,
+		    p.translation.fragment.texelFetchCount, p.translation.fragment.textureGatherCount,
+		    textureNames.c_str());
 	}
 	return true;
 }
@@ -647,6 +652,16 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		prevW = static_cast<float>(pass->outputWidth);
 		prevH = static_cast<float>(pass->outputHeight);
 	}
+	// Field diagnostics: resolved pass output sizes (logs once per size change).
+	std::string targets;
+	for (size_t ti = 0; ti < passes_.size(); ++ti) {
+		const PassRuntime &pass = *passes_[ti];
+		targets += StrCat(ti == 0 ? "" : " ", ti, "=", pass.outputWidth, "x", pass.outputHeight);
+	}
+	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+	    "GPU scaler preset: pass targets (game %ux%u, swapchain %ux%u): %s",
+	    static_cast<unsigned>(gameWidth), static_cast<unsigned>(gameHeight), swapchainWidth, swapchainHeight,
+	    targets.c_str());
 
 	// Pass output textures (double-buffered when a pass reads its own
 	// previous-frame output as feedback).
