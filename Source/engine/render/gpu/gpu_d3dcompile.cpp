@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <csetjmp>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <string>
@@ -73,6 +74,13 @@ std::string HexU32(uint32_t value)
 	return HexU64(value);
 }
 
+std::string HexByte(uint8_t value)
+{
+	char buf[8];
+	std::snprintf(buf, sizeof(buf), "%02X", value);
+	return buf;
+}
+
 std::string CrashThreadName()
 {
 	using GetThreadDescriptionFn = HRESULT(WINAPI *)(HANDLE, PWSTR *);
@@ -116,6 +124,12 @@ std::string NarrowPath(const wchar_t *wide)
 // Resolved d3dcompiler module, kept for fault forensics: the guarded-fault
 // report checks whether the faulting instruction pointer is inside it.
 HMODULE gD3DCompilerModule = nullptr;
+
+// The resolved D3DCompile entry address, kept for fault forensics: at crash
+// time the log compares the faulting instruction pointer against it, so a
+// corrupted function pointer (the wild jump called garbage instead of the
+// compiler) is distinguishable from a fault deeper inside the compiler.
+uintptr_t gD3DCompileProcAddress = 0;
 
 // Exception codes the compile guard contains: the wild-jump access violations
 // observed in the field, plus the other immediately fatal code classes, so a
@@ -167,12 +181,29 @@ std::string DescribeAddress(uintptr_t address)
 	return StrCat("0x", HexU64(static_cast<uint64_t>(address)), " (not in any loaded module)");
 }
 
-// Logs loaded modules that live outside the Windows directory. Overlays,
-// capture tools and antivirus products inject or hook DLLs into the game
-// process; a fault landing in one of them (the module-aware DescribeAddress
-// above names it) or a merely suspicious module list identifies the
-// interferer without a debugger.
-void LogForeignModules()
+// Case-insensitive ASCII substring test over a wide module name, for the
+// known-injector verdicts below.
+bool WcsIContains(const wchar_t *haystack, const char *needle)
+{
+	const auto lowerW = [](wchar_t c) -> char {
+		return static_cast<char>(c >= L'A' && c <= L'Z' ? c - L'A' + L'a' : c);
+	};
+	for (const wchar_t *h = haystack; *h != L'\0'; ++h) {
+		const char *n = needle;
+		for (const wchar_t *s = h; *n != '\0' && *s != L'\0' && lowerW(*s) == *n; ++s, ++n) {
+		}
+		if (*n == '\0')
+			return true;
+	}
+	return false;
+}
+
+// Full module map with base addresses: the faulting instruction pointer is
+// resolved against every range (Toolhelp, not GetModuleHandleEx, so a broken
+// loader cache cannot hide the containing module), overlay/capture hooks get
+// an explicit verdict, and every foreign module keeps its full path so old
+// log parsing keeps working.
+void LogForeignModules(uintptr_t faultingIp)
 {
 	const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
 	if (snapshot == INVALID_HANDLE_VALUE)
@@ -181,20 +212,180 @@ void LogForeignModules()
 	const UINT winLen = GetWindowsDirectoryW(winDir, MAX_PATH);
 	MODULEENTRY32W entry;
 	entry.dwSize = sizeof(entry);
+	bool ipResolved = false;
 	int logged = 0;
 	if (Module32FirstW(snapshot, &entry)) {
+		LogFileLine("  module map (base..end, [S]=system [F]=foreign):");
 		do {
-			if (winLen == 0 || _wcsnicmp(entry.szExePath, winDir, winLen) != 0) {
-				LogFileLine(StrCat("  non-system module: ", NarrowPath(entry.szExePath)));
-				logged += 1;
-				if (logged >= 12) {
-					LogFileLine("  (module list truncated)");
-					break;
-				}
+			const uintptr_t base = reinterpret_cast<uintptr_t>(entry.modBaseAddr);
+			const uintptr_t end = entry.modBaseSize != 0 ? base + entry.modBaseSize - 1 : base;
+			const bool foreign = winLen == 0 || _wcsnicmp(entry.szExePath, winDir, winLen) != 0;
+			LogFileLine(StrCat("  [", foreign ? "F" : "S", "] 0x", HexU64(static_cast<uint64_t>(base)), "-0x",
+			    HexU64(static_cast<uint64_t>(end)), " ", NarrowPath(entry.szModule)));
+			if (foreign)
+				LogFileLine(StrCat("    path: ", NarrowPath(entry.szExePath)));
+			for (const char *needle :
+			    { "graphics-hook", "rtsshooks", "rtss64", "fraps", "gameoverlayrenderer", "reshade", "specialk",
+			        "overwolf" }) {
+				if (WcsIContains(entry.szModule, needle))
+					LogFileLine(StrCat("    note: known overlay/capture hook present: ", needle));
+			}
+			if (faultingIp >= base && faultingIp <= end) {
+				ipResolved = true;
+				if (faultingIp == base)
+					LogFileLine(StrCat("    note: faulting ip EQUALS the base of ", NarrowPath(entry.szModule),
+					    " - a module base/handle was called as code"));
+				else
+					LogFileLine(StrCat("    note: faulting ip is inside ", NarrowPath(entry.szModule), " at +0x",
+					    HexU64(static_cast<uint64_t>(faultingIp - base))));
+			}
+			logged += 1;
+			if (logged >= 64) {
+				LogFileLine("  (module map truncated)");
+				break;
 			}
 		} while (Module32NextW(snapshot, &entry));
 	}
 	CloseHandle(snapshot);
+	if (!ipResolved && faultingIp != 0)
+		LogFileLine("  note: faulting ip is outside every module range (see the memory verdict above)");
+}
+
+// Memory-manager verdict for the faulting target address. VirtualQuery is the
+// one authoritative answer to "what is at this address": free, reserved,
+// committed-executable image memory, or committed private data.
+std::string DescribeMemoryRegion(uintptr_t address)
+{
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0)
+		return StrCat("  memory at 0x", HexU64(static_cast<uint64_t>(address)), ": VirtualQuery failed");
+	const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+	const uintptr_t regionEnd = regionBase + mbi.RegionSize - 1;
+	std::string line = StrCat("  memory at 0x", HexU64(static_cast<uint64_t>(address)), ": region 0x",
+	    HexU64(static_cast<uint64_t>(regionBase)), "-0x", HexU64(static_cast<uint64_t>(regionEnd)));
+	switch (mbi.State) {
+	case MEM_COMMIT:
+		line += " state=COMMITTED";
+		break;
+	case MEM_RESERVE:
+		line += " state=RESERVED";
+		break;
+	case MEM_FREE:
+		line += " state=FREE";
+		break;
+	default:
+		line += StrCat(" state=0x", HexU32(mbi.State));
+		break;
+	}
+	switch (mbi.Type) {
+	case MEM_IMAGE:
+		line += " type=IMAGE";
+		break;
+	case MEM_MAPPED:
+		line += " type=MAPPED";
+		break;
+	case MEM_PRIVATE:
+		line += " type=PRIVATE";
+		break;
+	default:
+		break;
+	}
+	// PAGE_EXECUTE=0x10, PAGE_EXECUTE_READ=0x20, PAGE_EXECUTE_READWRITE=0x40,
+	// PAGE_EXECUTE_WRITECOPY=0x80; every other protection is non-executable.
+	const DWORD lowProt = mbi.Protect & 0xFF;
+	const bool executable = lowProt == PAGE_EXECUTE || lowProt == PAGE_EXECUTE_READ
+	    || lowProt == PAGE_EXECUTE_READWRITE || lowProt == PAGE_EXECUTE_WRITECOPY;
+	if (mbi.State == MEM_COMMIT)
+		line += StrCat(" protect=0x", HexU32(lowProt), executable ? " (executable)" : " (not executable)");
+	if (mbi.State == MEM_FREE)
+		line += " -> UNMAPPED: a pointer into freed/unloaded memory was called";
+	else if (mbi.State == MEM_RESERVE)
+		line += " -> RESERVED: a pointer into an uncommitted region was called";
+	else if (executable && mbi.Type == MEM_IMAGE)
+		line += " -> executable image memory (a manually mapped image if the module map below does not cover it)";
+	else if (executable && mbi.Type == MEM_PRIVATE)
+		line += " -> PRIVATE EXECUTABLE memory (dynamically generated or injected code)";
+	else if (mbi.Type == MEM_IMAGE)
+		line += " -> image-backed but non-executable (jump into a data section or a discarded region)";
+	else
+		line += " -> non-executable data page (heap/static/stack): control flow jumped into data";
+	if ((mbi.Protect & PAGE_GUARD) != 0)
+		line += " [PAGE_GUARD]";
+	return line;
+}
+
+// Hex dump of the first bytes at the faulting target, with trampoline/PE
+// header detection: MZ => a module handle or image base was called as code;
+// E9/E8 => a hook trampoline; CC => int3. Reads only within the committed
+// region (protection is per-region, so a clamped read cannot fault).
+void LogTargetBytes(uintptr_t address)
+{
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+		return;
+	const DWORD lowProt = mbi.Protect & 0xFF;
+	if (lowProt == PAGE_NOACCESS || (mbi.Protect & PAGE_GUARD) != 0)
+		return;
+	const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+	const size_t count = std::min<uintptr_t>(16, regionEnd - address);
+	const auto *bytes = reinterpret_cast<const uint8_t *>(address);
+	std::string line = "  bytes at target:";
+	for (size_t i = 0; i < count; ++i)
+		line += StrCat(" ", HexByte(bytes[i]));
+	if (count >= 2 && bytes[0] == 'M' && bytes[1] == 'Z')
+		line += "  (MZ header: a module handle/image base was called as code)";
+	else if (count >= 1 && bytes[0] == 0xE9)
+		line += "  (JMP rel32: hook trampoline)";
+	else if (count >= 1 && bytes[0] == 0xE8)
+		line += "  (CALL rel32)";
+	else if (count >= 1 && bytes[0] == 0xCC)
+		line += "  (int3 breakpoint)";
+	LogFileLine(line);
+}
+
+// The REAL pre-fault call chain. RtlCaptureStackBackTrace from inside the
+// vectored handler only captures the handler's own frames (exception dispatch
+// and the handler functions below); the exception CONTEXT still holds the
+// faulting thread's registers, and x64 table-based unwinding from there
+// recovers the frames that led to the fault. A frame without unwind info
+// (the wild target itself: freed code, data, or a manually mapped page)
+// falls back to reading the return address at Rsp, which names the code that
+// transferred control to it. Exe frames print as devilutionx.exe+0xOFFSET and
+// resolve offline with addr2line against the exact binary.
+void LogContextCallChain(EXCEPTION_POINTERS *info)
+{
+	if (info == nullptr || info->ContextRecord == nullptr)
+		return;
+	CONTEXT ctx = *info->ContextRecord;
+	std::string chain = "  call chain from faulting context:";
+	bool progressed = true;
+	for (int depth = 0; depth < 16 && progressed; ++depth) {
+		const ULONG64 pc = ctx.Rip;
+		if (pc < 0x10000)
+			break;
+		chain += ' ';
+		chain += DescribeAddress(static_cast<uintptr_t>(pc));
+		progressed = false;
+		ULONG64 imageBase = 0;
+		void *fnEntry = RtlLookupFunctionEntry(pc, &imageBase, nullptr);
+		if (fnEntry != nullptr) {
+			PVOID handlerData = nullptr;
+			ULONG64 establisherFrame = 0;
+			RtlVirtualUnwind(0, imageBase, pc, static_cast<RUNTIME_FUNCTION *>(fnEntry), &ctx, &handlerData,
+			    &establisherFrame, nullptr);
+			progressed = ctx.Rip != pc;
+		} else {
+			// Leaf frame or code without unwind info: the return address sits at Rsp.
+			MEMORY_BASIC_INFORMATION mbi = {};
+			if (VirtualQuery(reinterpret_cast<LPCVOID>(ctx.Rsp), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT
+			    || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+				break;
+			ctx.Rip = *reinterpret_cast<const ULONG64 *>(ctx.Rsp);
+			ctx.Rsp += sizeof(ULONG64);
+			progressed = ctx.Rip != pc;
+		}
+	}
+	LogFileLine(chain);
 }
 
 // Full forensics for one native exception. Called in two situations:
@@ -245,8 +436,24 @@ void LogCrashDetails(std::string_view context, EXCEPTION_POINTERS *info)
 		crashLine += StrCat(" [", context, "]");
 	LogFileLine(crashLine);
 
+	uintptr_t faultingIp = 0;
 	if (info->ContextRecord != nullptr) {
-		LogFileLine(StrCat("  faulting ip: ", DescribeAddress(reinterpret_cast<uintptr_t>(info->ContextRecord->Rip))));
+		faultingIp = reinterpret_cast<uintptr_t>(info->ContextRecord->Rip);
+		LogFileLine(StrCat("  faulting ip: ", DescribeAddress(faultingIp)));
+		// What lives at the target address, and what its first bytes say: this
+		// single verdict separates "jumped into unmapped/freed memory" from
+		// "jumped into data" from "manually mapped code page".
+		LogFileLine(DescribeMemoryRegion(faultingIp));
+		LogTargetBytes(faultingIp);
+		if (gD3DCompileProcAddress != 0) {
+			LogFileLine(StrCat("  pD3DCompile: 0x", HexU64(static_cast<uint64_t>(gD3DCompileProcAddress)), " (",
+			    DescribeAddress(gD3DCompileProcAddress), ")"));
+			if (faultingIp == gD3DCompileProcAddress)
+				LogFileLine("  note: the faulting ip IS the D3DCompile entry address (the function pointer was already corrupt when called)");
+		}
+		// The real pre-fault call chain (the backtrace below only shows the
+		// handler's own frames).
+		LogContextCallChain(info);
 	}
 	// The explicit verdict users ask for first: did we die inside the system
 	// HLSL compiler itself?
@@ -259,13 +466,17 @@ void LogCrashDetails(std::string_view context, EXCEPTION_POINTERS *info)
 	}
 	void *frames[24] = {};
 	const USHORT numFrames = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
-	std::string stack = "  stack:";
+	std::string stack = "  handler stack:";
 	for (USHORT i = 0; i < numFrames; ++i) {
 		stack += ' ';
 		stack += DescribeAddress(reinterpret_cast<uintptr_t>(frames[i]));
 	}
 	LogFileLine(stack);
-	LogForeignModules();
+	static int moduleMapsDumped = 0;
+	if (moduleMapsDumped < 2) {
+		moduleMapsDumped += 1;
+		LogForeignModules(faultingIp);
+	}
 }
 
 long NTAPI ScalerCrashHandler(EXCEPTION_POINTERS *info)
@@ -323,8 +534,26 @@ D3DCompileFn LoadD3DCompile()
 	}
 	gD3DCompilerModule = mod;
 	fn = reinterpret_cast<D3DCompileFn>(reinterpret_cast<void *>(GetProcAddress(mod, "D3DCompile")));
-	if (fn == nullptr)
+	if (fn == nullptr) {
 		LogError("GPU scaler: found d3dcompiler dll but no D3DCompile export");
+		return nullptr;
+	}
+	// Provenance of the function pointer: log the entry address together
+	// with the loaded image range, and warn if GetProcAddress returned an
+	// address outside it (a corrupted loader/heap state signature).
+	gD3DCompileProcAddress = reinterpret_cast<uintptr_t>(fn);
+	uintptr_t modEnd = reinterpret_cast<uintptr_t>(mod);
+	const auto *dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER *>(mod);
+	if (dosHeader->e_magic == IMAGE_DOS_SIGNATURE) {
+		const auto *ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS *>(
+		    reinterpret_cast<uintptr_t>(mod) + dosHeader->e_lfanew);
+		modEnd += ntHeaders->OptionalHeader.SizeOfImage;
+	}
+	LogFileLine(StrCat("d3dcompiler: pD3DCompile=0x", HexU64(static_cast<uint64_t>(gD3DCompileProcAddress)),
+	    " module=0x", HexU64(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(mod))), "-0x",
+	    HexU64(static_cast<uint64_t>(modEnd))));
+	if (gD3DCompileProcAddress < reinterpret_cast<uintptr_t>(mod) || gD3DCompileProcAddress >= modEnd)
+		LogFileLine("WARNING: D3DCompile export resolved outside the d3dcompiler image range");
 	return fn;
 }
 
