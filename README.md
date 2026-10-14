@@ -47,7 +47,14 @@ This mod keeps the stock SDL render path fully intact and layers a GPU shader pi
 - **The full RetroArch shader ecosystem** — CRT simulation, xBR, ScaleFX, HQx, and hundreds more, straight from libretro's `slang-shaders` collection. Unlike the stock renderer's plain stretch, these GPU filters reconstruct pixel-art detail: sharper edges, smoother diagonals, and cleaner corner transitions. Some presets (e.g. the HQx family) load PNG lookup textures at runtime.
 - **Live shader feedback** — the on-screen overlay always shows the active filter and backend (e.g. `Shader Filter: ScaleFX 3x (Vulkan)` or `Shader Filter: Off`). If a shader fails to compile or load, the overlay reports it as `(Unavailable)` — and you can select a new shader right from that state without restarting. Every change is also logged to `gpu-scaler.log`, and the choice persists in `diablo.ini` under the `Shader Filter` key.
 - **Audio fix available** — a standalone fix for decoding Diablo's 1996-era WAV files (zero-length RIFF chunks fail on current SDL3_mixer) is maintained on the [`wav-mixer-fix`](https://github.com/VTSTech/DevilutionX/tree/wav-mixer-fix) branch.
-- **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), and per-preset compatibility audits under [docs/audit/](docs/audit/).
+- **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), and per-preset compatibility audits plus the current field-sweep test list under [docs/audit/](docs/audit/).- Optional: install the libretro shader pack — see [Setting Up Shaders](#setting-up-shaders) (on Windows, run the included `install_shaders.cmd`).The `git lfs pull` step matters: some presets (like HQ2x) reference PNG lookup textures, and without pulling the LFS assets those PNGs are left as pointer stubs, so the presets that need them will fail to load or render incorrectly. Make sure `git-lfs` is installed and initialized (`git lfs install`) before cloning.
+
+On Windows, the release zip (v8 and newer) ships two helper scripts beside `devilutionx.exe` that automate the above:
+
+- `install_shaders.cmd` — wipes and re-downloads `shaders\` beside the exe (shallow clone plus `git lfs pull`; needs `git` and `git-lfs` on `PATH`).
+- `clear_shader_cache.cmd` — deletes `shaders\cache\`, the translated-shader compile cache. It is rebuilt automatically on the next preset load; run it after a corpus update or a game update if presets misbehave.
+
+Presets are selected from the in-game folder browser
 
 See it in action: [shader demo video](https://www.youtube.com/watch?v=Fc72CjCcHH4).
 
