@@ -762,7 +762,7 @@ bool ValidateBlockMembers(const std::vector<UniformBlock> &blocks,
 				// std140 layout is unaffected and FillBlockBytes already
 				// writes the zero-fill fallback for unmatched members.
 				// * This bloats the log very fast, over 1MB - VTSTech *
-				//warnings.push_back(StrCat("uniform block member '", name,
+				// warnings.push_back(StrCat("uniform block member '", name,
 				//  "' is not a builtin semantic, texture size, feedback size or #pragma parameter; filling 0"));
 			}
 		}
