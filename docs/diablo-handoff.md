@@ -185,8 +185,20 @@ The campaign now has two arms that feed each other:
      single-level scaler surface). LUT textures now carry the usage flags SDL's
      GenerateMipmaps contract requires. Regression test: `tools/audit/test_mipmap_plan.cpp`
      (32 checks, g++ -O2, exit 0).
-  5. …continue per SLANG_SPEC.md §7 (sRGB+float precedence note is already documented
-     there as divergent-but-harmless, 0 presets affected).
+  5. ✅ **`Rotation` semantic** — FIXED (2026-10-14, gap-#5 round): whitelisted in the
+     translator and filled with the identity value 0 (spec semantic: uint 0..3 = 0/90/180/270
+     degrees; this frontend never rotates). Not 0-corpus: 16 corpus shaders declare
+     `uniform uint Rotation;` (crt-effects, authentic_gbc, border fills, subframe BFI) and
+     previously failed translation loudly. Regression test: `tools/audit/test_rotation_format.cpp`.
+  6. ✅ **`#pragma format` token gaps** — FIXED (2026-10-14, gap-#6 round): the two-channel
+     integer tokens (`R8G8`/`R16G16`/`R32G32` × `UINT`/`SINT`) and the packed 10-bit UNORM
+     token now map (18 corpus shaders request `A2B10G10R10_UNORM_PACK32`); the `_UINT_PACK32`
+     variant stays warn + RGBA8 (no SDL GPU UINT form of the packed 10-bit layout, 0 corpus
+     hits). Regression test: `tools/audit/test_rotation_format.cpp` (34 checks).
+  7. …continue per SLANG_SPEC.md §7 — every remaining item is 0-corpus or an intentional
+     divergence (`clamp_to_border`, `OriginalHistory` cap, translator hard-error paths,
+     `#pragma alias`/`include_optional`, `FrameDirection`, case asymmetries,
+     `#reference` comment, `feedback_pass`/`histories`).
 - **Empirical arm (the field sweep):** the §12 validation methodology below. Every
   sweep failure gets categorized and mapped back onto a SLANG_SPEC status cell —
   a fallback is either a spec gap already listed (close it) or a new finding (add it

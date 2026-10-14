@@ -610,7 +610,7 @@ bool ValidateBlockMembers(const std::vector<UniformBlock> &blocks,
 			const std::string &name = member.name;
 			bool ok = (name == "MVP" || name == "OutputSize" || name == "FinalViewportSize" || name == "OriginalSize"
 			    || name == "SourceSize" || name == "FrameCount" || name == "FrameDirection" || name == "FrameTime"
-			    || name == "PASSINDEX");
+			    || name == "PASSINDEX" || name == "Rotation");
 			if (!ok) {
 				std::string base = name;
 				bool sizeForm = false;

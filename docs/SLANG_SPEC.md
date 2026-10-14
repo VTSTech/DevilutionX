@@ -161,7 +161,7 @@ Fixed (audit F6, `f87f89d18`): `viewport` now resolves against the aspect-correc
 | `#pragma name <id>` | Supported | Display/identifier metadata; also makes the pass's output samplable by that identifier from other passes (§4.5). Pre-scanned by `preset_runner.cpp` before translation |
 | `#pragma stage ...` | Supported | See 4.1 |
 | `#pragma parameter ...` | Supported | See 3.6 |
-| `#pragma format <token>` | Supported (subset) | Per-pass output format override; takes precedence over `srgb_framebufferN`/`float_framebufferN`. Supported token set in 4.2.1; unsupported tokens warn and fall back to `R8G8B8A8_UNORM` instead of failing the preset |
+| `#pragma format <token>` | Supported (subset) | Per-pass output format override; takes precedence over `srgb_framebufferN`/`float_framebufferN`. Supported token set in 4.2.1; the single unmapped token (`A2B10G10R10_UINT_PACK32`) warns and falls back to `R8G8B8A8_UNORM` instead of failing the preset |
 | `#pragma alias <id>` | Unimplemented | Not extracted; the line passes through to glslang, which ignores unknown pragmas. Preset-level `aliasN` works; the in-shader declaration does nothing. Rare in the corpus |
 | `#pragma include_optional "path"` | Unimplemented | Not resolved (treated as an unknown pragma); if the shader actually needs the file's symbols it then fails at compile. Not observed in the corpus |
 | `#error` / `#warning` | Divergent | RetroArch treats `#error` as a "skip this shader" feature gate. Here they are left in the source and glslang fails the compile on `#error` — the preset falls back per the failure contract. Net effect for gated shaders is the same (not loaded), but the failure is a compile error, not a clean skip |
@@ -172,8 +172,9 @@ Fixed (audit F6, `f87f89d18`): `viewport` now resolves against the aspect-correc
 |---|---|
 | `R8_UNORM`, `R8G8_UNORM`, `R8G8B8A8_UNORM`, `R8G8B8A8_SRGB`, `R16_SFLOAT`, `R16G16_SFLOAT`, `R16G16B16A16_SFLOAT`, `R32_SFLOAT`, `R32G32_SFLOAT`, `R32G32B32A32_SFLOAT` | Supported |
 | `*_UINT` / `*_SINT` 8/16/32-bit: `R8`, `R8G8B8A8`, `R16`, `R16G16B16A16`, `R32`, `R32G32B32A32` | Supported |
-| `R8G8_UINT`, `R8G8_SINT`, `R16G16_UINT`, `R16G16_SINT`, `R32G32_UINT`, `R32G32_SINT` | Unimplemented → warn + RGBA8 fallback (mapping table in `preset_runner.cpp`) |
-| `A2B10G10R10_UNORM_PACK32`, `A2B10G10R10_UINT_PACK32` (HDR10 outputs) | Unimplemented → warn + RGBA8 fallback |
+| `R8G8_UINT`, `R8G8_SINT`, `R16G16_UINT`, `R16G16_SINT`, `R32G32_UINT`, `R32G32_SINT` | Supported (2026-10-14, gap-#6 round; mapping table in `preset_runner.cpp`). 0 corpus hits — mapped for spec conformance |
+| `A2B10G10R10_UNORM_PACK32` (HDR10 outputs) | Supported (2026-10-14, gap-#6 round): SDL GPU names the same layout `R10G10B10A2_UNORM` and its Vulkan backend maps it back to `VK_FORMAT_A2B10G10R10_UNORM_PACK32`. 18 corpus shaders request it (crt-effects curvature, bezel packs) |
+| `A2B10G10R10_UINT_PACK32` | Unimplemented → warn + RGBA8 fallback. SDL GPU has no UINT form of the packed 10-bit layout; 0 corpus hits |
 
 ### 4.3 Includes
 
@@ -239,7 +240,7 @@ All size semantics carry the spec's `vec4(x, y, 1/x, 1/y)` payload; a `vec2` mem
 | `FrameDirection` | int | Supported (divergent) | Constant `+1`. Spec: `-1` while rewinding — there is no rewind state in this game |
 | `FrameTime` | float | Supported | Duration of the previous frame in microseconds (RetroArch extension; 5 corpus presets) |
 | `PASSINDEX` | int | Extension | Current pass index. Not in the libretro spec or RetroArch; supported because packs use it |
-| `Rotation` | uint | Unimplemented | Spec builtin (0..3). Not in the member whitelist — a shader using it fails translation loudly. Rare in the corpus; add to `slang_translate.cpp` + `FillBlockBytes` when a rotating-content preset matters |
+| `Rotation` | uint | Supported | Spec builtin (0..3 = 0/90/180/270 degrees). Added to the member whitelist (gap #5, 2026-10-14) and filled with the identity value `0` — this frontend never rotates the view. 16 corpus shaders declare `uniform uint Rotation;` (crt-effects, authentic_gbc, border fills, subframe BFI); all previously failed translation loudly |
 | `<Texture>Size` | vec4 | Supported | Texture size by name: `Source` → input; `Original`/`OriginalHistory#` → game frame; `PassOutput#` → that pass's output; alias/`#pragma name`/LUT → that texture's size. It is valid per spec to declare a size without the texture itself. (The one latent bug this family had — the `PassFeedback#Size` index parse — is fixed, next row) |
 | `PassFeedback#Size` | vec4 | Supported | Fixed in `6f13d787f` (gap #4): the index parse is prefix-length-aware (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` got `"ck#"` and the uncaught `std::invalid_argument` aborted the process. Covers both the `<PassFeedback#>Size` and `<PassFeedback#>FeedbackSize` member forms (the Feedback-suffix strip lands on the same branch). Regression-tested in `tools/audit/test_uniform_names.cpp` |
 | `<Texture>FeedbackSize` | vec4 | Supported | Same size as the texture (feedback shares the pass output's size) |
@@ -291,7 +292,7 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | `filter_linear` / `wrap_mode` per pass and per LUT | Supported | parser, runner | `clamp_to_border` → clamp-to-edge (divergence) |
 | Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = aspect-corrected game rect (F6 fixed, `f87f89d18`); bare-`scale` order fix shipped (P1) |
 | sRGB / float FBOs | Supported | runner | sRGB precedence when both set (F8 erratum); `#pragma format` overrides |
-| `#pragma format` | Supported (subset) | translate→runner | 8 spec tokens missing → warn + RGBA8 (4.2.1) |
+| `#pragma format` | Supported (subset) | translate→runner | One token left unmapped (`A2B10G10R10_UINT_PACK32` → warn + RGBA8; 4.2.1) |
 | Aliases + `#pragma name` identifiers + plain-alias sampling | Supported | runner | First-match on duplicate names |
 | `Original` / `Source` / `OriginalHistory0..8` | Supported | runner | Ring depth+1, seeded, T-N (F5 fixed); cap 8 vs spec unbounded |
 | `PassOutput#` | Supported | translate, runner | Causality enforced |
@@ -302,13 +303,13 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `6f13d787f`); no UI (by design) |
 | `#reference` inheritance + ancestor path fallback | Supported | parser | Multi-parent; last non-empty chain wins (code/comment mismatch note) |
 | UBO (≤1/stage) + push-constant re-homing, std140 | Supported | translate, runner | Unsized arrays / extra UBOs / standalone uniforms unsupported |
-| Semantic member validation | Supported | translate | Whitelist + `<Tex>Size` forms + param names; `Rotation` missing |
+| Semantic member validation | Supported | translate | Whitelist (incl. `Rotation`) + `<Tex>Size` forms + param names |
 | Vertex interface (Position/TexCoord) + stock vertex injection | Supported | translate | |
 | Vertex textures | Unimplemented | translate | Hard error; 0 corpus hits (T3) |
 | Sampler arrays, multi-name samplers | Arrays error, multi-name OK | translate | 0 array hits in corpus (T4) |
 | `frame_count_mod` per pass | Supported | parser, runner | |
 | `FrameCount` / `FrameDirection` / `FrameTime` / `PASSINDEX` | Supported | runner | Direction constant +1; PASSINDEX is an extension |
-| `Rotation` | Unimplemented | translate | Loud failure; rare |
+| `Rotation` | Supported | translate, runner | uint semantic, filled with 0 (no rotation source; gap #5) — 16 corpus shaders declare it |
 | `#include` (recursive, include-once) | Supported | translate | Depth 24; flat-layout fallback |
 | `#pragma name/stage/parameter/format` | Supported | translate | |
 | `#pragma alias` / `include_optional` / `#error` skip | Unimplemented | translate | Ignored / unresolved / compile-fails (4.2) |
@@ -324,8 +325,8 @@ Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from 
 2. ✅ **`mipmap_input` no-op for pass outputs (F1)** — FIXED (2026-10-14, F1 round): pass outputs targeted by a mip-reading next pass allocate full mip chains and `SDL_GenerateMipmapsForGPUTexture` refills them each frame between render passes; pass 0 reads the chain input through a mip-capable RGBA8 copy blitted and refilled per frame (the game texture stays a single-level scaler surface). LUT textures now carry the usage flags SDL's GenerateMipmaps contract requires (SAMPLER-only worked only because the Vulkan path needs just transfer bits and the device disables SDL debug mode). Mip filter: linear, min/mag per `filter_linearN`. Regression test: `tools/audit/test_mipmap_plan.cpp` (32 checks). Deliberate divergence: history/feedback/alias bindings keep the nearest/clamp default sampler (§5.4) and never consume mips.
 3. ✅ **Parameter override case quirk** — FIXED (`6f13d787f`): `preset_runner.cpp` applies overrides via `CaseInsensitiveEqual`; the parser's lowercased keys now land regardless of the `#pragma` spelling. Was: mixed-case parameters (Mega Bezel `.params` overlays) silently kept pragma defaults.
 4. ✅ **`PassFeedback#Size` latent crash** — FIXED (`6f13d787f`): length-aware index parse in `FillBlockBytes` (plus the same-class guard on the translator's uniform `[N]` size parse, which previously aborted on non-numeric sizes instead of erroring loudly). Regression test: `tools/audit/test_uniform_names.cpp`.
-5. **`Rotation` semantic missing** — `slang_translate.cpp` whitelist + `FillBlockBytes`. Loud failure at translate; add (uint 0..3, identity for a non-rotating frontend) when needed.
-6. **`#pragma format` token gaps** — `preset_runner.cpp` mapping table: add `R8G8_UINT`, `R8G8_SINT`, `R16G16_UINT`, `R16G16_SINT`, `R32G32_UINT`, `R32G32_SINT`, and the two `A2B10G10R10_*_PACK32` tokens (the latter only if HDR10 outputs ever matter). Current behavior: warn + RGBA8 fallback.
+5. ✅ **`Rotation` semantic missing** — FIXED (2026-10-14, gap-#5 round): `slang_translate.cpp` whitelists the member and `FillBlockBytes` fills the identity value 0 (spec semantic: uint 0..3 = 0/90/180/270 degrees; this frontend has no rotation source). Not 0-corpus after all: 16 corpus shaders declare `uniform uint Rotation;` (crt-effects, authentic_gbc, border fills, subframe BFI) and every one of them previously failed translation loudly — the earlier "rare" estimate undercounted because the audit CSV never had a rotation column. Regression test: `tools/audit/test_rotation_format.cpp`.
+6. ✅ **`#pragma format` token gaps** — FIXED (2026-10-14, gap-#6 round): `preset_runner.cpp` maps the two-channel integer tokens (`R8G8`/`R16G16`/`R32G32` × `UINT`/`SINT`) and `A2B10G10R10_UNORM_PACK32` (SDL GPU's `R10G10B10A2_UNORM`; 18 corpus shaders request it). The `_UINT_PACK32` variant remains deliberately unmapped — SDL GPU exposes no UINT form of the packed 10-bit layout (0 corpus hits) — and keeps the warn + RGBA8 fallback contract. Regression test: `tools/audit/test_rotation_format.cpp`.
 7. **`clamp_to_border` wrap mode** — `preset_parser.cpp` maps it to clamp-to-edge; SDL3 GPU can express border clamping (`SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER`) if a preset ever needs it. Unrepresented in the corpus.
 8. **`OriginalHistory` cap 8** — `slang_translate.cpp` rejects > 8 (spec unbounded, corpus max 7). Raise only on evidence.
 9. **Hard-error translator paths, zero corpus exposure (T2–T5)** — vertex-stage samplers, sampler arrays, > 1 plain UBO, unsized arrays. Leave as loud errors; they flag genuinely unsupported shaders.

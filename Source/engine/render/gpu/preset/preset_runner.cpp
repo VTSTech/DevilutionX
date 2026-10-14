@@ -107,8 +107,10 @@ SDL_GPUTextureFormat FormatForPass(const PassDef &pass, std::string &warning)
 	}
 
 	// #pragma format mapping. Formats the SDL GPU backend guarantees for
-	// color targets map directly; anything exotic falls back to RGBA8 with
-	// a warning instead of failing the whole preset.
+	// color targets map directly; the only token left unmapped is
+	// A2B10G10R10_UINT_PACK32 (no SDL GPU UINT form of the packed 10-bit
+	// layout), which falls back to RGBA8 with a warning instead of
+	// failing the whole preset.
 	static const std::unordered_map<std::string, SDL_GPUTextureFormat> kFormats = {
 		{ "R8_UNORM", SDL_GPU_TEXTUREFORMAT_R8_UNORM },
 		{ "R8G8_UNORM", SDL_GPU_TEXTUREFORMAT_R8G8_UNORM },
@@ -132,6 +134,18 @@ SDL_GPUTextureFormat FormatForPass(const PassDef &pass, std::string &warning)
 		{ "R16G16B16A16_SINT", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_INT },
 		{ "R32_SINT", SDL_GPU_TEXTUREFORMAT_R32_INT },
 		{ "R32G32B32A32_SINT", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_INT },
+		{ "R8G8_UINT", SDL_GPU_TEXTUREFORMAT_R8G8_UINT },
+		{ "R8G8_SINT", SDL_GPU_TEXTUREFORMAT_R8G8_INT },
+		{ "R16G16_UINT", SDL_GPU_TEXTUREFORMAT_R16G16_UINT },
+		{ "R16G16_SINT", SDL_GPU_TEXTUREFORMAT_R16G16_INT },
+		{ "R32G32_UINT", SDL_GPU_TEXTUREFORMAT_R32G32_UINT },
+		{ "R32G32_SINT", SDL_GPU_TEXTUREFORMAT_R32G32_INT },
+		// Vulkan's packed 10-bit UNORM; SDL names the same layout
+		// R10G10B10A2_UNORM and its Vulkan backend maps it back to
+		// VK_FORMAT_A2B10G10R10_UNORM_PACK32 (18 corpus shaders request
+		// it, e.g. crt-effects curvature). The _UINT_PACK32 variant stays
+		// unsupported: SDL GPU has no UINT form of the packed 10-bit layout.
+		{ "A2B10G10R10_UNORM_PACK32", SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM },
 	};
 	const auto it = kFormats.find(formatName);
 	if (it == kFormats.end()) {
@@ -914,6 +928,15 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 		}
 		if (name == "PASSINDEX") {
 			WriteInt(out, member.offset, passIndex);
+			continue;
+		}
+		if (name == "Rotation") {
+			// RetroArch fills the Rotation semantic with the frontend's
+			// content rotation (0/1/2/3 = 0/90/180/270 degrees). This game
+			// never rotates the view, so presets declaring it (16 corpus
+			// shaders: crt-effects, authentic_gbc, border fills, subframe
+			// BFI) read the identity value 0 (SLANG_SPEC.md gap #5).
+			WriteUint(out, member.offset, 0);
 			continue;
 		}
 
