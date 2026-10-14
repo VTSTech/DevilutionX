@@ -5,11 +5,10 @@
 ---
 
 [![Discord Channel](https://img.shields.io/discord/518540764754608128?color=%237289DA&logo=discord&logoColor=%23FFFFFF)](https://discord.gg/devilutionx-518540764754608128)
-[![Downloads](https://img.shields.io/github/downloads/diasurgical/devilutionX/total.svg)](https://github.com/diasurgical/devilutionX/releases/latest)
-[![Codecov](https://codecov.io/gh/diasurgical/devilutionX/branch/master/graph/badge.svg)](https://codecov.io/gh/diasurgical/devilutionX)
+[![Downloads](https://img.shields.io/github/downloads/VTSTech/devilutionX/total.svg)](https://github.com/VTSTech/devilutionX/releases/latest)
 
 <p align="center">
-<img width="853" height="480" alt="image" src="https://github.com/user-attachments/assets/ee902926-6382-4ee5-b1c2-7947e8b434e9" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/6df35aea-9b46-490b-91cc-da78be272647" />
 </p>
 
 <sub>*(The health-bar and XP-bar are off by default but can be enabled in the [game settings](https://github.com/diasurgical/DevilutionX/wiki/Config-File). Widescreen can also be disabled if preferred.)*</sub>
