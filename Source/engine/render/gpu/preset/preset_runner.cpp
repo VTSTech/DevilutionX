@@ -39,6 +39,26 @@ bool CaseInsensitiveEqual(const std::string &a, const std::string &b)
 	return true;
 }
 
+/** @brief F6: the aspect-corrected viewport - the game image rect fitted
+ *         inside the swapchain (letterbox fit, half-up rounding). This is
+ *         what RetroArch resolves `viewport` scale (and FinalViewportSize)
+ *         against. Degenerate sizes fall back to the raw swapchain. */
+void DeriveViewportSize(Uint32 swapchainWidth, Uint32 swapchainHeight, int gameWidth, int gameHeight,
+    Uint32 &outViewportWidth, Uint32 &outViewportHeight)
+{
+	outViewportWidth = swapchainWidth;
+	outViewportHeight = swapchainHeight;
+	if (swapchainWidth == 0 || swapchainHeight == 0 || gameWidth <= 0 || gameHeight <= 0)
+		return;
+	const float gameAspect = static_cast<float>(gameWidth) / static_cast<float>(gameHeight);
+	if (gameAspect > static_cast<float>(swapchainWidth) / static_cast<float>(swapchainHeight))
+		outViewportHeight = static_cast<Uint32>(std::max(1.0F,
+		    std::floor(static_cast<float>(swapchainWidth) / gameAspect + 0.5F)));
+	else
+		outViewportWidth = static_cast<Uint32>(std::max(1.0F,
+		    std::floor(static_cast<float>(swapchainHeight) * gameAspect + 0.5F)));
+}
+
 /** @brief Context for a failed IMG_Load: resolved path, file size, and
  *         an explicit hint when the file is a git-lfs pointer instead of
  *         image data (shader packs host their LUT PNGs in git-lfs, so
@@ -560,6 +580,13 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 	// Resolve pass target sizes following the libretro scale rules.
 	float prevW = static_cast<float>(gameWidth);
 	float prevH = static_cast<float>(gameHeight);
+	// F6: derive the aspect-corrected viewport once per target resize - the
+	// game image rect fitted inside the swapchain (letterbox fit, half-up
+	// rounding). RetroArch resolves `viewport` scale against this rect, and
+	// the presentation blit letterboxes the chain output onto it, so
+	// viewport-scaled final passes land exactly on the presented game area.
+	DeriveViewportSize(swapchainWidth, swapchainHeight, gameWidth, gameHeight,
+	    targetViewportWidth_, targetViewportHeight_);
 	for (PassRuntime *pass : passes_) {
 		auto resolve = [](const ScaleRule &rule, float inputSize, float viewportSize) -> float {
 			switch (rule.type) {
@@ -569,8 +596,8 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 			}
 			return inputSize;
 		};
-		const float viewportW = static_cast<float>(swapchainWidth);
-		const float viewportH = static_cast<float>(swapchainHeight);
+		const float viewportW = static_cast<float>(targetViewportWidth_);
+		const float viewportH = static_cast<float>(targetViewportHeight_);
 		const float outW = resolve(pass->def.scaleX, prevW, viewportW);
 		const float outH = resolve(pass->def.scaleY, prevH, viewportH);
 		pass->outputWidth = static_cast<Uint32>(std::max(1.0F, std::floor(outW + 0.5F)));
@@ -585,9 +612,9 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		targets += StrCat(ti == 0 ? "" : " ", ti, "=", pass.outputWidth, "x", pass.outputHeight);
 	}
 	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-	    "GPU scaler preset: pass targets (game %ux%u, swapchain %ux%u): %s",
+	    "GPU scaler preset: pass targets (game %ux%u, swapchain %ux%u, viewport %ux%u): %s",
 	    static_cast<unsigned>(gameWidth), static_cast<unsigned>(gameHeight), swapchainWidth, swapchainHeight,
-	    targets.c_str());
+	    targetViewportWidth_, targetViewportHeight_, targets.c_str());
 
 	// Pass output textures (double-buffered when a pass reads its own
 	// previous-frame output as feedback).
@@ -754,6 +781,8 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	const float gameH = static_cast<float>(targetGameHeight_);
 	const float swapW = static_cast<float>(targetSwapchainWidth_);
 	const float swapH = static_cast<float>(targetSwapchainHeight_);
+	const float viewportW = static_cast<float>(targetViewportWidth_);
+	const float viewportH = static_cast<float>(targetViewportHeight_);
 	const float inputW = inputWidth;
 	const float inputH = inputHeight;
 
@@ -807,7 +836,9 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue;
 		}
 		if (name == "FinalViewportSize") {
-			writeVec4(member, swapW, swapH, swapW > 0 ? 1.0F / swapW : 0.0F, swapH > 0 ? 1.0F / swapH : 0.0F);
+			// F6: RetroArch's FinalViewportSize is the aspect-corrected
+			// viewport (the game rect inside the swapchain), not the raw window.
+			writeVec4(member, viewportW, viewportH, viewportW > 0 ? 1.0F / viewportW : 0.0F, viewportH > 0 ? 1.0F / viewportH : 0.0F);
 			continue;
 		}
 		if (name == "OriginalSize") {

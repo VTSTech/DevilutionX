@@ -104,6 +104,8 @@ private:
 	int targetGameHeight_ = 0;
 	Uint32 targetSwapchainWidth_ = 0;
 	Uint32 targetSwapchainHeight_ = 0;
+	Uint32 targetViewportWidth_ = 0; // F6: aspect-corrected game rect inside the swapchain
+	Uint32 targetViewportHeight_ = 0;
 
 	Uint64 frameCounter_ = 0;
 	Uint64 frameDeltaUs_ = 0;

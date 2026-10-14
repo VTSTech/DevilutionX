@@ -97,9 +97,9 @@ All per-pass keys are index-suffixed (`shader0`, `wrap_mode1`, …), matching Re
 
 ### 3.4 Scale rule semantics
 
-Per pass, per axis: `source` → previous output size (game frame for pass 0) × scale; `viewport` → swapchain size × scale; `absolute` → scale pixels. Axes are independent; results are rounded half-up and clamped to ≥ 1. The resolved sizes feed the FBO allocation and every size uniform (`OutputSize`, and the next pass's `SourceSize`).
+Per pass, per axis: `source` → previous output size (game frame for pass 0) × scale; `viewport` → viewport size × scale, where the viewport is the aspect-corrected game image rect fitted inside the swapchain (F6, fixed in `c9b41daaf`); `absolute` → scale pixels. Axes are independent; results are rounded half-up and clamped to ≥ 1. The resolved sizes feed the FBO allocation and every size uniform (`OutputSize`, and the next pass's `SourceSize`).
 
-Divergence (audit F6): `viewport` resolves against the raw swapchain with no aspect-correct viewport derivation and no letterboxing. For a fullscreen game this is usually what the preset author wants (window-sized overlay passes); it matters for border/bezel presets that compute aspect-dependent geometry — dominant in Phase 2 (1355 presets touch viewport scale; 232 use the `uses_mvp + viewport_scale` combo). Watch field logs; revisit only if borders misletterbox.
+Fixed (audit F6, `c9b41daaf`): `viewport` now resolves against the aspect-corrected viewport — the game image rect fitted inside the swapchain with letterbox margins (half-up rounding), matching RetroArch — instead of the raw swapchain. Border/bezel presets computing aspect-dependent geometry now size their FBOs for the area the game actually occupies, and a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect (the blit fits the chain output the same way). Extension note: integer scaling stays a presentation-level fit here and is not folded into the shader viewport base (RetroArch folds `video_scale_integer` in when enabled); watch field logs if integer-scaled bezels misalign.
 
 ### 3.5 Lookup textures (LUTs)
 
@@ -123,7 +123,7 @@ Divergence (audit F6): `viewport` resolves against the raw swapchain with no asp
 | `parameters` gating | Supported | A key only counts as a parameter override if listed in `parameters` (or via the overlay heuristic below) |
 | Overlay heuristic | Extension | When a `#reference`d overlay (Mega Bezel `.params` files) declares no `parameters` list at all, any unknown key whose value parses fully as a number is accepted as an override. Unknown names stay inert at runtime (applied only if they match a `#pragma parameter`) |
 | Merge | Supported | Parent overrides accumulate across `#reference` parents; the child file's own keys replace same-named inherited overrides |
-| Application | Supported | `preset_runner.cpp` fills a UBO member with: preset override (case-insensitive name match, fixed in `b70500b19` — gap #3) → `#pragma` default → 0.0. Before the fix the parser-lowercased override key only matched lowercase shader names, so mixed-case Mega Bezel parameters (`ABS_APECT_mult`-style) silently kept pragma defaults |
+| Application | Supported | `preset_runner.cpp` fills a UBO member with: preset override (case-insensitive name match, fixed in `6f13d787f` — gap #3) → `#pragma` default → 0.0. Before the fix the parser-lowercased override key only matched lowercase shader names, so mixed-case Mega Bezel parameters (`ABS_APECT_mult`-style) silently kept pragma defaults |
 | Uniforms UI | Unimplemented | Parameters are fixed per session at defaults/overrides; there is no in-game slider UI. By design (§4 of the handoff) |
 
 ### 3.7 `#reference` inheritance and path resolution
@@ -232,7 +232,7 @@ All size semantics carry the spec's `vec4(x, y, 1/x, 1/y)` payload; a `vec2` mem
 |---|---|---|---|
 | `MVP` | `mat4` | Supported | Orientation law: flip-Y for every intermediate pass, identity for the last pass |
 | `OutputSize` | vec4 | Supported | This pass's output size |
-| `FinalViewportSize` | vec4 | Supported | Swapchain size |
+| `FinalViewportSize` | vec4 | Supported | Aspect-corrected viewport: the game image rect fitted inside the swapchain (F6, fixed in `c9b41daaf`; was the raw swapchain). RetroArch's final-viewport semantics; the presentation blit letterboxes onto the same rect |
 | `OriginalSize` | vec4 | Supported | Game frame size |
 | `SourceSize` | vec4 | Supported | Current pass input size |
 | `FrameCount` | uint | Supported | Frames since preset load (starts at 1), pre-wrapped by the pass's `frame_count_modN` |
@@ -241,7 +241,7 @@ All size semantics carry the spec's `vec4(x, y, 1/x, 1/y)` payload; a `vec2` mem
 | `PASSINDEX` | int | Extension | Current pass index. Not in the libretro spec or RetroArch; supported because packs use it |
 | `Rotation` | uint | Unimplemented | Spec builtin (0..3). Not in the member whitelist — a shader using it fails translation loudly. Rare in the corpus; add to `slang_translate.cpp` + `FillBlockBytes` when a rotating-content preset matters |
 | `<Texture>Size` | vec4 | Supported | Texture size by name: `Source` → input; `Original`/`OriginalHistory#` → game frame; `PassOutput#` → that pass's output; alias/`#pragma name`/LUT → that texture's size. It is valid per spec to declare a size without the texture itself. (The one latent bug this family had — the `PassFeedback#Size` index parse — is fixed, next row) |
-| `PassFeedback#Size` | vec4 | Supported | Fixed in `b70500b19` (gap #4): the index parse is prefix-length-aware (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` got `"ck#"` and the uncaught `std::invalid_argument` aborted the process. Covers both the `<PassFeedback#>Size` and `<PassFeedback#>FeedbackSize` member forms (the Feedback-suffix strip lands on the same branch). Regression-tested in `tools/audit/test_uniform_names.cpp` |
+| `PassFeedback#Size` | vec4 | Supported | Fixed in `6f13d787f` (gap #4): the index parse is prefix-length-aware (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` got `"ck#"` and the uncaught `std::invalid_argument` aborted the process. Covers both the `<PassFeedback#>Size` and `<PassFeedback#>FeedbackSize` member forms (the Feedback-suffix strip lands on the same branch). Regression-tested in `tools/audit/test_uniform_names.cpp` |
 | `<Texture>FeedbackSize` | vec4 | Supported | Same size as the texture (feedback shares the pass output's size) |
 | `User#Size` | vec4 | Unimplemented | Falls into the alias/LUT lookup by literal name `User#` and resolves to (0, 0) rather than the indexed LUT's size. No corpus preset observed using it |
 
@@ -289,17 +289,17 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 |---|---|---|---|
 | Chain of N passes, per-pass shaders | Supported | parser, runner | |
 | `filter_linear` / `wrap_mode` per pass and per LUT | Supported | parser, runner | `clamp_to_border` → clamp-to-edge (divergence) |
-| Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = swapchain (F6); bare-`scale` order fix shipped (P1) |
+| Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = aspect-corrected game rect (F6 fixed, `c9b41daaf`); bare-`scale` order fix shipped (P1) |
 | sRGB / float FBOs | Supported | runner | sRGB precedence when both set (F8 erratum); `#pragma format` overrides |
 | `#pragma format` | Supported (subset) | translate→runner | 8 spec tokens missing → warn + RGBA8 (4.2.1) |
 | Aliases + `#pragma name` identifiers + plain-alias sampling | Supported | runner | First-match on duplicate names |
 | `Original` / `Source` / `OriginalHistory0..8` | Supported | runner | Ring depth+1, seeded, T-N (F5 fixed); cap 8 vs spec unbounded |
 | `PassOutput#` | Supported | translate, runner | Causality enforced |
 | `PassFeedback#` / `<name>Feedback` | Supported | runner | Demand-driven double buffering (F2: `feedback_pass` dead) |
-| `PassFeedback#Size` uniform | Supported | runner | Length-aware index parse (gap #4 fixed, `b70500b19`); was a `stoi("ck#")` latent crash (4.7) |
+| `PassFeedback#Size` uniform | Supported | runner | Length-aware index parse (gap #4 fixed, `6f13d787f`); was a `stoi("ck#")` latent crash (4.7) |
 | LUTs incl. mipmap LUTs, `User#` | Supported | runner | 8-bit upload; `User#Size` unresolved |
 | `mipmap_input` | Partial (F1) | runner | No-op for pass outputs / chain input (1 mip level) |
-| Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `b70500b19`); no UI (by design) |
+| Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `6f13d787f`); no UI (by design) |
 | `#reference` inheritance + ancestor path fallback | Supported | parser | Multi-parent; last non-empty chain wins (code/comment mismatch note) |
 | UBO (≤1/stage) + push-constant re-homing, std140 | Supported | translate, runner | Unsized arrays / extra UBOs / standalone uniforms unsupported |
 | Semantic member validation | Supported | translate | Whitelist + `<Tex>Size` forms + param names; `Rotation` missing |
@@ -320,10 +320,10 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 
 Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from the v2 audit CSVs (`docs/audit/`).
 
-1. **Viewport scale = swapchain, no aspect derivation (F6)** — `preset_runner.cpp`. 1355 presets; the dominant Phase-2 combo (`uses_mvp + viewport_scale`, 232 presets) funnels here. Accept for fullscreen; revisit if border/bezel presets misletterbox.
+1. ✅ **Viewport scale = swapchain, no aspect derivation (F6)** — FIXED (`c9b41daaf`): `preset_runner.cpp` derives the aspect-corrected viewport (game image rect letterbox-fitted into the swapchain, half-up rounding) and resolves `viewport` scale and `FinalViewportSize` against it; a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect. Regression test: `tools/audit/test_viewport_derive.cpp` (13 checks). Integer scaling remains a presentation-level fit (extension note in §3.4).
 2. **`mipmap_input` no-op for pass outputs (F1)** — `preset_runner.cpp` (target allocation + no per-frame mip generation). 892 presets but 888 Mega_Bezel-tier; implement mip-chained outputs + `SDL_GenerateMipmapsForGPUTexture` per frame only when Phase 3 starts.
-3. ✅ **Parameter override case quirk** — FIXED (`b70500b19`): `preset_runner.cpp` applies overrides via `CaseInsensitiveEqual`; the parser's lowercased keys now land regardless of the `#pragma` spelling. Was: mixed-case parameters (Mega Bezel `.params` overlays) silently kept pragma defaults.
-4. ✅ **`PassFeedback#Size` latent crash** — FIXED (`b70500b19`): length-aware index parse in `FillBlockBytes` (plus the same-class guard on the translator's uniform `[N]` size parse, which previously aborted on non-numeric sizes instead of erroring loudly). Regression test: `tools/audit/test_uniform_names.cpp`.
+3. ✅ **Parameter override case quirk** — FIXED (`6f13d787f`): `preset_runner.cpp` applies overrides via `CaseInsensitiveEqual`; the parser's lowercased keys now land regardless of the `#pragma` spelling. Was: mixed-case parameters (Mega Bezel `.params` overlays) silently kept pragma defaults.
+4. ✅ **`PassFeedback#Size` latent crash** — FIXED (`6f13d787f`): length-aware index parse in `FillBlockBytes` (plus the same-class guard on the translator's uniform `[N]` size parse, which previously aborted on non-numeric sizes instead of erroring loudly). Regression test: `tools/audit/test_uniform_names.cpp`.
 5. **`Rotation` semantic missing** — `slang_translate.cpp` whitelist + `FillBlockBytes`. Loud failure at translate; add (uint 0..3, identity for a non-rotating frontend) when needed.
 6. **`#pragma format` token gaps** — `preset_runner.cpp` mapping table: add `R8G8_UINT`, `R8G8_SINT`, `R16G16_UINT`, `R16G16_SINT`, `R32G32_UINT`, `R32G32_SINT`, and the two `A2B10G10R10_*_PACK32` tokens (the latter only if HDR10 outputs ever matter). Current behavior: warn + RGBA8 fallback.
 7. **`clamp_to_border` wrap mode** — `preset_parser.cpp` maps it to clamp-to-edge; SDL3 GPU can express border clamping (`SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER`) if a preset ever needs it. Unrepresented in the corpus.

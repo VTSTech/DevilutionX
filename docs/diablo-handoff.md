@@ -164,9 +164,12 @@ The campaign now has two arms that feed each other:
   cross-checked against RetroArch's `gfx/video_shader_parse.c`, and ends in a
   priority-ordered gap list (its §7, 14 items). **Work that list top-down.** The top
   items, confirmed against master `dce1c4222`:
-  1. **F6 viewport aspect** — `ScaleType::Viewport` ignores the preset's aspect-ratio
-     intent (`viewport_aspect_scale` et al.); unblocks the single largest cluster
-     (232 medium-risk presets: `uses_mvp + viewport_scale`).
+  1. ✅ **F6 viewport aspect** — FIXED (`c9b41daaf`): the runner derives the aspect-corrected
+     viewport (game image rect letterbox-fitted into the swapchain, half-up rounding) and
+     resolves `ScaleType::Viewport` AND `FinalViewportSize` against it, so the 232-preset
+     `uses_mvp + viewport_scale` cluster computes geometry for the area the game actually
+     occupies; a viewport-scaled final pass lands exactly on the presentation blit's
+     letterbox rect. Regression test: `tools/audit/test_viewport_derive.cpp` (13 checks).
   2. ✅ **`PassFeedback#Size` latent crash** — FIXED (`6f13d787f`): length-aware prefix parse in
      `FillBlockBytes` (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` received
      `"ck#"` → uncaught `std::invalid_argument` → process abort. The same commit guards the
@@ -287,7 +290,7 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
   `SDL_LoadWAV_IO` fallback already fix Diablo's 1996 WAVs in-master; a merge upstream
   would only matter for a future `DEVILUTIONX_SYSTEM_SDL_MIXER=ON` release build.
 - 🔶 26-i: Linux gcc/clang build verification — clang-format 18 half DONE (2026-10-14,
-  `bfcd6940a`): reformatted `preset_runner.cpp/.hpp`, `gpu_scaler.cpp`, `main.cpp`
+  `89c7db782`): reformatted `preset_runner.cpp/.hpp`, `gpu_scaler.cpp`, `main.cpp`
   (space-indent shipped across the whole subsystem); whole-tree dry-run rescan
   (696 files) = 0 violations; the only non-whitespace delta was one line-join.
 - ✅ 26-j: GPU_SHADERS.md for runtime presets — done (rewritten this session; the
@@ -310,7 +313,7 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
   been wrong before (8-space indent shipped as "clean"). Note the CI job (jidicula
   v4.18.0) scans EVERY C/C++ file under `Source` + `test`, not just the diff — one
   stale-indented file anywhere turns the push red, and docs-only pushes don't trigger
-  it at all (paths-ignore), so silence is not proof. Sweep closed 2026-10-14 (`bfcd6940a`).
+  it at all (paths-ignore), so silence is not proof. Sweep closed 2026-10-14 (`89c7db782`).
 - **Include-order trap:** `<tlhelp32.h>` (and similar Windows headers) must come AFTER
   `<windows.h>` — mingw-w64 headers don't self-prime. `SortIncludes: true` re-sorts
   single blocks alphabetically, so separate order-dependent headers with a blank line +
@@ -716,10 +719,11 @@ as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
   max_hist=3) were the ring-fix canaries — now fixed, confirm in the first sweep.
 - Downgraded / non-issues (do not re-litigate): F9 case-mismatch (scanner
   false-positive — strip the `NAME`Feedback suffix before case compare), F1
-  mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — defer to Phase 3), F6
-  viewport=swapchain (observation), F2 feedback_pass dead key (benign,
-  demand-driven feedback), T9/T2/T3/T4/T5 zero wild hits (translator hard-failure
-  paths never exercised — strong coverage signal).
+  mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — defer to Phase 3), F2
+  feedback_pass dead key (benign, demand-driven feedback), T9/T2/T3/T4/T5 zero wild
+  hits (translator hard-failure paths never exercised — strong coverage signal).
+  F6 viewport=swapchain was logged here as an observation before it was promoted
+  to the §8 queue and fixed (`c9b41daaf`).
 - Still pending (user side): CI build of master → Phase-1 field sweep per §12
   reporting format → fold results into the SLANG_SPEC.md gap list (§8 reconciliation
   rule); re-upload a v3 field binary only if the wild-call re-scan is still wanted.
