@@ -87,7 +87,7 @@ All per-pass keys are index-suffixed (`shader0`, `wrap_mode1`, …), matching Re
 | `wrap_modeN` | Supported (divergence) | `repeat` / `mirrored_repeat` / `clamp_to_edge`; anything unrecognized → `clamp_to_edge`. RetroArch also accepts `clamp_to_border`; that value silently maps to clamp-to-edge here (SDL3 GPU sampler cache builds only 3 address modes). Unrepresented in the corpus |
 | `srgb_framebufferN` | Supported | Pass N's output target becomes sRGB (`R8G8B8A8_UNORM_SRGB`). Precedence over `float_framebufferN` when both are set (0 presets set both — audit F8; note the audit report's table states the opposite precedence, an erratum — the code checks sRGB first) |
 | `float_framebufferN` | Supported | Pass N's output target becomes half-float (`R16G16B16A16_FLOAT`). Ignored when `srgb_framebufferN` is also set or when the pass's shader carries `#pragma format` |
-| `mipmap_inputN` | Supported flag, Partial effect (audit F1) | Selects the mipmapped sampler for pass N's input. Effective only when the bound texture actually has a mip chain: LUT textures do (mips generated at upload); pass outputs and the chain input are created with 1 level, so the sampler LOD-clamps and the flag is a no-op for them. 892 presets set it, but 888 are Mega_Bezel-tier — fix (mip-chained pass outputs + per-frame generate) before Phase 3, not before |
+| `mipmap_inputN` | Supported (F1) | Selects the mipmapped sampler for pass N's input AND makes it effective: the bound `Source` texture carries a full mip chain refilled each frame before pass N (`SDL_GenerateMipmapsForGPUTexture` between render passes). Pass N-1's output is allocated with a chain exactly when pass N reads it mipmapped; pass 0's chain input goes through a runner-owned mip-capable copy (RGBA8, same size — the game texture is a single-level scaler surface). Mip filter is linear, min/mag follow `filter_linearN` (RetroArch-style). LUT chains pre-generate at upload (§3.5). History/feedback/alias bindings keep the nearest/clamp default (§5.4) and never consume mips. 892 presets set the flag (888 Mega_Bezel-tier) |
 | `frame_count_modN` | Supported | Wraps `FrameCount` to `count % mod` for pass N. Per-pass indexing confirmed against RetroArch's parser. 0 disables |
 | `scaleN` | Supported (P1-fixed) | Sets both axes' scale *value* while preserving the pass's declared scale type (order-independent, RetroArch-style). The pre-fix behavior (bare `scale` reset a previously declared `scale_type` to Source) mis-scaled 897 presets — fixed by audit patch 0002 |
 | `scale_xN` / `scale_yN` | Supported | Per-axis scale values (type comes from `scale_type_xN` / `scale_type_yN`, default Source) |
@@ -97,9 +97,9 @@ All per-pass keys are index-suffixed (`shader0`, `wrap_mode1`, …), matching Re
 
 ### 3.4 Scale rule semantics
 
-Per pass, per axis: `source` → previous output size (game frame for pass 0) × scale; `viewport` → viewport size × scale, where the viewport is the aspect-corrected game image rect fitted inside the swapchain (F6, fixed in `c9b41daaf`); `absolute` → scale pixels. Axes are independent; results are rounded half-up and clamped to ≥ 1. The resolved sizes feed the FBO allocation and every size uniform (`OutputSize`, and the next pass's `SourceSize`).
+Per pass, per axis: `source` → previous output size (game frame for pass 0) × scale; `viewport` → viewport size × scale, where the viewport is the aspect-corrected game image rect fitted inside the swapchain (F6, fixed in `f87f89d18`); `absolute` → scale pixels. Axes are independent; results are rounded half-up and clamped to ≥ 1. The resolved sizes feed the FBO allocation and every size uniform (`OutputSize`, and the next pass's `SourceSize`).
 
-Fixed (audit F6, `c9b41daaf`): `viewport` now resolves against the aspect-corrected viewport — the game image rect fitted inside the swapchain with letterbox margins (half-up rounding), matching RetroArch — instead of the raw swapchain. Border/bezel presets computing aspect-dependent geometry now size their FBOs for the area the game actually occupies, and a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect (the blit fits the chain output the same way). Extension note: integer scaling stays a presentation-level fit here and is not folded into the shader viewport base (RetroArch folds `video_scale_integer` in when enabled); watch field logs if integer-scaled bezels misalign.
+Fixed (audit F6, `f87f89d18`): `viewport` now resolves against the aspect-corrected viewport — the game image rect fitted inside the swapchain with letterbox margins (half-up rounding), matching RetroArch — instead of the raw swapchain. Border/bezel presets computing aspect-dependent geometry now size their FBOs for the area the game actually occupies, and a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect (the blit fits the chain output the same way). Extension note: integer scaling stays a presentation-level fit here and is not folded into the shader viewport base (RetroArch folds `video_scale_integer` in when enabled); watch field logs if integer-scaled bezels misalign.
 
 ### 3.5 Lookup textures (LUTs)
 
@@ -110,7 +110,7 @@ Fixed (audit F6, `c9b41daaf`): `viewport` now resolves against the aspect-correc
 | Per-texture options | Supported | `name_linear` (filter), `name_wrap_mode` (wrap), `name_mipmap` (generate mip chain + mipmapped sampler). Suffix matching is case-insensitive against the declared list |
 | Implicit declaration | Supported (RetroArch-compat) | A key with no other meaning whose value ends in `.png/.jpg/.jpeg/.bmp/.tga/.dds/.webp` declares a texture by that key name |
 | Formats | Partial | Any SDL_image-decodable file; converted to RGBA8 and uploaded as `R8G8B8A8_UNORM`. Float LUT textures (e.g. `.exr`, half-float PNG) are not preserved at full precision — 8-bit upload |
-| Mipmaps | Supported | `SDL_GenerateMipmapsForGPUTexture` at upload when `name_mipmap = true`; mip levels = full chain |
+| Mipmaps | Supported | `SDL_GenerateMipmapsForGPUTexture` at upload when `name_mipmap = true`; mip levels = full chain. The texture now also carries COLOR_TARGET usage: SDL's GenerateMipmaps contract requires SAMPLER + COLOR_TARGET, and the Vulkan path never needed it (transfer bits are always present and the device disables SDL debug mode), so the flag gap was invisible on the shipping backend (fixed with F1) |
 | `User#` sampling | Supported | Spec-sanctioned positional access to the declared textures (`User0` = first declared LUT). Direct `User#` is discouraged by the spec in favor of aliases, but supported. Note `User#Size` uniforms do NOT resolve (§4.7) |
 | git-lfs pointers | Supported diagnostic | A LUT file that is a git-lfs pointer (archive download / non-LFS checkout) fails `IMG_Load` with an explicit "POINTER file, not image data" hint in the error string (`preset_runner.cpp`) |
 
@@ -232,7 +232,7 @@ All size semantics carry the spec's `vec4(x, y, 1/x, 1/y)` payload; a `vec2` mem
 |---|---|---|---|
 | `MVP` | `mat4` | Supported | Orientation law: flip-Y for every intermediate pass, identity for the last pass |
 | `OutputSize` | vec4 | Supported | This pass's output size |
-| `FinalViewportSize` | vec4 | Supported | Aspect-corrected viewport: the game image rect fitted inside the swapchain (F6, fixed in `c9b41daaf`; was the raw swapchain). RetroArch's final-viewport semantics; the presentation blit letterboxes onto the same rect |
+| `FinalViewportSize` | vec4 | Supported | Aspect-corrected viewport: the game image rect fitted inside the swapchain (F6, fixed in `f87f89d18`; was the raw swapchain). RetroArch's final-viewport semantics; the presentation blit letterboxes onto the same rect |
 | `OriginalSize` | vec4 | Supported | Game frame size |
 | `SourceSize` | vec4 | Supported | Current pass input size |
 | `FrameCount` | uint | Supported | Frames since preset load (starts at 1), pre-wrapped by the pass's `frame_count_modN` |
@@ -273,7 +273,7 @@ Double-buffering is demand-driven: a pass whose output is read through `PassFeed
 
 | Bound texture | Sampler |
 |---|---|
-| `Source` | The reading pass's `filter_linearN` + `wrap_modeN` + `mipmap_inputN` |
+| `Source` | The reading pass's `filter_linearN` + `wrap_modeN` + `mipmap_inputN`; with the mip flag the input is mip-chain refilled per frame (F1) |
 | `Original`, `OriginalHistory#`, `PassOutput#`, `PassFeedback#`, `<name>Feedback`, plain aliases | Nearest / clamp-to-edge (deliberate default; RetroArch binds pass outputs by the producing pass's filter — verify against RetroArch only if an alias-heavy Phase-2 preset misrenders) |
 | LUTs (by name or `User#`) | The LUT's own `linear` / `wrap_mode` / `mipmap` options |
 
@@ -289,7 +289,7 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 |---|---|---|---|
 | Chain of N passes, per-pass shaders | Supported | parser, runner | |
 | `filter_linear` / `wrap_mode` per pass and per LUT | Supported | parser, runner | `clamp_to_border` → clamp-to-edge (divergence) |
-| Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = aspect-corrected game rect (F6 fixed, `c9b41daaf`); bare-`scale` order fix shipped (P1) |
+| Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = aspect-corrected game rect (F6 fixed, `f87f89d18`); bare-`scale` order fix shipped (P1) |
 | sRGB / float FBOs | Supported | runner | sRGB precedence when both set (F8 erratum); `#pragma format` overrides |
 | `#pragma format` | Supported (subset) | translate→runner | 8 spec tokens missing → warn + RGBA8 (4.2.1) |
 | Aliases + `#pragma name` identifiers + plain-alias sampling | Supported | runner | First-match on duplicate names |
@@ -298,7 +298,7 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | `PassFeedback#` / `<name>Feedback` | Supported | runner | Demand-driven double buffering (F2: `feedback_pass` dead) |
 | `PassFeedback#Size` uniform | Supported | runner | Length-aware index parse (gap #4 fixed, `6f13d787f`); was a `stoi("ck#")` latent crash (4.7) |
 | LUTs incl. mipmap LUTs, `User#` | Supported | runner | 8-bit upload; `User#Size` unresolved |
-| `mipmap_input` | Partial (F1) | runner | No-op for pass outputs / chain input (1 mip level) |
+| `mipmap_input` | Supported (F1) | runner | Mip-chained pass outputs + per-frame `SDL_GenerateMipmapsForGPUTexture`; chain-input copy for pass 0; LUT usage flags satisfy SDL's GenerateMipmaps contract |
 | Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `6f13d787f`); no UI (by design) |
 | `#reference` inheritance + ancestor path fallback | Supported | parser | Multi-parent; last non-empty chain wins (code/comment mismatch note) |
 | UBO (≤1/stage) + push-constant re-homing, std140 | Supported | translate, runner | Unsized arrays / extra UBOs / standalone uniforms unsupported |
@@ -320,8 +320,8 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 
 Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from the v2 audit CSVs (`docs/audit/`).
 
-1. ✅ **Viewport scale = swapchain, no aspect derivation (F6)** — FIXED (`c9b41daaf`): `preset_runner.cpp` derives the aspect-corrected viewport (game image rect letterbox-fitted into the swapchain, half-up rounding) and resolves `viewport` scale and `FinalViewportSize` against it; a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect. Regression test: `tools/audit/test_viewport_derive.cpp` (13 checks). Integer scaling remains a presentation-level fit (extension note in §3.4).
-2. **`mipmap_input` no-op for pass outputs (F1)** — `preset_runner.cpp` (target allocation + no per-frame mip generation). 892 presets but 888 Mega_Bezel-tier; implement mip-chained outputs + `SDL_GenerateMipmapsForGPUTexture` per frame only when Phase 3 starts.
+1. ✅ **Viewport scale = swapchain, no aspect derivation (F6)** — FIXED (`f87f89d18`): `preset_runner.cpp` derives the aspect-corrected viewport (game image rect letterbox-fitted into the swapchain, half-up rounding) and resolves `viewport` scale and `FinalViewportSize` against it; a viewport-scaled final pass lands exactly on the presentation blit's letterbox rect. Regression test: `tools/audit/test_viewport_derive.cpp` (13 checks). Integer scaling remains a presentation-level fit (extension note in §3.4).
+2. ✅ **`mipmap_input` no-op for pass outputs (F1)** — FIXED (2026-10-14, F1 round): pass outputs targeted by a mip-reading next pass allocate full mip chains and `SDL_GenerateMipmapsForGPUTexture` refills them each frame between render passes; pass 0 reads the chain input through a mip-capable RGBA8 copy blitted and refilled per frame (the game texture stays a single-level scaler surface). LUT textures now carry the usage flags SDL's GenerateMipmaps contract requires (SAMPLER-only worked only because the Vulkan path needs just transfer bits and the device disables SDL debug mode). Mip filter: linear, min/mag per `filter_linearN`. Regression test: `tools/audit/test_mipmap_plan.cpp` (32 checks). Deliberate divergence: history/feedback/alias bindings keep the nearest/clamp default sampler (§5.4) and never consume mips.
 3. ✅ **Parameter override case quirk** — FIXED (`6f13d787f`): `preset_runner.cpp` applies overrides via `CaseInsensitiveEqual`; the parser's lowercased keys now land regardless of the `#pragma` spelling. Was: mixed-case parameters (Mega Bezel `.params` overlays) silently kept pragma defaults.
 4. ✅ **`PassFeedback#Size` latent crash** — FIXED (`6f13d787f`): length-aware index parse in `FillBlockBytes` (plus the same-class guard on the translator's uniform `[N]` size parse, which previously aborted on non-numeric sizes instead of erroring loudly). Regression test: `tools/audit/test_uniform_names.cpp`.
 5. **`Rotation` semantic missing** — `slang_translate.cpp` whitelist + `FillBlockBytes`. Loud failure at translate; add (uint 0..3, identity for a non-rotating frontend) when needed.
@@ -337,7 +337,7 @@ Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from 
 
 ## 8. Cross-references
 
-- `docs/GPU_SHADERS.md` — user-facing scaler guide (baked-filter era text; runtime-preset rewrite is pending task 26-j in the handoff).
+- `docs/GPU_SHADERS.md` — user-facing runtime-preset scaler guide (rewritten for the runtime scope).
 - `docs/audit/shader-support-audit-2026-10-14.md` — static audit: F5/P1 evidence and patches, F1/F2/F6/F8/F9/T2–T5/T9 disposition, updated phase plan.
 - `docs/audit/slang_audit_v2.csv`, `docs/audit/vulkan-audit-codefindings-affected.csv`, `docs/audit/slang-codefindings-scan.csv` — per-preset feature flags and finding exposure (2658 presets).
 - `tools/audit_slang_presets.py`, `tools/audit/*.py` — audit tooling (re-run after every fix; diff CSVs run-to-run).

@@ -454,11 +454,12 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			textureNames += tex.name;
 		}
 		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s flipY=%s"
+		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s flipY=%s mipIn=%s"
 		    " src=%u:%08x merged=%u:%08x fragFetch=%d/%d textures=[%s]",
 		    static_cast<unsigned>(pi), p.def.shaderPath.c_str(), p.def.alias.c_str(),
 		    p.translation.vertex.usesMvp ? "yes" : "no",
 		    (p.translation.vertex.usesMvp && pi + 1 < passes_.size()) ? "yes" : "no",
+		    p.def.mipmapInput ? "yes" : "no",
 		    static_cast<unsigned>(p.translation.sourceSize), p.translation.sourceHash,
 		    static_cast<unsigned>(p.translation.mergedSize), p.translation.mergedHash,
 		    p.translation.fragment.texelFetchCount, p.translation.fragment.textureGatherCount,
@@ -617,8 +618,14 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 	    targetViewportWidth_, targetViewportHeight_, targets.c_str());
 
 	// Pass output textures (double-buffered when a pass reads its own
-	// previous-frame output as feedback).
-	for (PassRuntime *pass : passes_) {
+	// previous-frame output as feedback). F1: an output carries a full mip
+	// chain only when the NEXT pass reads it as Source with mipmap_input -
+	// only `Source` binds the reading pass's mipmap flag (SLANG_SPEC.md 5.4).
+	// Run() refills the chain before that pass every frame.
+	std::string mipChainPasses;
+	for (size_t pi = 0; pi < passes_.size(); ++pi) {
+		PassRuntime *pass = passes_[pi];
+		const bool nextPassWantsMips = pi + 1 < passes_.size() && passes_[pi + 1]->def.mipmapInput;
 		SDL_GPUTextureCreateInfo info {};
 		info.type = SDL_GPU_TEXTURETYPE_2D;
 		info.format = pass->targetFormat;
@@ -626,14 +633,46 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		info.width = pass->outputWidth;
 		info.height = pass->outputHeight;
 		info.layer_count_or_depth = 1;
-		info.num_levels = 1;
+		info.num_levels = nextPassWantsMips ? MipLevelsFor(pass->outputWidth, pass->outputHeight) : 1;
 		info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 		pass->outputTex[0] = SDL_CreateGPUTexture(device_, &info);
 		if (pass->doubleBuffered)
 			pass->outputTex[1] = SDL_CreateGPUTexture(device_, &info);
 		if (pass->outputTex[0] == nullptr || (pass->doubleBuffered && pass->outputTex[1] == nullptr))
 			return false;
+		if (nextPassWantsMips) {
+			if (!mipChainPasses.empty())
+				mipChainPasses += ',';
+			mipChainPasses += std::to_string(pi);
+		}
 	}
+
+	// F1: pass 0 reads the chain input through its mipmapped sampler when it
+	// declares mipmap_input, but the game texture is a single-level
+	// scaler-owned surface. Blit it into a runner-owned mip-capable copy
+	// (RGBA8, same size - the history ring convention) and refill the chain
+	// before pass 0 every frame (Run).
+	if (!passes_.empty() && passes_[0]->def.mipmapInput) {
+		SDL_GPUTextureCreateInfo info {};
+		info.type = SDL_GPU_TEXTURETYPE_2D;
+		info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+		info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+		info.width = static_cast<Uint32>(gameWidth);
+		info.height = static_cast<Uint32>(gameHeight);
+		info.layer_count_or_depth = 1;
+		info.num_levels = MipLevelsFor(info.width, info.height);
+		info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+		mipSourceTex_ = SDL_CreateGPUTexture(device_, &info);
+		if (mipSourceTex_ == nullptr)
+			return false;
+	}
+
+	// Field diagnostics: which inputs actually carry mip chains (logs once
+	// per target resize).
+	if (!mipChainPasses.empty() || mipSourceTex_ != nullptr)
+		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+		    "GPU scaler preset: mipmapped inputs (F1): pass outputs with mip chains [%s], chain-input copy %s",
+		    mipChainPasses.c_str(), mipSourceTex_ != nullptr ? "on" : "off");
 
 	// Chain-input history ring.
 	if (historyDepth_ > 0) {
@@ -679,6 +718,10 @@ void Runner::ReleaseTargets()
 	}
 	history_.clear();
 	historySeeded_ = false;
+	if (mipSourceTex_ != nullptr) {
+		SDL_ReleaseGPUTexture(device_, mipSourceTex_);
+		mipSourceTex_ = nullptr;
+	}
 	targetGameWidth_ = 0;
 	targetGameHeight_ = 0;
 	targetSwapchainWidth_ = 0;
@@ -705,7 +748,14 @@ bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 	SDL_GPUTextureCreateInfo info {};
 	info.type = SDL_GPU_TEXTURETYPE_2D;
 	info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	// SDL's SDL_GenerateMipmapsForGPUTexture contract requires SAMPLER +
+	// COLOR_TARGET usage on mipmapped textures. The Vulkan backend never
+	// needed COLOR_TARGET (transfer bits are always present and this
+	// device disables SDL debug mode), but keep the flags contract-correct
+	// so mip generation also survives debug mode and future backends.
 	info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+	if (lut.def.mipmap)
+		info.usage |= SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
 	info.width = lut.width;
 	info.height = lut.height;
 	info.layer_count_or_depth = 1;
@@ -779,8 +829,6 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	const float passOutH = static_cast<float>(pass->outputHeight);
 	const float gameW = static_cast<float>(targetGameWidth_);
 	const float gameH = static_cast<float>(targetGameHeight_);
-	const float swapW = static_cast<float>(targetSwapchainWidth_);
-	const float swapH = static_cast<float>(targetSwapchainHeight_);
 	const float viewportW = static_cast<float>(targetViewportWidth_);
 	const float viewportH = static_cast<float>(targetViewportHeight_);
 	const float inputW = inputWidth;
@@ -1024,6 +1072,32 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		PassRuntime *pass = passes_[i];
 		const int cur = pass->curBuffer;
 		SDL_GPUTexture *target = pass->outputTex[cur];
+
+		// F1: refill the mip chain of this pass's Source before the draw -
+		// SDL_GenerateMipmapsForGPUTexture must run outside any render pass,
+		// so it sits between the per-pass render passes here. Pass 0's Source
+		// is the chain input, a single-level scaler-owned texture: blit it
+		// into the mip-capable copy first and bind the copy. Later passes
+		// generate directly on the producing pass's output (allocated with a
+		// full chain in EnsureTargets exactly when this flag is set).
+		if (pass->def.mipmapInput) {
+			if (i == 0 && mipSourceTex_ != nullptr) {
+				SDL_GPUBlitInfo copy {};
+				copy.source.texture = gameTex;
+				copy.source.w = static_cast<Uint32>(gameWidth);
+				copy.source.h = static_cast<Uint32>(gameHeight);
+				copy.destination.texture = mipSourceTex_;
+				copy.destination.w = static_cast<Uint32>(gameWidth);
+				copy.destination.h = static_cast<Uint32>(gameHeight);
+				copy.load_op = SDL_GPU_LOADOP_DONT_CARE;
+				copy.filter = SDL_GPU_FILTER_NEAREST;
+				SDL_BlitGPUTexture(cmd, &copy);
+				SDL_GenerateMipmapsForGPUTexture(cmd, mipSourceTex_);
+				sourceTex = mipSourceTex_;
+			} else if (i > 0) {
+				SDL_GenerateMipmapsForGPUTexture(cmd, sourceTex);
+			}
+		}
 
 		const StageTranslation &frag = pass->translation.fragment;
 		const StageTranslation &vert = pass->translation.vertex;

@@ -100,6 +100,8 @@ private:
 	int historySlot_ = 0;
 	bool historySeeded_ = false; // All ring slots hold valid content.
 
+	SDL_GPUTexture *mipSourceTex_ = nullptr; // F1: mip-capable copy of the chain input for pass-0 mipmap_input
+
 	int targetGameWidth_ = 0;
 	int targetGameHeight_ = 0;
 	Uint32 targetSwapchainWidth_ = 0;

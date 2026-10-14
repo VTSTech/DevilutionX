@@ -164,7 +164,7 @@ The campaign now has two arms that feed each other:
   cross-checked against RetroArch's `gfx/video_shader_parse.c`, and ends in a
   priority-ordered gap list (its §7, 14 items). **Work that list top-down.** The top
   items, confirmed against master `dce1c4222`:
-  1. ✅ **F6 viewport aspect** — FIXED (`c9b41daaf`): the runner derives the aspect-corrected
+  1. ✅ **F6 viewport aspect** — FIXED (`f87f89d18`): the runner derives the aspect-corrected
      viewport (game image rect letterbox-fitted into the swapchain, half-up rounding) and
      resolves `ScaleType::Viewport` AND `FinalViewportSize` against it, so the 232-preset
      `uses_mvp + viewport_scale` cluster computes geometry for the area the game actually
@@ -178,8 +178,13 @@ The campaign now has two arms that feed each other:
   3. ✅ **Param-case quirk** — FIXED (`6f13d787f`): the runner applies `#pragma` param overrides
      via `CaseInsensitiveEqual`, so the parser's lowercased keys land regardless of shader
      spelling (Mega Bezel mixed-case params no longer silently keep defaults).
-  4. **F1 mipmaps** — `mipmap_input` parsed then ignored (892 presets; Mega Bezel-tier,
-     Phase-3 gate).
+  4. ✅ **F1 mipmaps** — FIXED (2026-10-14, F1 round): pass outputs targeted by a
+     mip-reading next pass allocate full mip chains and `SDL_GenerateMipmapsForGPUTexture`
+     refills them each frame between render passes; pass 0 reads the chain input through a
+     mip-capable RGBA8 copy (blitted + refilled per frame; the game texture stays a
+     single-level scaler surface). LUT textures now carry the usage flags SDL's
+     GenerateMipmaps contract requires. Regression test: `tools/audit/test_mipmap_plan.cpp`
+     (32 checks, g++ -O2, exit 0).
   5. …continue per SLANG_SPEC.md §7 (sRGB+float precedence note is already documented
      there as divergent-but-harmless, 0 presets affected).
 - **Empirical arm (the field sweep):** the §12 validation methodology below. Every
@@ -719,11 +724,12 @@ as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
   max_hist=3) were the ring-fix canaries — now fixed, confirm in the first sweep.
 - Downgraded / non-issues (do not re-litigate): F9 case-mismatch (scanner
   false-positive — strip the `NAME`Feedback suffix before case compare), F1
-  mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — defer to Phase 3), F2
+  mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — FIXED since, §8 queue
+  item 4), F2
   feedback_pass dead key (benign, demand-driven feedback), T9/T2/T3/T4/T5 zero wild
   hits (translator hard-failure paths never exercised — strong coverage signal).
   F6 viewport=swapchain was logged here as an observation before it was promoted
-  to the §8 queue and fixed (`c9b41daaf`).
+  to the §8 queue and fixed (`f87f89d18`).
 - Still pending (user side): CI build of master → Phase-1 field sweep per §12
   reporting format → fold results into the SLANG_SPEC.md gap list (§8 reconciliation
   rule); re-upload a v3 field binary only if the wild-call re-scan is still wanted.
