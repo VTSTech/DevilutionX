@@ -50,13 +50,16 @@ or render incorrectly if the LFS assets were never pulled. Make sure `git-lfs` i
 installed and initialized (`git lfs install`) before cloning. You can keep the whole
 collection or just the handful of `.slangp` files you actually use.
 
-On Windows, the release zip ships two helper scripts that automate this:
+The release zips ship helper scripts beside the executable that automate this:
 
-- `install_shaders.cmd` — wipes and re-downloads `.\shaders\` beside the exe (shallow clone
-  plus `git lfs pull`; needs `git` and `git-lfs` on `PATH`).
-- `clear_shader_cache.cmd` — deletes `.\shaders\cache\`, the translated-shader compile
-  cache. It is rebuilt automatically on the next preset load; run it after a corpus
-  update or a game update if presets misbehave.
+- `install_shaders.cmd` (Windows) / `install_shaders.sh` (Linux) — wipes and re-downloads
+  `shaders/` beside the executable (fresh clone plus `git lfs pull`; needs `git` and
+  `git-lfs` — the Linux script prints the per-distro install command if either is missing).
+- `clear_shader_cache.cmd` (Windows) / `clear_shader_cache.sh` (Linux) — deletes
+  `shaders/cache/`, the translated-shader compile cache. It is rebuilt automatically on
+  the next preset load; run it after a corpus update or a game update if presets misbehave.
+- `install_git.cmd` (Windows) — one-time helper for machines without `git`: installs
+  Git for Windows (bundling Git LFS) via winget so `install_shaders.cmd` can run.
 
 ## Using Shaders
 
