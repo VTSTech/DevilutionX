@@ -254,6 +254,21 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
 - ⬜ **Wire `scan_pe_for_wild_calls.py` into CI** as a post-link gate so
   any future build-time corruption is caught before field test.
 
+### Known non-shader issue — Integer Scaling crash (documented, deliberately unfixed)
+
+Field round 1 surfaced a crash when the game's own **Integer Scaling** option is
+combined with a resolution that is not a whole-number multiple of the desktop
+(2275×1280 on 1080p; 720p is fine). Ruled **out of scope by VTSTech (2026-10-14)**:
+the crash is in the core window-size math (`CalculatePreferredWindowSize`,
+`Source/utils/display.cpp` — integer factor truncates to 0 → divide-by-zero), plus a
+latent zero-size-fit path in `PresentFrame` (`Source/engine/render/gpu/gpu_scaler.cpp`)
+that honors the same option. It is user-facing documented in
+[GPU_SHADERS.md](GPU_SHADERS.md) §Troubleshooting; the abandoned fix diff is snapshotted
+in the mod distribution notes (`integer-scaling-known-issue/` in the mod packaging).
+Do **not** re-diagnose or fix this in shader rounds; if a field crash matches this
+signature (Integer Scaling on, odd resolution, no preset errors in the log), report it
+as this known issue and move on.
+
 ### D3D12 — fully excised (history only)
 
 - ✅ **D3D12 §7 root cause found** — three corrupt `E8 rel32` calls in the

@@ -233,6 +233,36 @@ to load and the stock "fatal error" dialog locked the UI. This fork carries two 
 Additionally, a sound effect that cannot be loaded for any reason no longer raises a
 fatal error dialog: the game logs the failure and continues without that sound.
 
+### Crash with Integer Scaling enabled at non-multiple resolutions (known issue — not the shader scaler)
+
+Enabling the game's own **Graphics → Integer Scaling** option can crash the game when
+the configured game resolution is not a whole-number multiple of the desktop mode
+(field case: a 2275×1280 game resolution on a 1920×1080 desktop; the same setup at
+1280×720 runs fine). The crash happens in the window-size / fit math that the option
+drives — before any shader is translated, compiled, or run — so `gpu-scaler.log` shows
+no preset failure around it. Two sites were identified when this was investigated
+(2026-10-14):
+
+1. `CalculatePreferredWindowSize` in `Source/utils/display.cpp`: the factor is computed
+   with integer truncation, `factor = min(desktop.w / game.w, desktop.h / game.h)` — when
+   the game resolution exceeds the desktop at whole multiples both divisions truncate to
+   **0** and the following `desktop / factor` divides by zero.
+2. `PresentFrame` in `Source/engine/render/gpu/gpu_scaler.cpp` (both fit sites): the
+   same option is honored when fitting the game frame / chain output into the window
+   with `std::floor(...)` — if the window is smaller than one whole multiple the floor
+   yields **0**, producing a zero-size destination rect (latent secondary path).
+
+**Status: documented, deliberately not fixed.** The option and its window-size math are
+core game paths outside this fork's shader-scaler scope; the abandoned fix diff (clamp
+`factor >= 1`, keep the fractional letterbox fit below one multiple) is snapshotted
+alongside the mod distribution notes for anyone who wants to carry it upstream or
+maintain it separately.
+
+**Workaround:** disable Integer Scaling, or pick a game resolution / desktop mode pair
+that is a whole-number multiple (e.g. 1280×720 on 1080p). Preset chains do not need this
+option — libretro presets implement their own scaling via scale rules and letterbox on
+their own.
+
 ### Other checks
 
 - **Preset renders wrong or `(Unavailable)`:** check `gpu-scaler.log` for the
@@ -284,4 +314,3 @@ fatal error dialog: the game logs the failure and continues without that sound.
 - DevilutionX: Diasurgical and contributors.
 - Mod integration and maintenance by [VTSTech](https://github.com/VTSTech)
   ([vts-tech.org](https://www.vts-tech.org)).
-
