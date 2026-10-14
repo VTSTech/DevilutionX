@@ -314,3 +314,4 @@ their own.
 - DevilutionX: Diasurgical and contributors.
 - Mod integration and maintenance by [VTSTech](https://github.com/VTSTech)
   ([vts-tech.org](https://www.vts-tech.org)).
+

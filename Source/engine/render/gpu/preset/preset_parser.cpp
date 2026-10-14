@@ -442,9 +442,29 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 			const size_t suffixLen = std::strlen(suffix);
 			if (key.size() > suffixLen && key.compare(key.size() - suffixLen, suffixLen, suffix) == 0) {
 				const std::string baseLower = key.substr(0, key.size() - suffixLen);
+				// Field round 2: only attach modifiers to textures that actually
+				// exist - declared in this file's `textures` list, inherited from
+				// a #reference parent, or (for `_path`) declared by the key itself
+				// without a list. crt-geom-deluxe-ntsc-adaptive carries
+				// "delta_filter_linear = true" for a texture named "delta";
+				// deriving a pathless texture "delta_filter" here hard-failed the
+				// whole preset, while RetroArch ignores undeclared modifier keys.
+				TextureDef *tex = nullptr;
 				const auto found = textureNames.find(baseLower);
-				const std::string texName = found != textureNames.end() ? found->second : baseLower;
-				TextureDef *tex = textureByName(texName);
+				if (found != textureNames.end()) {
+					tex = textureByName(found->second);
+				} else {
+					for (TextureDef &existing : preset.textures) {
+						if (ToLower(existing.name) == baseLower) {
+							tex = &existing;
+							break;
+						}
+					}
+					if (tex == nullptr && std::strcmp(suffix, "_path") == 0)
+						tex = textureByName(baseLower);
+				}
+				if (tex == nullptr)
+					break; // Undeclared modifier key: ignored (RetroArch-conformant).
 				if (suffix == std::string("_linear")) {
 					tex->filter = ParseFilterMode(value);
 				} else if (suffix == std::string("_wrap_mode")) {

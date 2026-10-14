@@ -531,9 +531,88 @@ int BuiltinTextureIndex(const std::string &name)
 	return std::stoi(match[2].str());
 }
 
+/** @brief True when the source #defines this identifier. Field round 2: Mega
+ * Bezel wrapper shaders declare samplers that are macro-renamed to known
+ * textures; glslang expands the sampling calls, so only the declaration
+ * needs dropping. Runs on comment-stripped text. */
+bool IsDefineTarget(const std::string &glsl, const std::string &name)
+{
+	size_t pos = 0;
+	while ((pos = glsl.find("#define", pos)) != std::string::npos) {
+		// The directive must start a line (leading whitespace allowed).
+		const size_t lineStart = glsl.rfind('\n', pos) == std::string::npos ? 0 : glsl.rfind('\n', pos) + 1;
+		bool onlySpace = true;
+		for (size_t i = lineStart; i < pos; ++i) {
+			if (glsl[i] != ' ' && glsl[i] != '\t') {
+				onlySpace = false;
+				break;
+			}
+		}
+		const size_t after = pos + 7;
+		size_t nameStart = after;
+		while (nameStart < glsl.size() && (glsl[nameStart] == ' ' || glsl[nameStart] == '\t'))
+			++nameStart;
+		if (onlySpace && nameStart + name.size() <= glsl.size()
+		    && glsl.compare(nameStart, name.size(), name) == 0) {
+			const char end = nameStart + name.size() < glsl.size() ? glsl[nameStart + name.size()] : '\0';
+			if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_')
+				return true;
+		}
+		pos = after;
+	}
+	return false;
+}
+
+/** @brief True when the identifier appears as a sampling-call argument
+ * (texture/textureLod/textureOffset/... or texelFetch/texelFetchOffset).
+ * The declaration itself ("sampler2D name;") does not count: the word in
+ * front of the name there is "sampler2D", not a call. */
+bool IsTextureSampled(const std::string &glsl, const std::string &name)
+{
+	size_t pos = 0;
+	while ((pos = glsl.find(name, pos)) != std::string::npos) {
+		const size_t end = pos + name.size();
+		const char after = end < glsl.size() ? glsl[end] : '\0';
+		const bool wordEnd = !std::isalnum(static_cast<unsigned char>(after)) && after != '_';
+		if (wordEnd) {
+			size_t begin = pos;
+			while (begin > 0
+			    && (std::isalnum(static_cast<unsigned char>(glsl[begin - 1])) || glsl[begin - 1] == '_'))
+				--begin;
+			if (begin < pos) {
+				// Identifier directly attached (declaration "sampler2D Name",
+				// member access "params.Name"): never a sampling call.
+				const std::string prefix = glsl.substr(begin, pos - begin);
+				if (prefix.compare(0, 7, "texture") == 0 || prefix.compare(0, 10, "texelFetch") == 0)
+					return true;
+			} else {
+				// A sampling call separates callee and argument with '(' and
+				// optional whitespace: "texture(Name" / "texture (Name".
+				size_t probe = pos;
+				while (probe > 0 && (glsl[probe - 1] == ' ' || glsl[probe - 1] == '\t'))
+					--probe;
+				if (probe > 0 && glsl[probe - 1] == '(') {
+					const size_t paren = probe - 1;
+					size_t wordBegin = paren;
+					while (wordBegin > 0
+					    && (std::isalnum(static_cast<unsigned char>(glsl[wordBegin - 1]))
+					        || glsl[wordBegin - 1] == '_'))
+						--wordBegin;
+					const std::string call = glsl.substr(wordBegin, paren - wordBegin);
+					if (call.compare(0, 7, "texture") == 0 || call.compare(0, 10, "texelFetch") == 0)
+						return true;
+				}
+			}
+		}
+		pos = end;
+	}
+	return false;
+}
+
 /** @brief Rewrites sampler2D declarations to the SDL3 resource set (0 vertex, 2 fragment) with dense bindings. */
 bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
-    const std::unordered_set<std::string> &knownTextureNames, int passIndex, int passCount, std::string &error)
+    const std::unordered_set<std::string> &knownTextureNames, int passIndex, int passCount,
+    std::vector<std::string> &warnings, std::string &error)
 {
 	static const std::regex samplerRe(
 	    R"(^(\s*)(layout\s*\([^)]*\)\s*)?uniform\s+((?:lowp\s+|mediump\s+|highp\s+)?)sampler2D\s+(.+?)\s*;\s*$)");
@@ -579,8 +658,25 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 				for (const char c : base)
 					baseLower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 				if (knownTextureNames.find(baseLower) == knownTextureNames.end()) {
-					error = StrCat("slang: unknown texture reference '", name, "' (not a builtin, alias or lookup texture)");
-					return false;
+					// Field round 2 tolerance: wrapper shaders ship orphan sampler
+					// declarations for chains they are not part of. Mega Bezel's
+					// hsm-custom-fast-sharpen declares PrePass0 and #defines it to
+					// Source (glslang expands the calls); uborder's single-pass
+					// crt-geom declares ambi_temporal_pass without ever sampling
+					// it. RetroArch binds nothing for either, so drop the
+					// declaration with a warning when the name is a #define target
+					// or is never sampled. A sampled unknown name still hard-fails:
+					// that is a real missing dependency.
+					const bool definedAway = IsDefineTarget(glsl, name);
+					if (!definedAway && IsTextureSampled(glsl, name)) {
+						error = StrCat("slang: unknown texture reference '", name,
+						    "' (not a builtin, alias or lookup texture)");
+						return false;
+					}
+					warnings.push_back(StrCat("sampler '", name, "' has no chain target (",
+					    definedAway ? "#defined away" : "declared but never sampled",
+					    "); dropping declaration"));
+					continue;
 				}
 			}
 			// PassOutput# causality: pass N may only read outputs of passes < N.
@@ -764,12 +860,21 @@ bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
 		stage.present = false;
 		return true; // Stage absent in this shader (e.g. fragment-only file).
 	}
+	// Field round 2: strip comments from the working copy before any
+	// structural rewrite. Commented-out uniform blocks ("/* uniform UBO
+	// ... */" in the Mega Bezel guest pack) and commented samplers
+	// otherwise match the rewriters and hard-fail presets that glslang
+	// itself compiles fine. Pragmas were already extracted with their own
+	// comment-tolerant rules and the merged fingerprint was taken before
+	// this copy, so stripping here is side-effect free. #define lines are
+	// preserved: glslang still macro-expands sampling calls in the output.
+	glsl = StripComments(glsl);
 	if (!RewriteUboBlocks(glsl, isVertex, stage.uniformBlocks, error))
 		return false;
 	const bool uboPresent = !stage.uniformBlocks.empty();
 	if (!RewritePushBlock(glsl, isVertex, uboPresent, stage.uniformBlocks, error))
 		return false;
-	if (!RewriteSamplers(glsl, isVertex, stage, knownTextureNames, passIndex, passCount, error))
+	if (!RewriteSamplers(glsl, isVertex, stage, knownTextureNames, passIndex, passCount, warnings, error))
 		return false;
 	if (!ValidateBlockMembers(stage.uniformBlocks, parameters, knownTextureNames, warnings))
 		return false;

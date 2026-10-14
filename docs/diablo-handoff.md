@@ -269,6 +269,37 @@ Do **not** re-diagnose or fix this in shader rounds; if a field crash matches th
 signature (Integer Scaling on, odd resolution, no preset errors in the log), report it
 as this known issue and move on.
 
+### Field round 2 — offline preflight (2026-10-14, before the live sweep)
+
+An offline translate-stage harness (real `ParsePreset` + `TranslateSlang`, no device)
+was run over the round-2 test list from the freshly accessible corpus clone
+(`presets/`, `crt/crt-effects/`, `bezel/{Mega_Bezel,uborder}` layout). Result: 117
+passes across 17 of 18 presets translate clean; 3 fix-worthy failure classes were
+found and fixed BEFORE the live sweep (§7 items 18–20):
+
+- **F-A orphan samplers** — MBZ `hsm-custom-fast-sharpen` declares `PrePass0` and
+  `#define`s it to `Source`; uborder single-pass `crt-geom` declares
+  `ambi_temporal_pass` never sampled. Both now drop the declaration with a load
+  warning; a SAMPLED unknown name still hard-fails (the reflections-active uborder
+  variant samples it from `uborder_bezel_reflections_main.inc:33` and is genuinely
+  broken in RetroArch too — use `base_presets/koko-ambi/koko-ambi-crt-geom.slangp`
+  (6 passes, clean) as the uborder crt-geom representative instead).
+- **F-B comment-unaware scanning** — a commented-out `/* uniform UBO ... */` in MBZ
+  `hsm-interlace-and-linearize` tripped the one-UBO guard. Comments are stripped from
+  the working stage copy before any rewrite; `#define` lines survive for glslang.
+- **F-C undeclared texture modifier keys** — `delta_filter_linear = true` (for a
+  texture named `delta`; crt-geom-deluxe-ntsc-adaptive) derived a pathless texture and
+  failed the preset. Modifiers now attach only to existing textures; undeclared keys
+  are ignored like RetroArch.
+
+Expected live-log noise for this round (all informational, RetroArch-conformant):
+zero-filled members (`sborder`, `prescalex`, `mask`, `warpX/Y`, `vertmask`,
+`shadowMask`, `rolling_scan`, `ring`, ... on crt-royale/guest chains),
+`CurrentSubFrame`/`TotalSubFrames` zero-fill on 120hz-smart-BFI (subframe modulation
+will be frozen at subframe 0 — candidate future semantic if it looks wrong), and the
+new orphan-sampler drop warnings. Regression test: `tools/audit/test_field_round2.cpp`
+(28 checks, links the real parser+translator; see its header for the build line).
+
 ### D3D12 — fully excised (history only)
 
 - ✅ **D3D12 §7 root cause found** — three corrupt `E8 rel32` calls in the
