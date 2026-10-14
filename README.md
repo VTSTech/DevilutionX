@@ -56,7 +56,9 @@ On Windows, the release zip (v8 and newer) ships two helper scripts beside `devi
 
 Presets are selected from the in-game folder browser
 
-See it in action: [shader demo video](https://www.youtube.com/watch?v=Fc72CjCcHH4).
+See it in action:
+
+[![Demo](https://img.youtube.com/vi/Fc72CjCcHH4/0.jpg)](https://www.youtube.com/watch?v=Fc72CjCcHH4)
 
 # Requirements
 
