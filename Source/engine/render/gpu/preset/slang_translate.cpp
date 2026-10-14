@@ -609,6 +609,133 @@ bool IsTextureSampled(const std::string &glsl, const std::string &name)
 	return false;
 }
 
+/** @brief Returns the single-identifier body of "#define <name> <body>" when
+ * the source defines name as an object-like macro aliasing exactly one
+ * identifier, or an empty string otherwise (no such define, function-like
+ * macro, empty or multi-token body). Field round 3 companion to
+ * IsDefineTarget. Runs on comment-stripped text. */
+std::string DefineTargetExpansion(const std::string &glsl, const std::string &name)
+{
+	size_t pos = 0;
+	while ((pos = glsl.find("#define", pos)) != std::string::npos) {
+		// The directive must start a line (leading whitespace allowed).
+		const size_t lineStart = glsl.rfind('\n', pos) == std::string::npos ? 0 : glsl.rfind('\n', pos) + 1;
+		bool onlySpace = true;
+		for (size_t i = lineStart; i < pos; ++i) {
+			if (glsl[i] != ' ' && glsl[i] != '\t') {
+				onlySpace = false;
+				break;
+			}
+		}
+		const size_t after = pos + 7;
+		size_t nameStart = after;
+		while (nameStart < glsl.size() && (glsl[nameStart] == ' ' || glsl[nameStart] == '\t'))
+			++nameStart;
+		if (onlySpace && nameStart + name.size() <= glsl.size()
+		    && glsl.compare(nameStart, name.size(), name) == 0) {
+			const size_t nameEnd = nameStart + name.size();
+			const char end = nameEnd < glsl.size() ? glsl[nameEnd] : '\0';
+			// Object-like only: a "(" opens a function-like parameter list.
+			if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_' && end != '(') {
+				size_t lineEnd = glsl.find('\n', nameEnd);
+				if (lineEnd == std::string::npos)
+					lineEnd = glsl.size();
+				const std::string body = TrimAll(glsl.substr(nameEnd, lineEnd - nameEnd));
+				bool singleIdent = !body.empty();
+				for (const char c : body) {
+					if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+						singleIdent = false;
+						break;
+					}
+				}
+				if (singleIdent)
+					return body;
+			}
+		}
+		pos = after;
+	}
+	return "";
+}
+
+/** @brief True when "sampler2D <name>" is declared in the (comment-stripped)
+ * source. Field round 3: decides whether a macro-aliased declaration must be
+ * kept — if the expansion target is already declared, the aliased
+ * declaration is a redundant orphan (Mega Bezel "#define PrePass0 Source");
+ * if not, the aliased declaration is the only one the macro-expanded
+ * sampling calls can bind (nnedi3 deinterlacing combine passes). */
+bool IsSamplerDeclared(const std::string &glsl, const std::string &name)
+{
+	size_t pos = 0;
+	while ((pos = glsl.find("sampler2D", pos)) != std::string::npos) {
+		// Skip isampler2D/usampler2D (identifier character right before).
+		if (pos > 0
+		    && (std::isalnum(static_cast<unsigned char>(glsl[pos - 1])) || glsl[pos - 1] == '_')) {
+			pos += 9;
+			continue;
+		}
+		size_t after = pos + 9;
+		// A plain sampler2D declaration requires whitespace between the
+		// keyword and the name; sampler2DArray/sampler2DShadow etc. skip.
+		if (after >= glsl.size() || (glsl[after] != ' ' && glsl[after] != '\t')) {
+			pos += 9;
+			continue;
+		}
+		while (after < glsl.size() && (glsl[after] == ' ' || glsl[after] == '\t'))
+			++after;
+
+		if (after + name.size() <= glsl.size()
+		    && glsl.compare(after, name.size(), name) == 0) {
+			const char end = after + name.size() < glsl.size() ? glsl[after + name.size()] : '\0';
+			if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_')
+				return true;
+		}
+		pos += 9;
+	}
+	return false;
+}
+
+/** @brief True when name appears anywhere besides its own sampler2D
+ * declaration(s): sampling calls, user-function arguments, anything. Field
+ * round 3: decides whether a macro-aliased declaration must be KEPT — the
+ * post-expansion references need it (koko-aio passes FPS_ESTIMATE_PASS into
+ * get_fps(...), which the texture-call sampling heuristic misses). */
+bool IsSamplerNameUsed(const std::string &glsl, const std::string &name)
+{
+	size_t pos = 0;
+	bool used = false;
+	while ((pos = glsl.find(name, pos)) != std::string::npos) {
+		const size_t end = pos + name.size();
+		const char after = end < glsl.size() ? glsl[end] : '\0';
+		const char before = pos > 0 ? glsl[pos - 1] : '\0';
+		const bool wordEnd = !std::isalnum(static_cast<unsigned char>(after)) && after != '_';
+		const bool wordStart = !std::isalnum(static_cast<unsigned char>(before)) && before != '_';
+		if (wordEnd && wordStart) {
+			// Classify: sampler2D declaration or #define directive (the
+			// defined name itself), or a use.
+			size_t probe = pos;
+			while (probe > 0 && (glsl[probe - 1] == ' ' || glsl[probe - 1] == '\t'))
+				--probe;
+			bool directive = false;
+			for (const char *kw : { "sampler2D", "#define" }) {
+				const size_t len = std::strlen(kw);
+				if (probe >= len && glsl.compare(probe - len, len, kw) == 0
+				    && (probe - len == 0
+				        || (!std::isalnum(static_cast<unsigned char>(glsl[probe - len - 1]))
+				            && glsl[probe - len - 1] != '_'))) {
+					directive = true;
+					break;
+				}
+			}
+			if (!directive) {
+				used = true;
+				break;
+			}
+		}
+		pos = end;
+	}
+	return used;
+}
+
 /** @brief Rewrites sampler2D declarations to the SDL3 resource set (0 vertex, 2 fragment) with dense bindings. */
 bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
     const std::unordered_set<std::string> &knownTextureNames, int passIndex, int passCount,
@@ -638,15 +765,18 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 		while (std::getline(nameStream, nameToken, ',')) {
 			names.push_back(TrimAll(nameToken));
 		}
-		for (const std::string &name : names) {
-			if (name.empty()) {
+		for (const std::string &declaredName : names) {
+			if (declaredName.empty()) {
 				error = "slang: empty sampler name";
 				return false;
 			}
-			if (name.find('[') != std::string::npos) {
-				error = StrCat("slang: sampler arrays are not supported: '", name, "'");
+			if (declaredName.find('[') != std::string::npos) {
+				error = StrCat("slang: sampler arrays are not supported: '", declaredName, "'");
 				return false;
 			}
+			// Field round 3: the declared name may be an object-like macro alias;
+			// the effective texture name is the macro expansion.
+			std::string name = declaredName;
 			if (!IsBuiltinTextureName(name)) {
 				std::string base = name;
 				if (base.size() > 8 && base.compare(base.size() - 8, 8, "Feedback") == 0)
@@ -673,10 +803,54 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 						    "' (not a builtin, alias or lookup texture)");
 						return false;
 					}
-					warnings.push_back(StrCat("sampler '", name, "' has no chain target (",
-					    definedAway ? "#defined away" : "declared but never sampled",
-					    "); dropping declaration"));
-					continue;
+					// Field round 3: an object-like macro can alias the DECLARATION
+					// itself. nnedi3-combine-v-pass0.slang does "#define
+					// NNEDI3_PREV_TEXTURE nnediPass0" and its include declares
+					// "uniform sampler2D NNEDI3_PREV_TEXTURE;" — glslang's preprocessor
+					// renames that declaration AND every sampling call to nnediPass0,
+					// so dropping the declaration left the calls referencing an
+					// undeclared identifier (field log: nnedi3-nns*-deinterlacing
+					// pass 3). When the alias is referenced beyond its own
+					// declaration in this stage and the #define body is a single
+					// identifier that is not independently declared here, keep the
+					// declaration under that identifier (the preset binds it via
+					// its alias).
+					// When the expansion target IS declared (Mega Bezel's "#define
+					// PrePass0 Source"), dropping stays correct: the calls expand to
+					// the existing declaration.
+					bool resolved = false;
+					if (definedAway && IsSamplerNameUsed(glsl, name)) {
+						const std::string expansion = DefineTargetExpansion(glsl, name);
+						if (!expansion.empty() && !IsSamplerDeclared(glsl, expansion)) {
+							bool alreadyEmitted = false;
+							for (const TextureRef &known : stage.textures) {
+								if (known.name == expansion) {
+									alreadyEmitted = true;
+									break;
+								}
+							}
+							if (!alreadyEmitted) {
+								name = expansion;
+								resolved = IsBuiltinTextureName(name);
+								if (!resolved) {
+									std::string expandedBase = name;
+									if (expandedBase.size() > 8 && expandedBase.compare(expandedBase.size() - 8, 8, "Feedback") == 0)
+										expandedBase = expandedBase.substr(0, expandedBase.size() - 8);
+									std::string expandedLower;
+									expandedLower.reserve(expandedBase.size());
+									for (const char c : expandedBase)
+										expandedLower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+									resolved = knownTextureNames.find(expandedLower) != knownTextureNames.end();
+								}
+							}
+						}
+					}
+					if (!resolved) {
+						warnings.push_back(StrCat("sampler '", declaredName, "' has no chain target (",
+						    definedAway ? "#defined away" : "declared but never sampled",
+						    "); dropping declaration"));
+						continue;
+					}
 				}
 			}
 			// PassOutput# causality: pass N may only read outputs of passes < N.

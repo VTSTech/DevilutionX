@@ -1,6 +1,6 @@
 # DevilutionX GPU Shaders — Session Handoff
 
-**Last updated:** 2026-10-15 (America/Toronto). **SCOPE CHANGE (read the README first):** this is now a **standalone mod** — upstream `diasurgical/DevilutionX` enforces a no-AI policy, so PR #8737 is dead and all development, bugs, and features live here (pivot dated 2026-10-11 in the README). **No more DX12** (excised last session — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted: `gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). **No more baked shaders** (built-in ScaleFX/HQx filters removed at `77c53bf35`; only shared Vertex/Blit programs remain baked). **PRIMARY GOAL (2026-10-14, user direction): audit the shader implementation and parser against `docs/SLANG_SPEC.md`** — every `.slangp` key and `.slang` semantic annotated with fork implementation status, plus a priority-ordered gap list (see §8). v2 slang audit complete (script bug fixed: 1221→701 0-pass presets; risk distribution 33%/20%/46% low/med/high — see §12). F5/P1 fixes are applied on master `dce1c4222` (§13). **2026-10-15 (user direction): D3D12 field-binary forensics and wild-call scanning are RETIRED — all v3-binary / wild-call references were removed from this file; §7 is now a stub.** **2026-10-15 (second refresh): VTSTech moved the 40-preset field-sweep list in-repo (`docs/audit/shader-test-list-2026-10-15.{md,csv}`), documented the release helper scripts in GPU_SHADERS.md, tagged `gpu-shaders-v8` (release zips now ship `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe), and the README references both scripts and the in-repo audit artifacts.**
+**Last updated:** 2026-10-15 (America/Toronto). **SCOPE CHANGE (read the README first):** this is now a **standalone mod** — upstream `diasurgical/DevilutionX` enforces a no-AI policy, so PR #8737 is dead and all development, bugs, and features live here (pivot dated 2026-10-11 in the README). **No more DX12** (excised last session — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted: `gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). **No more baked shaders** (built-in ScaleFX/HQx filters removed at `77c53bf35`; only shared Vertex/Blit programs remain baked). **PRIMARY GOAL (2026-10-14, user direction): audit the shader implementation and parser against `docs/SLANG_SPEC.md`** — every `.slangp` key and `.slang` semantic annotated with fork implementation status, plus a priority-ordered gap list (see §8). v2 slang audit complete (script bug fixed: 1221→701 0-pass presets; risk distribution 33%/20%/46% low/med/high — see §12). F5/P1 fixes are applied on master `dce1c4222` (§13). **2026-10-15 (user direction): D3D12 field-binary forensics and wild-call scanning are RETIRED — all v3-binary / wild-call references were removed from this file; §7 is now a stub.** **2026-10-15 (second refresh): VTSTech moved the 40-preset field-sweep list in-repo (`docs/audit/shader-test-list-2026-10-15.{md,csv}`), documented the release helper scripts in GPU_SHADERS.md, tagged `gpu-shaders-v8` (release zips now ship `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe), and the README references both scripts and the in-repo audit artifacts.** **2026-10-15 (field round 3): the first live sweep log against the 40-preset list surfaced two failures — both fixed on `664d0f740` (macro-aliased sampler declarations for the nnedi3 deinterlacing chain; per-pass format downgrade with SDL error text for `test/format.slangp`) plus two latent bugs found while verifying (`#pragma format` was never wired to the runner; numeric pass keys were swallowed by the .params overlay tolerance, silently breaking scale for 1196 corpus presets). Field round 3 details in §8.**
 
 ## 1. Mission (TL;DR)
 
@@ -24,7 +24,7 @@ Standalone mod on **VTSTech/DevilutionX**, branched from upstream `1.6.0-dev` (s
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `af6a0e8fc` | feature line + F5/P1 audit fixes (`dce1c4222`) + `docs/SLANG_SPEC.md` + README rewritten for the standalone mod; D3D12 excised, built-ins removed; + field rounds 1–2 fixes, translate preflight harness, log-bloat fix, in-repo sweep list (`f729f49e2`), doc-forensics retirement (`c4cb1c8e1`), README helper-script references (`af6a0e8fc`) |
+| fork `master` (what CI builds) | `664d0f740` | feature line + F5/P1 audit fixes (`dce1c4222`) + `docs/SLANG_SPEC.md` + README rewritten for the standalone mod; D3D12 excised, built-ins removed; + field rounds 1–2 fixes, translate preflight harness, log-bloat fix, in-repo sweep list (`f729f49e2`), doc-forensics retirement (`c4cb1c8e1`), README helper-script references (`af6a0e8fc`), field round 3 fixes (`664d0f740`) |
 | release tag **`gpu-shaders-v8`** | `92831323e` | v8 release binaries; first release shipping `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe (corpus download / cache wipe) |
 | PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | **DEAD — do not pursue.** Upstream enforces a no-AI policy (README, 2026-10-11); the PR will never merge. Kept for reference only; it still contains baked filters + the WAV fix |
 | upstream **SDL_mixer PR #906** | `30034b15` | OPEN; fixes zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode). Nice-to-have, **not gating**: the mod carries its own vendored `3rdParty/SDL3_mixer` patch + `SDL_LoadWAV_IO` fallback |
@@ -187,6 +187,9 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
 
 ### Field validation (empirical arm) — sweep queue
 
+- ✅ **Field round 3 (2026-10-15):** deinterlacing cluster live-tested; nnedi3
+  chain fixed (macro-aliased sampler declarations) — re-test the three nnedi3
+  Tier 1a canaries plus any koko-ambi/koko-aio preset on the next sweep build.
 - ✅ **`audit_slang_presets.py` v2 run complete** (§12) — CSV of all 2658
   `.slangp` presets with feature flags + risk heuristic. Risk distribution
   after the script bug fix: low=886 (33%), medium=539 (20%), high=1233 (46%).
@@ -267,6 +270,87 @@ zero-filled members (`sborder`, `prescalex`, `mask`, `warpX/Y`, `vertmask`,
 will be frozen at subframe 0 — candidate future semantic if it looks wrong), and the
 new orphan-sampler drop warnings. Regression test: `tools/audit/test_field_round2.cpp`
 (28 checks, links the real parser+translator; see its header for the build line).
+
+### Field round 3 — first live sweep log (2026-10-15, v8 Windows build)
+
+VTSTech ran the deinterlacing cluster + `test/` presets on hardware and sent the
+`gpu-scaler.log`. Wins first: `bob-deinterlacing`, `motion-adaptive-deinterlacing`,
+`deinterlace`, `mix_frames`, `shutter-to-anaglyph`, `test/history.slangp` (F5 canary —
+gap-index history ring works in the field), `test/feedback.slangp` (F6 canary), and
+`test/feedback-noncausal.slangp` was correctly REJECTED with
+`slang: PassOutput0 is not causal in pass 0` (the negative control proving the failure
+contract). Session fallbacks were clean (filter off, classic renderer, game alive).
+
+Two failures, both fixed in `664d0f740`:
+
+- **nnedi3-nns16/nns64-deinterlacing** — pass 3
+  (`edge-smoothing/nnedi3/shaders/nnedi3-combine-v-pass0.slang`) failed glslang with
+  `'nnediPass0' : undeclared identifier` right after the load log printed
+  `sampler 'NNEDI3_PREV_TEXTURE' has no chain target (#defined away); dropping
+  declaration`. Root cause: object-like macros can alias the sampler DECLARATION
+  itself — the shader does `#define NNEDI3_PREV_TEXTURE nnediPass0` and its include
+  (`nnedi3-combine-common.inc`) declares `uniform sampler2D NNEDI3_PREV_TEXTURE;`;
+  glslang's preprocessor renames that declaration AND every `texelFetch` to
+  `nnediPass0`, so the round-2 orphan drop (correct for Mega Bezel's
+  `#define PrePass0 Source`, where `Source` is declared anyway) removed the only
+  declaration of the alias target. `RewriteSamplers` now keeps the declaration under
+  the expanded identifier when (a) the alias is referenced beyond its own declaration
+  (koko-aio passes `FPS_ESTIMATE_PASS` into `get_fps(...)` — the sampling-call
+  heuristic alone misses this), (b) the `#define` body is a single identifier, and
+  (c) the expansion is not independently declared in the stage. The expanded name
+  then resolves through the normal known-name paths (preset `aliasN` — here
+  `alias1 = nnediPass0`, `#pragma name`, `<name>Feedback`, LUTs). Reproduced
+  verbatim offline: dumped the pre-fix pass-3 fragment GLSL through
+  `translate_preflight -dump` and got the exact field error from glslang 16.6.0;
+  post-fix all 5 nnedi3 variants (25 fragment passes) compile under Vulkan 1.0.
+  Corpus sweep: 73 bogus drops eliminated (41 `NNEDI3_PREV_TEXTURE`, 29 `PastSampler`
+  across koko-ambi/koko-aio/uborder, 3 `FPS_ESTIMATE_PASS`), failure set unchanged —
+  the koko-ambi family (incl. the Tier 1c rep `koko-ambi-crt-geom`, 6/6 passes) is
+  compile-clean now too.
+- **`test/format.slangp` pass 1** — `pipeline creation failed` with zero diagnostics:
+  SDL builds a transient VkRenderPass with the pass's color format, and a format the
+  device refuses as a color attachment (single-channel float/int targets are NOT
+  mandatory attachment formats in Vulkan) fails without surfacing SDL's error text.
+  Non-default formats now downgrade to `R8G8B8A8_UNORM` with a
+  `color target format unavailable` warning and the target texture follows
+  `pass->targetFormat`; hard failures now include `SDL_GetError()`.
+
+Two latent bugs found while verifying (both fixed in the same commit):
+
+- **`#pragma format` was dead code at the runner** — the token was captured into
+  `SlangTranslation::pragmaFormat` and never propagated to `PassDef::pragmaFormat`
+  (which `FormatForPass` reads), so the spec-4.2 override silently did nothing since
+  `ae938cfb1` introduced the mapping table. Wired through; the in-repo
+  `tools/audit/field-presets/test/format.slangp` ladder (default / `R16_SFLOAT` /
+  `R8G8B8A8_SRGB`) exercises it.
+- **Numeric pass keys swallowed by the .params overlay tolerance** — the
+  "accept any numeric key as an override" fallback sat in front of the pass-key
+  split in `preset_parser.cpp`, so `scale_x0 = 2.0` / `scale_y0 = ...` became bogus
+  parameter overrides and the pass kept the default scale. 1196 of 3454 corpus
+  presets carry `scale_x`/`scale_y` without a `parameters` list (35%!). Reordered
+  after the pass-key and implicit-texture handling; verified offline
+  (`scale_x0 = 2.0` now yields `scale=source*2`).
+
+Tooling/tests this round: `tools/audit/test_field_round2.cpp` re-created (the
+original was cited by the docs but never committed; 22 checks), new
+`tools/audit/test_field_round3.cpp` (39 checks: helper copies + end-to-end
+macro-alias keeps + the vertex-stage guard + format downgrade decision),
+`translate_preflight -dump <dir>` for offline glslang validation, and the four
+`test/` field presets re-created in-repo under `tools/audit/field-presets/test/`
+(history / feedback / feedback-noncausal / format + README).
+
+**NEW known issue (next round): koko-aio-ng fails glslang on repeat-includes.**
+`ResolveIncludes` is include-once GLOBALLY (a visited-set), but
+`bezel/koko-aio/shaders-ng/shift_and_bleed.slang` deliberately includes
+`includes/functions.include.slang` in BOTH stage sections (line 23 vertex, line 67
+fragment); include-once places the content only in the vertex bucket, so the
+fragment stage misses `rgb2yiq` and glslang fails (`no matching overloaded function
+found`). Confirmed identical on the pre-round-3 translator (not a round-3
+regression). A naive "expand every occurrence" breaks the inverse pattern (shared +
+fragment re-include ⇒ duplicate definitions), so the correct design is
+include-once PER STAGE BUCKET (resolve includes after the stage split, or track
+visited per bucket). Affected: koko-aio-ng family (3 presets) and any other
+repeat-includer; koko-ambi is NOT affected (verified 6/6 passes compile).
 
 ### D3D12 — fully excised
 

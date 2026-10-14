@@ -1,0 +1,15 @@
+shaders = 3
+shader0 = shaders/fmt_default.slang
+scale_type0 = source
+scale_x0 = 1.0
+scale_y0 = 1.0
+
+shader1 = shaders/fmt_r16f.slang
+scale_type1 = source
+scale_x1 = 1.0
+scale_y1 = 1.0
+
+shader2 = shaders/fmt_srgb.slang
+scale_type2 = source
+scale_x2 = 1.0
+scale_y2 = 1.0

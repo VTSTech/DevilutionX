@@ -282,7 +282,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	std::vector<std::unique_ptr<PassRuntime>> passStorage;
 	passStorage.reserve(preset_.passes.size());
 	for (size_t i = 0; i < preset_.passes.size(); ++i) {
-		const PassDef &def = preset_.passes[i];
+		PassDef &def = preset_.passes[i];
 		auto pass = std::make_unique<PassRuntime>();
 		pass->def = def;
 
@@ -301,6 +301,12 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		}
 		for (const std::string &w : pass->translation.warnings)
 			LogWarn("GPU scaler preset (pass {}): {}", i, w);
+		// Field round 3: propagate the shader's "#pragma format" token into the
+		// pass definition. It was only ever captured into the translation
+		// result and never read back — FormatForPass checks
+		// PassDef::pragmaFormat, which stayed empty since the mapping table
+		// landed (ae938cfb1), so the spec-4.2 override silently did nothing.
+		def.pragmaFormat = pass->translation.pragmaFormat;
 		PassSpirv spirv;
 		if (!CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error)) {
 			error = StrCat("compiling '", def.shaderPath, "' (pass ", i, "): ", error);
@@ -397,8 +403,24 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		info.target_info.num_color_targets = 1;
 		info.vertex_input_state = vertexInput;
 		pass->pipeline = SDL_CreateGPUGraphicsPipeline(device_, &info);
+		if (pass->pipeline == nullptr && pass->targetFormat != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM) {
+			// Field round 3: a per-pass #pragma format can name a format the device
+			// refuses as a color attachment (SDL builds a transient VkRenderPass
+			// with it; single-channel float/int targets are not mandatory
+			// attachment formats in Vulkan — field log: test/format.slangp pass 1
+			// failed with no diagnostics at all). Downgrade to RGBA8 and retry
+			// instead of failing the preset; the target texture follows
+			// pass->targetFormat, so pipeline and target stay consistent.
+			LogWarn("GPU scaler preset (pass {}): color target format unavailable on this device (SDL error: {}); retrying with R8G8B8A8_UNORM",
+			    static_cast<int>(&pass - passStorage.data()), SDL_GetError());
+			SDL_ClearError();
+			targetDesc.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+			pass->targetFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+			pass->pipeline = SDL_CreateGPUGraphicsPipeline(device_, &info);
+		}
 		if (pass->pipeline == nullptr) {
-			error = StrCat("pipeline creation failed for preset pass ", static_cast<int>(&pass - passStorage.data()));
+			error = StrCat("pipeline creation failed for preset pass ", static_cast<int>(&pass - passStorage.data()),
+			    ": ", SDL_GetError());
 			return false;
 		}
 	}

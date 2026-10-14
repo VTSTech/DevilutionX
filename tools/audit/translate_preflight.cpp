@@ -109,8 +109,17 @@ static const char *YesNo(bool v) { return v ? "yes" : "no"; }
 int main(int argc, char **argv) {
   static const std::regex nameRe(R"(^\s*#pragma\s+name\s+(\w+)\s*$)");
   int rc = 0;
+  // -dump <dir>: write each pass's translated vertex/fragment GLSL to
+  // <dir>/<preset-stem>.p<N>.{vert,frag}.glsl for offline glslang checks
+  // (field round 3: glslang-side verification of translated sources).
+  std::string dumpDir;
+  int first = 1;
+  if (argc > 2 && std::string(argv[1]) == "-dump") {
+    dumpDir = argv[2];
+    first = 3;
+  }
 
-  for (int a = 1; a < argc; ++a) {
+  for (int a = first; a < argc; ++a) {
     const std::string path = argv[a];
     std::printf("=== PRESET %s\n", path.c_str());
     Preset preset;
@@ -207,6 +216,21 @@ int main(int argc, char **argv) {
       std::printf("    translated=OK pragmaFormat=%s mergedSize=%d\n",
                   t.pragmaFormat.empty() ? "-" : t.pragmaFormat.c_str(),
                   t.mergedSize);
+      if (!dumpDir.empty()) {
+        const std::string base = dumpDir + "/" + path.substr(path.find_last_of('/') + 1) + ".p" + std::to_string(i);
+        FILE *fv = std::fopen((base + ".vert.glsl").c_str(), "wb");
+        if (fv != nullptr) {
+          if (t.vertex.present)
+            std::fwrite(t.vertex.glsl.data(), 1, t.vertex.glsl.size(), fv);
+          std::fclose(fv);
+        }
+        FILE *ff = std::fopen((base + ".frag.glsl").c_str(), "wb");
+        if (ff != nullptr) {
+          if (t.fragment.present)
+            std::fwrite(t.fragment.glsl.data(), 1, t.fragment.glsl.size(), ff);
+          std::fclose(ff);
+        }
+      }
       for (const std::string &w : t.warnings)
         std::printf("    warning: %s\n", w.c_str());
       for (const StageTranslation *stage : {&t.vertex, &t.fragment}) {

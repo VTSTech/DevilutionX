@@ -529,6 +529,30 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 				preset.parameters.push_back({ key, ParseFloat(value, 0.0F) });
 			continue;
 		}
+		std::string baseKey;
+		const int passIndex = SplitPassKey(key, baseKey);
+		if (passIndex >= 0) {
+			if (static_cast<int>(preset.passes.size()) <= passIndex)
+				preset.passes.resize(static_cast<size_t>(passIndex) + 1);
+			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value);
+			continue;
+		}
+		// Implicit texture declaration (RetroArch-compat): a path-valued key
+		// with no other meaning declares a texture usable by the shaders.
+		if (passIndex < 0 && LooksLikeImagePath(value)) {
+			TextureDef *tex = textureByName(key);
+			if (tex->path.empty())
+				tex->path = value;
+			continue;
+		}
+		// Field round 3: the numeric-override tolerance for list-less overlay
+		// files (Mega Bezel .params) runs AFTER the pass-key and implicit-texture
+		// handling — it used to sit in front of SplitPassKey, so any numeric
+		// pass key (scale_x0 = 2.0, scale_y0 = ...) was swallowed as a parameter
+		// override and the pass kept the default scale (1196 of 3454 corpus
+		// presets carry scale_x/scale_y without a parameters list). The runner
+		// applies only overrides whose name matches a #pragma parameter, so
+		// genuinely unknown numeric keys stay inert.
 		if (parametersList.empty()) {
 			// Overlay files without a `parameters` list (e.g. Mega Bezel
 			// .params) still carry numeric values; accept any numeric key as
@@ -552,22 +576,6 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 			}
 		}
 
-		std::string baseKey;
-		const int passIndex = SplitPassKey(key, baseKey);
-		if (passIndex >= 0) {
-			if (static_cast<int>(preset.passes.size()) <= passIndex)
-				preset.passes.resize(static_cast<size_t>(passIndex) + 1);
-			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value);
-			continue;
-		}
-		// Implicit texture declaration (RetroArch-compat): a path-valued key
-		// with no other meaning declares a texture usable by the shaders.
-		if (passIndex < 0 && LooksLikeImagePath(value)) {
-			TextureDef *tex = textureByName(key);
-			if (tex->path.empty())
-				tex->path = value;
-			continue;
-		}
 		// Unknown key: ignore silently (the preset format has harmless extras).
 	}
 

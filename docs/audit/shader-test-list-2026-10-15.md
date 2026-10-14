@@ -2,6 +2,8 @@
 
 Phase-1 field sweep per `docs/diablo-handoff.md` §12. Master tip: `92831323e` + doc cleanup `22388a08d`.
 
+> **Field round 3 (2026-10-15):** first live log is in — Tier 1a partial results: bob/motion-adaptive deinterlacing, mix_frames, shutter-to-anaglyph, `test/history` + `test/feedback` all working; `test/feedback-noncausal` correctly rejected (negative control); **nnedi3-nns16/nns64 failed and are fixed on `664d0f740`** (macro-aliased sampler declarations — re-test all three nnedi3 canaries on the next build); **`test/format` failed and is fixed** (per-pass format downgrade + `#pragma format` wiring — the in-repo copy lives at `tools/audit/field-presets/test/`). koko-ambi/koko-aio presets: sampler handling fixed, but koko-aio-ng has a separate repeat-include issue (handoff §8, next round).
+
 ## How to test
 
 1. slang-shaders tree in `shaders\` beside the exe (recursive scan; subfolders OK). Full tree incl. `bezel/` for the Tier 1c entries.
