@@ -171,7 +171,11 @@ void ExtractPragmas(std::string &text, std::vector<ParamInfo> &parameters, std::
     std::string &pragmaFormat)
 {
 	static const std::regex paramRe(
-	    R"re(^\s*#pragma\s+parameter\s+(\w+)\s+"([^"]*)"\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)(?:\s+([-+0-9.eE]+))?\s*$)re");
+	    // RetroArch's pragma parse is sscanf-style and ignores trailing
+	    // junk; 58 corpus pragma lines carry a trailing // (or /*) comment
+	    // and were silently dropped here, leaving their UBO members
+	    // unvalidated (field log: scanlines-Modern densY/densX/colAtten).
+	    R"re(^\s*#pragma\s+parameter\s+(\w+)\s+"([^"]*)"\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)(?:\s+([-+0-9.eE]+))?(?:\s*(?://|/\*).*)?\s*$)re");
 	static const std::regex nameRe(R"(^\s*#pragma\s+name\s+(\w+)\s*$)");
 	static const std::regex formatRe(R"(^\s*#pragma\s+format\s+(\w+)\s*$)");
 
@@ -397,11 +401,25 @@ bool ParseBlockMembers(const std::string &body, std::vector<UniformMember> &memb
 		uint32_t align = 0;
 		uint32_t size = 0;
 		Std140TypeLayout(type, align, size);
+		// Explode comma-separated declarators into a flat name list. The
+		// whitespace tokenizer hands a no-space list like
+		// "float sc_sat,sc_black,..." over as ONE token and erasing the
+		// commas inside it GLUED the names into a single bogus member
+		// ("sc_satsc_blacksc_..." - field log: simple_color_controls,
+		// anime4k, ossc). Splitting on ',' recovers the real names.
+		std::vector<std::string> nameTokens;
 		for (size_t n = typeIdx + 1; n < tokens.size(); ++n) {
-			std::string nameToken = tokens[n];
-			size_t comma = 0;
-			while ((comma = nameToken.find(',', comma)) != std::string::npos)
-				nameToken.erase(comma, 1);
+			const std::string &list = tokens[n];
+			size_t start = 0;
+			while (start <= list.size()) {
+				const size_t comma = list.find(',', start);
+				const size_t end = comma == std::string::npos ? list.size() : comma;
+				if (end > start)
+					nameTokens.push_back(list.substr(start, end - start));
+				start = end + 1;
+			}
+		}
+		for (const std::string &nameToken : nameTokens) {
 			if (nameToken.empty())
 				continue;
 			UniformMember member;
@@ -600,10 +618,13 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 	return true;
 }
 
-/** @brief Validates that every uniform block member is meaningful (spec requirement). */
+/** @brief Checks block members: recognized semantics/sizes/parameters only get values.
+ * Unknown members are tolerated RetroArch-style: collected as warnings and left at
+ * zero (field round 1: auto_res, XBR_ANTI_RINGING, ia_FLIP_HORZ all hard-failed
+ * translation here for shaders RetroArch loads fine). */
 bool ValidateBlockMembers(const std::vector<UniformBlock> &blocks,
     const std::vector<ParamInfo> &parameters, const std::unordered_set<std::string> &knownTextureNames,
-    std::string &error)
+    std::vector<std::string> &warnings)
 {
 	for (const UniformBlock &block : blocks) {
 		for (const UniformMember &member : block.members) {
@@ -640,9 +661,12 @@ bool ValidateBlockMembers(const std::vector<UniformBlock> &blocks,
 				}
 			}
 			if (!ok) {
-				error = StrCat("slang: unknown uniform block member '", name,
-				    "' (not a builtin semantic, texture size, feedback size or #pragma parameter)");
-				return false;
+				// RetroArch leaves unrecognized UBO members at 0. Downgrade
+				// the loud translate failure to a logged warning; the
+				// std140 layout is unaffected and FillBlockBytes already
+				// writes the zero-fill fallback for unmatched members.
+				warnings.push_back(StrCat("uniform block member '", name,
+				    "' is not a builtin semantic, texture size, feedback size or #pragma parameter; filling 0"));
 			}
 		}
 	}
@@ -734,7 +758,7 @@ int CountOccurrences(const std::string &text, const char *needle)
 
 bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
     const std::unordered_set<std::string> &knownTextureNames, const std::vector<ParamInfo> &parameters,
-    StageTranslation &stage, std::string &error)
+    std::vector<std::string> &warnings, StageTranslation &stage, std::string &error)
 {
 	if (TrimAll(glsl).empty()) {
 		stage.present = false;
@@ -747,7 +771,7 @@ bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
 		return false;
 	if (!RewriteSamplers(glsl, isVertex, stage, knownTextureNames, passIndex, passCount, error))
 		return false;
-	if (!ValidateBlockMembers(stage.uniformBlocks, parameters, knownTextureNames, error))
+	if (!ValidateBlockMembers(stage.uniformBlocks, parameters, knownTextureNames, warnings))
 		return false;
 	for (const UniformBlock &block : stage.uniformBlocks) {
 		for (const UniformMember &member : block.members) {
@@ -831,14 +855,16 @@ bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std:
 		return false;
 	}
 
+	std::vector<std::string> warnings;
 	if (!ProcessStage(split.shared + split.vertex, /*isVertex=*/true, passIndex, passCount, knownTextureNames,
-	        out.parameters, out.vertex, out.error)) {
+	        out.parameters, warnings, out.vertex, out.error)) {
 		return false;
 	}
 	if (!ProcessStage(split.shared + split.fragment, /*isVertex=*/false, passIndex, passCount, knownTextureNames,
-	        out.parameters, out.fragment, out.error)) {
+	        out.parameters, warnings, out.fragment, out.error)) {
 		return false;
 	}
+	out.warnings = std::move(warnings);
 
 	// A fragment-only .slang: inject the stock vertex stage.
 	if (!out.vertex.present && out.fragment.present) {

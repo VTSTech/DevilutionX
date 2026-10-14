@@ -118,7 +118,7 @@ Fixed (audit F6, `f87f89d18`): `viewport` now resolves against the aspect-correc
 
 | Aspect | Status | Behavior |
 |---|---|---|
-| `#pragma parameter` (shader side) | Supported | `#pragma parameter ID "Description" initial min max [step]` — order verified against RetroArch. Extracted by `slang_translate.cpp`; step defaults 0.001 when absent. These are the source of defaults |
+| `#pragma parameter` (shader side) | Supported | `#pragma parameter ID "Description" initial min max [step]` — order verified against RetroArch. Extracted by `slang_translate.cpp`; step defaults 0.001 when absent. Trailing `//` / `/* */` comments after the numbers are accepted (RetroArch's parse is sscanf-style and ignores trailing junk; 58 corpus pragma lines carry one — field round 1: they were silently dropped before, leaving their UBO members unvalidated). These are the source of defaults |
 | Preset override value | Supported (modern RetroArch semantics) | `<name> = "0.35"` — a single float that becomes the parameter's *current* value, overriding the pragma `initial`. Modern RetroArch reads exactly one float per parameter (`video_shader_load_current_parameter_values`); legacy multi-field value strings ("initial, min, max, step") are tolerated because only the leading number is parsed |
 | `parameters` gating | Supported | A key only counts as a parameter override if listed in `parameters` (or via the overlay heuristic below) |
 | Overlay heuristic | Extension | When a `#reference`d overlay (Mega Bezel `.params` files) declares no `parameters` list at all, any unknown key whose value parses fully as a number is accepted as an override. Unknown names stay inert at runtime (applied only if they match a `#pragma parameter`) |
@@ -210,8 +210,8 @@ Sampler declarations are rewritten to dense bindings (set 0 vertex / set 2 fragm
 | `PassFeedback#` | Supported | Pass # output from the *previous* frame; requires `N < passCount`, otherwise hard error. Any pass may read any pass's feedback (always causal per spec) |
 | `aliasN` names | Supported | Earlier passes' outputs by plain alias name (RetroArch's hqx pattern); only passes before the reader have output this frame, later ones resolve through the fallback path below |
 | `#pragma name` identifiers | Supported | Same as alias names — outputs samplable by pass identifier |
-| `<name>Feedback` | Supported | Alias/identifier + `Feedback` suffix = that pass's previous-frame output; declaring pass is auto-double-buffered (§5.3). Suffix match is case-insensitive at validation, case-sensitive at bind (audit F9 asymmetry) |
-| LUT texture names | Supported | Declared `textures` names; case-insensitive at validation, case-sensitive at bind (F9) |
+| `<name>Feedback` | Supported | Alias/identifier + `Feedback` suffix = that pass's previous-frame output; declaring pass is auto-double-buffered (§5.3). Suffix match is case-insensitive at validation and at bind (F9 closed, field round 1) |
+| LUT texture names | Supported | Declared `textures` names; case-insensitive at validation and at bind (F9 closed, field round 1) |
 | `User#` | Supported | LUT by declaration order |
 | Unknown names | Fallback | Warn once, bind the current source texture ("unresolved texture" — silent-wrongness guard; never a null bind, which crashed on AMD in round 4) |
 
@@ -221,9 +221,9 @@ Sampler declarations are rewritten to dense bindings (set 0 vertex / set 2 fragm
 |---|---|---|
 | Plain UBO per stage | Supported (max 1) | Rewritten to `std140` + SDL3 GPU descriptor conventions: vertex UBO → set 1 binding 0; fragment UBO → set 3 binding 0. A second plain UBO per stage is a hard error ("spec allows one UBO") — never occurs in the corpus (audit T5) |
 | `push_constant` block | Supported | Re-homed as a std140 UBO (binding 1 when a plain UBO exists in the same stage, else binding 0), pushed per draw. SDL3 GPU push-constant size limits do not apply |
-| std140 layout | Supported | Computed by the translator: `float/vec2/3/4`, `int/ivec2-4`, `uint/uvec2-4`, `bool`, `mat4`/`mat4x4`; arrays sized 1..64 with std140 stride (rounded to a full vec4); multi-name declarations (`float A, B;`) handled. Unsized or non-numeric sizes are a hard error (the size parse is guarded — previously a malformed `[x2]` aborted on uncaught `stoi`) |
+| std140 layout | Supported | Computed by the translator: `float/vec2/3/4`, `int/ivec2-4`, `uint/uvec2-4`, `bool`, `mat4`/`mat4x4`; arrays sized 1..64 with std140 stride (rounded to a full vec4); multi-name declarations (`float A, B;` and the no-space form `float A,B,C;` — 34+ corpus lines) handled. Unsized or non-numeric sizes are a hard error (the size parse is guarded — previously a malformed `[x2]` aborted on uncaught `stoi`) |
 | Standalone uniforms | Unimplemented | `uniform float x;` outside a block is not rewritten — it would compile with glslang's auto-assigned set/binding and then violate the SDL3 GPU descriptor model. Not present in the corpus (all semantic uniforms live in blocks) |
-| Member validation | Supported | Every block member must be a recognized semantic (4.7), a `<Texture>Size`/`<Texture>FeedbackSize` form, or a `#pragma parameter` name (case-insensitive at validation). Unknown members are a loud translate error — this is the main early-warning gate against unsupported semantics |
+| Member validation | Supported (tolerant) | Every block member is checked against recognized semantics (4.7), `<Texture>Size`/`<Texture>FeedbackSize` forms, and `#pragma parameter` names (case-insensitive). Unrecognized members log a warning at load and read 0 — RetroArch leaves unknown UBO members at zero too (field round 1: `auto_res`, `XBR_ANTI_RINGING`, `ia_FLIP_HORZ` hard-failed translation here for shaders RetroArch loads; the loud gate cost 10+ real presets). Structural errors (unsized arrays, bad array sizes, >1 UBO) remain hard errors |
 
 ### 4.7 Builtin uniform semantics
 
@@ -293,7 +293,7 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | Scale rules (source/viewport/absolute, per-axis) | Supported | parser, runner | Viewport = aspect-corrected game rect (F6 fixed, `f87f89d18`); bare-`scale` order fix shipped (P1) |
 | sRGB / float FBOs | Supported | runner | sRGB precedence when both set (F8 erratum); `#pragma format` overrides |
 | `#pragma format` | Supported (subset) | translate→runner | One token left unmapped (`A2B10G10R10_UINT_PACK32` → warn + RGBA8; 4.2.1) |
-| Aliases + `#pragma name` identifiers + plain-alias sampling | Supported | runner | First-match on duplicate names |
+| Aliases + `#pragma name` identifiers + plain-alias sampling | Supported | runner | First-match on duplicate names; case-insensitive end to end (field round 1) |
 | `Original` / `Source` / `OriginalHistory0..8` | Supported | runner | Ring depth+1, seeded, T-N (F5 fixed); cap 8 vs spec unbounded |
 | `PassOutput#` | Supported | translate, runner | Causality enforced |
 | `PassFeedback#` / `<name>Feedback` | Supported | runner | Demand-driven double buffering (F2: `feedback_pass` dead) |
@@ -303,7 +303,7 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `6f13d787f`); no UI (by design) |
 | `#reference` inheritance + ancestor path fallback | Supported | parser | Multi-parent; last non-empty chain wins (code/comment mismatch note) |
 | UBO (≤1/stage) + push-constant re-homing, std140 | Supported | translate, runner | Unsized arrays / extra UBOs / standalone uniforms unsupported |
-| Semantic member validation | Supported | translate | Whitelist (incl. `Rotation`) + `<Tex>Size` forms + param names |
+| Semantic member validation | Supported (tolerant) | translate, runner | Whitelist + `<Tex>Size` forms + param names; unknown members warn + read 0 (RetroArch-conformant, field round 1) |
 | Vertex interface (Position/TexCoord) + stock vertex injection | Supported | translate | |
 | Vertex textures | Unimplemented | translate | Hard error; 0 corpus hits (T3) |
 | Sampler arrays, multi-name samplers | Arrays error, multi-name OK | translate | 0 array hits in corpus (T4) |
@@ -332,9 +332,12 @@ Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from 
 9. **Hard-error translator paths, zero corpus exposure (T2–T5)** — vertex-stage samplers, sampler arrays, > 1 plain UBO, unsized arrays. Leave as loud errors; they flag genuinely unsupported shaders.
 10. **`#pragma alias` / `#pragma include_optional` / `#error` skip** — ignored/unresolved/compile-fail (4.2). Add only if a pack needs them.
 11. **`FrameDirection` constant +1** — correct for this game (no rewind); keep.
-12. **Case asymmetries (F9/T9)** — translate validates names case-insensitively, `Run()` binds LUTs/aliases case-sensitively; `<Name>Size` validation is case-sensitive. 0 corpus mismatches (verified); align with `CaseInsensitiveEqual` as cheap hardening.
+12. ✅ **Case asymmetries (F9/T9)** — FIXED (2026-10-14, field round 1): not 0-corpus after all — preset-level `alias0 = Pass0` / `alias3 = PrePass0` (motion_interpolation, guest advanced ntsc) failed deduction because the runner inserted aliases/#pragma names in original case while the translator's deduction looks references up lowercased (`hqx_refpass` only ever worked because it is already lowercase). Names now go into the known set in both forms, and the runtime binds (alias, `#pragma name` identifier, `<name>Feedback` form, LUT) all use `CaseInsensitiveEqual`. `<Tex>Size` validation stays strict (0 hits).
 13. **`#reference` multi-chain order** — code: last non-empty parent chain wins; comment says first. Fix the comment (or make it first-wins) before any preset relies on order.
 14. **`feedback_pass` / `histories` parsed-unused (F2)** — intentional; re-evaluate only when spec-conformance testing starts.
+15. ✅ **`#pragma parameter` lines with trailing comments silently dropped** — FIXED (2026-10-14, field round 1): the pragma regex required end-of-line after the step value, so the 58 corpus pragma lines carrying a trailing `//` (or `/* */`) comment were dropped and their UBO members left unvalidated (field: scanlines-Modern lost `densY`/`densX`/`colAtten`). The regex now accepts a trailing comment, matching RetroArch's sscanf-style parse. Regression test: `tools/audit/test_field_round1.cpp`.
+16. ✅ **Comma-separated UBO declarators glue into one bogus member** — FIXED (2026-10-14, field round 1): the whitespace tokenizer handed a no-space list (`float sc_sat,sc_black,...`) over as ONE token and the old comma-erase GLUED the names (`sc_satsc_blacksc_...`), which then matched no parameter. 34+ corpus lines affected (field: simple_color_controls, anime4k, ossc). Declarators are now exploded on commas before std140 layout. Regression test: `tools/audit/test_field_round1.cpp`.
+17. ✅ **Unknown UBO members hard-failed translation** — FIXED (2026-10-14, field round 1): the member-validation gate rejected any member that is not a builtin, size form or parameter — but RetroArch leaves unknown members at 0. Field log: `auto_res` (5 ntsc-adaptive presets), `XBR_ANTI_RINGING` (super-xbr), `ia_FLIP_HORZ` (glass) — 10+ real presets failed that RetroArch loads. Now: warning at load + zero-fill (4.6). Structural errors stay hard. Regression test: `tools/audit/test_field_round1.cpp`.
 
 ## 8. Cross-references
 

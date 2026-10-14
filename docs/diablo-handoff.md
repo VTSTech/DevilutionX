@@ -197,12 +197,25 @@ The campaign now has two arms that feed each other:
      hits). Regression test: `tools/audit/test_rotation_format.cpp` (34 checks).
   7. …continue per SLANG_SPEC.md §7 — every remaining item is 0-corpus or an intentional
      divergence (`clamp_to_border`, `OriginalHistory` cap, translator hard-error paths,
-     `#pragma alias`/`include_optional`, `FrameDirection`, case asymmetries,
-     `#reference` comment, `feedback_pass`/`histories`).
+     `#pragma alias`/`include_optional`, `FrameDirection`, `#reference` comment,
+     `feedback_pass`/`histories`).
 - **Empirical arm (the field sweep):** the §12 validation methodology below. Every
   sweep failure gets categorized and mapped back onto a SLANG_SPEC status cell —
   a fallback is either a spec gap already listed (close it) or a new finding (add it
   to the spec's gap list, then fix).
+- **Field round 1 (2026-10-14, first in-game log, before the gap-#5/#6 round):**
+  10 preset-load failures across 13 attempts, all classified and fixed —
+  trailing-comment pragma parameters dropped (scanlines-Modern; 58 corpus lines),
+  no-space comma declarators glued into bogus member names (simple_color_controls,
+  anime4k, ossc; 34+ corpus lines), unknown UBO members hard-failing where RetroArch
+  zero-fills (`auto_res` x5, `XBR_ANTI_RINGING`, `ia_FLIP_HORZ`), and mixed-case
+  preset aliases (`Pass0`, `PrePass0`) failing the lowercased deduction. All four
+  closed as SLANG_SPEC §7 items 12/15/16/17 with regression test
+  `tools/audit/test_field_round1.cpp` (28 checks). The same log confirms the
+  fixed plumbing working in the field: F6 viewport lines (`viewport 1920x1080`),
+  multi-pass chains (hq2x/hq4x/ScaleHQ/SABR, 7-pass nedi), `hqx_refpass`
+  alias + LUT sampling, sRGB caches, and the failure contract (never died,
+  always fell back to the regular renderer).
 
 Reconciliation rule: a preset counts as covered only when its SLANG_SPEC feature set is
 all `supported`/`extension` AND it passes the §12 field sweep acceptance criteria.

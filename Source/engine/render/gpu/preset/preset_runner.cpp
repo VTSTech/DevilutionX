@@ -255,21 +255,28 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	}
 
 	// 2. Known texture names: pass aliases, pass identifiers and LUT names.
+	//    The translator's deduction looks names up lowercased, so every name
+	//    goes in both original and lowercased form. Aliases and #pragma
+	//    names used to be inserted in original case only, so any mixed-case
+	//    reference failed deduction ("unknown texture reference 'Pass0'" -
+	//    field log: motion_interpolation, guest advanced ntsc PrePass0).
 	std::unordered_set<std::string> knownNames;
-	for (const PassDef &pass : preset_.passes) {
-		if (!pass.alias.empty())
-			knownNames.insert(pass.alias);
-	}
-	for (const auto &[_, name] : pragmaNames)
+	auto insertKnownName = [&knownNames](const std::string &name) {
 		knownNames.insert(name);
-	for (const TextureDef &tex : preset_.textures) {
-		knownNames.insert(tex.name);
 		std::string lower;
-		lower.reserve(tex.name.size());
-		for (const char c : tex.name)
+		lower.reserve(name.size());
+		for (const char c : name)
 			lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 		knownNames.insert(lower);
+	};
+	for (const PassDef &pass : preset_.passes) {
+		if (!pass.alias.empty())
+			insertKnownName(pass.alias);
 	}
+	for (const auto &[_, name] : pragmaNames)
+		insertKnownName(name);
+	for (const TextureDef &tex : preset_.textures)
+		insertKnownName(tex.name);
 
 	// 3. Translate + compile every pass.
 	std::vector<std::unique_ptr<PassRuntime>> passStorage;
@@ -292,6 +299,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			error = StrCat("translating '", def.shaderPath, "' (pass ", i, "): ", pass->translation.error);
 			return false;
 		}
+		for (const std::string &w : pass->translation.warnings)
+			LogWarn("GPU scaler preset (pass {}): {}", i, w);
 		PassSpirv spirv;
 		if (!CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error)) {
 			error = StrCat("compiling '", def.shaderPath, "' (pass ", i, "): ", error);
@@ -409,7 +418,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 					for (size_t j = 0; j < passStorage.size(); ++j) {
 						const std::string alias = passStorage[j]->def.alias;
 						const auto it = pragmaNames.find(static_cast<int>(j));
-						if ((!alias.empty() && alias == base) || (it != pragmaNames.end() && it->second == base)) {
+						if ((!alias.empty() && CaseInsensitiveEqual(alias, base))
+						    || (it != pragmaNames.end() && CaseInsensitiveEqual(it->second, base))) {
 							passStorage[j]->needsFeedback = true;
 						}
 					}
@@ -974,7 +984,9 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 				// Alias or lookup texture.
 				bool resolved = false;
 				for (const PassRuntime *other : passes_) {
-					if (!other->def.alias.empty() && other->def.alias == texName) {
+					const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, texName))
+					    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, texName));
+					if (nameMatch) {
 						w = static_cast<float>(other->outputWidth);
 						h = static_cast<float>(other->outputHeight);
 						resolved = true;
@@ -1190,7 +1202,9 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 				} else if (name.size() > 8 && name.compare(name.size() - 8, 8, "Feedback") == 0) {
 					const std::string base = name.substr(0, name.size() - 8);
 					for (PassRuntime *other : passes_) {
-						if ((!other->def.alias.empty() && other->def.alias == base)) {
+						const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, base))
+						    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, base));
+						if (nameMatch) {
 							tex = other->doubleBuffered ? other->outputTex[1 - other->curBuffer]
 							                            : other->outputTex[other->curBuffer];
 							break;
@@ -1205,7 +1219,7 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 							lutName = luts_[static_cast<size_t>(idx)]->def.name;
 					}
 					for (const LutRuntime *lut : luts_) {
-						if (lut->def.name == lutName) {
+						if (CaseInsensitiveEqual(lut->def.name, lutName)) {
 							tex = lut->texture;
 							sampler = SamplerFor(lut->def.filter, lut->def.wrap, lut->def.mipmap);
 							break;
@@ -1218,7 +1232,9 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 						// earlier passes have an output this frame.
 						for (size_t oi = 0; oi < i; ++oi) {
 							PassRuntime *other = passes_[oi];
-							if (!other->def.alias.empty() && other->def.alias == lutName) {
+							const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, lutName))
+							    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, lutName));
+							if (nameMatch) {
 								tex = other->outputTex[other->curBuffer];
 								break;
 							}
