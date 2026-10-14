@@ -9,9 +9,11 @@
 #     The Package step FAILS the job if a MinGW runtime DLL ever sneaks back in.
 # The Linux job is the mirror image for glibc portability (field report 2026-10-15: the
 # ubuntu-24.04-built binary died on Debian 12 with "GLIBC_2.38 not found"):
-#   - build inside a debian:bookworm container (glibc 2.36) so the artifact runs on
-#     Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current — the OLDEST targeted base
-#     is what defines the floor (a newer builder produces binaries old distros reject)
+#   - build inside a gcc:14-bookworm container — Debian 12 BASE (glibc 2.36 floor) with
+#     GCC 14 in /usr/local. Plain debian:bookworm is NOT buildable: its GCC 12 has no
+#     C++23 <format> header (dies at Source/utils/log.hpp:11 / format.hpp:3) and
+#     gcc-13+ is not in the bookworm repos. The -bookworm suffix pins the base, so the
+#     artifact still runs on Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
 #   - -static-libgcc -static-libstdc++ so no GLIBCXX_/CXXABI_ symbol versions are
 #     required (full -static glibc is NOT viable: NSS breaks, Vulkan loader dlopens)
 #   - Portability gate FAILS the job if the max GLIBC_ requirement exceeds 2.36 or any
@@ -35,9 +37,12 @@ jobs:
     name: Linux x86_64 (SDL3 + GPU shader scaler, glibc 2.36 floor)
     runs-on: ubuntu-24.04
     container:
-      # Oldest supported base defines the artifact's glibc floor.
-      # glibc 2.36 = Debian 12 bookworm; the binary then also runs on anything newer.
-      image: debian:bookworm
+      # Debian 12 bookworm BASE (glibc 2.36 = the artifact's floor) + GCC 14 in
+      # /usr/local. Plain debian:bookworm ships GCC 12, which has no C++23 <format>
+      # and cannot compile this tree; GCC 13+ is not in the bookworm repos either.
+      # The -static-libstdc++ link below keeps the artifact runnable against Debian
+      # 12's stock GCC-12 libstdc++ (GLIBCXX_3.4.30).
+      image: gcc:14-bookworm
     steps:
     - name: Bootstrap container (git for actions/checkout)
       run: |
@@ -55,15 +60,23 @@ jobs:
         # backends. Without it, configure aborts with:
         #   "Couldn't find dependency package for XCURSOR"
         # binutils = objdump for the portability gate below.
-        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake g++ binutils \
+        # (no g++ here on purpose: the image's GCC 14 in /usr/local IS the toolchain;
+        #  installing bookworm's g++ would put a second, older compiler on disk)
+        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
           libxtst-dev \
           libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
           libudev-dev libdbus-1-dev \
           libbz2-dev libpng-dev
+        # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14),
+        # NOT /usr/bin/c++ (bookworm's GCC 12, no <format>)
+        g++ --version | head -1
 
-    - name: Configure
+    # gcc/g++ pinned explicitly: PATH resolves /usr/local/bin (GCC 14 from the image);
+    # without pins CMake could probe /usr/bin/c++ = bookworm's GCC 12 (no <format>).
+    # NOTE: no '#' comments inside the folded command — YAML joins it into one line.
+    - name: Configure (GCC 14 from /usr/local, bookworm glibc 2.36 base)
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DUSE_SDL3=ON
@@ -71,6 +84,8 @@ jobs:
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DBUILD_TESTING=OFF
+        -DCMAKE_C_COMPILER=gcc
+        -DCMAKE_CXX_COMPILER=g++
         -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++'
 
     - name: Build
@@ -83,7 +98,7 @@ jobs:
           echo '::error::devilutionx still requires libstdc++ symbol versions - the -static-libstdc++ linker flag was lost. Debian 12 would reject this binary (GLIBCXX_3.4.31 not found).'
           exit 1
         fi
-        # 2) max GLIBC_ requirement must be <= 2.36 (debian:bookworm base)
+        # 2) max GLIBC_ requirement must be <= 2.36 (bookworm base of the gcc:14 image)
         MAX_GLIBC=$(objdump -T build/devilutionx | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
         echo "max GLIBC_ symbol requirement: ${MAX_GLIBC#GLIBC_} (floor: 2.36)"
         if [ "$(printf '%s\n2.36\n' "${MAX_GLIBC#GLIBC_}" | sort -V | tail -1)" != "2.36" ]; then
@@ -104,7 +119,7 @@ jobs:
         cp Packaging/resources/COPYING.legend.txt pkg/ 2>/dev/null || true
         cat > pkg/LINUX-REQUIREMENTS.txt <<'EOT'
         devilutionx (GPU shader scaler build) - Linux x86_64
-        Built on debian:bookworm (glibc 2.36); static libstdc++/libgcc; SDL3 vendored/static.
+        Built on gcc:14-bookworm (Debian 12 base, glibc 2.36); static libstdc++/libgcc; SDL3 vendored/static.
 
         Requires:
           glibc >= 2.36            Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
