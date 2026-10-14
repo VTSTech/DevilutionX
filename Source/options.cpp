@@ -420,7 +420,7 @@ void OptionEntryShaderFilterPreset::SaveToIni(std::string_view category) const
 OptionEntryShaderFilter::OptionEntryShaderFilter()
     : OptionEntryEnumBase("Shader Filter", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI,
           N_("Shader Filter"),
-          N_("GPU shader-based upscaling filter. Requires Upscale and a GPU with Vulkan, Direct3D 12 or Metal support."),
+          N_("GPU shader-based upscaling filter. Requires Upscale and a GPU with Vulkan, or Metal support."),
           static_cast<int>(ShaderFilter::None))
 {
 	AddEntry(static_cast<int>(ShaderFilter::None), N_("Off"));
