@@ -73,8 +73,28 @@ std::string StripComments(const std::string &text)
 	return out;
 }
 
-/** @brief Resolves #include directives recursively, relative to the including file. */
-bool ResolveIncludes(const std::string &path, int depth, std::set<std::string> &visited,
+// Stage-region pragma. ResolveIncludes must walk the stream with the exact
+// same matcher SplitStages applies to the merged text so that include-once
+// scoping mirrors where each line finally lands (shared/vertex/fragment).
+const std::regex kStagePragmaRe(R"(^\s*#pragma\s+stage\s+(vertex|fragment)\s*$)");
+
+/** @brief Resolves #include directives recursively, relative to the including file.
+ *
+ * The spec's #include is plain textual inclusion; the corpus deliberately
+ * re-includes shared function files per stage region (koko-aio's
+ * colortools_and_ntsc_pass.slang includes functions.include.slang under
+ * #pragma stage vertex AND again under #pragma stage fragment). A
+ * file-lifetime visited set dropped the second inclusion, leaving the
+ * fragment stage without the functions (field round 4: "'hsv2rgb' : no
+ * matching overloaded function found"). Include-once is therefore scoped per
+ * stage bucket: each bucket's translation unit is shared + that stage, so a
+ * re-include in another region is required, while a repeat within one region
+ * would double-paste into a single TU and fail to compile everywhere - once
+ * per bucket is exactly the safe set. The active stack additionally guards
+ * cross-bucket self-recursion that the per-bucket sets cannot see.
+ */
+bool ResolveIncludes(const std::string &path, int depth, int &stage,
+    std::set<std::string> *visited /* 3 buckets */, std::vector<std::string> &active,
     std::string &out, std::string &error)
 {
 	constexpr int kMaxDepth = 24;
@@ -84,13 +104,16 @@ bool ResolveIncludes(const std::string &path, int depth, std::set<std::string> &
 	}
 	std::error_code ec;
 	const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
-	if (!visited.insert(canonical.empty() ? path : canonical).second) {
-		// Already included once; drop repeats instead of looping (the spec
-		// leaves include cycles undefined).
+	const std::string &key = canonical.empty() ? path : canonical;
+	if (std::find(active.begin(), active.end(), key) != active.end()) {
+		// Cycle guard: the file is still being expanded on an outer
+		// frame (its body switched stage region in between).
 		return true;
 	}
+	active.push_back(key);
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
+		active.pop_back();
 		error = StrCat("slang: cannot open shader file: ", path);
 		return false;
 	}
@@ -109,6 +132,17 @@ bool ResolveIncludes(const std::string &path, int depth, std::set<std::string> &
 	while (std::getline(lines, line)) {
 		if (line.rfind("#version", 0) == 0)
 			continue; // Only the top-level file may carry #version.
+		std::smatch stageMatch;
+		if (std::regex_match(line, stageMatch, kStagePragmaRe)) {
+			// Track the stage region so includes land in the right
+			// bucket; SplitStages applies the identical walk to the
+			// merged text. The pragma line itself is still emitted
+			// (SplitStages consumes it from the merged text).
+			stage = (stageMatch[1] == "vertex") ? 1 : 2;
+			out += line;
+			out += '\n';
+			continue;
+		}
 		std::smatch match;
 		if (std::regex_match(line, match, includeRe)) {
 			const std::string incPath = match[1].str();
@@ -117,8 +151,13 @@ bool ResolveIncludes(const std::string &path, int depth, std::set<std::string> &
 			std::filesystem::path candidate = std::filesystem::path(dir) / incPath;
 			if (!std::filesystem::exists(candidate, ec))
 				candidate = std::filesystem::path(path).parent_path() / incPath;
+			const std::string candidateCanonical = std::filesystem::weakly_canonical(candidate, ec).string();
+			// Include-once per stage bucket: drop repeats within the
+			// same region, keep deliberate re-includes across regions.
+			if (!visited[stage].insert(candidateCanonical.empty() ? candidate.string() : candidateCanonical).second)
+				continue;
 			out += "// begin include: " + incPath + "\n";
-			if (!ResolveIncludes(candidate.string(), depth + 1, visited, out, error))
+			if (!ResolveIncludes(candidate.string(), depth + 1, stage, visited, active, out, error))
 				return false;
 			out += "// end include: " + incPath + "\n";
 		} else {
@@ -126,6 +165,7 @@ bool ResolveIncludes(const std::string &path, int depth, std::set<std::string> &
 			out += '\n';
 		}
 	}
+	active.pop_back();
 	return true;
 }
 
@@ -138,7 +178,7 @@ struct StageSplit {
 StageSplit SplitStages(const std::string &text)
 {
 	StageSplit split;
-	static const std::regex stageRe(R"(^\s*#pragma\s+stage\s+(vertex|fragment)\s*$)");
+	const std::regex &stageRe = kStagePragmaRe;
 	std::istringstream lines(text);
 	std::string line;
 	int stage = 0; // 0 = shared, 1 = vertex, 2 = fragment
@@ -1084,8 +1124,10 @@ bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std:
 
 	std::string error;
 	std::string merged;
-	std::set<std::string> includeStack;
-	if (!ResolveIncludes(shaderPath, 0, includeStack, merged, error)) {
+	int includeStage = 0; // Mirrors SplitStages: 0 shared, 1 vertex, 2 fragment.
+	std::set<std::string> includeVisited[3];
+	std::vector<std::string> includeActive;
+	if (!ResolveIncludes(shaderPath, 0, includeStage, includeVisited, includeActive, merged, error)) {
 		out.error = error;
 		return false;
 	}
