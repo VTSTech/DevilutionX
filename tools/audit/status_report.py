@@ -129,7 +129,7 @@ FIELD_RES = {
     "loaded": re.compile(r"\] ok: preset '([^']*)' loaded \((\d+) passes\)"),
     "loadfail": re.compile(r"\] preset load failed \(([^)]*)\): (.*)"),
     "fallback": re.compile(r"\] custom preset failed to load; Shader Filter is off"),
-    "osd_unavail": re.compile(r"\] osd: Shader Filter: .* \(unavailable\)"),
+    "osd_unavail": re.compile(r"\] osd: Shader(?: Filter)?: .* \(unavailable\)"),
     "reinit": re.compile(r"\] Reinit: filter=(\d+)"),
     "changed": re.compile(r"\] preset changed: (\S+) -> (\S+)"),
     "cachehit": re.compile(r"cache hit for (\S+)"),

@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "config.h"
 #ifdef GPU_SCALER_SPV_GENERATED
 #include "engine/render/gpu/gpu_shader_spv.hpp"
 #else
@@ -181,7 +182,7 @@ FILE *LogFile()
 			if (gLogBytes + 64 > kMaxLogBytes)
 				RotateLog(); // keep even the session header within the cap
 			if (gLogFile != nullptr) {
-				const std::string header = StrCat("\n=== GPU scaler session (build ", __DATE__, " ", __TIME__, ") ===\n");
+				const std::string header = StrCat("\n=== GPU scaler session (build ", __DATE__, " ", __TIME__, ", exe ", PROJECT_VERSION, ") ===\n");
 				std::fwrite(header.data(), 1, header.size(), gLogFile);
 				gLogBytes += static_cast<long>(header.size());
 				std::fflush(gLogFile);
@@ -1081,9 +1082,9 @@ void ShowFilterOsd()
 		// No filter active: show no label at all.
 		text.clear();
 	} else if (!IsActive()) {
-		text = StrCat("Shader Filter: ", FilterDisplayName(static_cast<ShaderFilter>(value)), " (unavailable)");
+		text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)), " (unavailable)");
 	} else {
-		text = StrCat("Shader Filter: ", FilterDisplayName(static_cast<ShaderFilter>(value)),
+		text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)),
 		    " (", PrettyBackendName(SDL_GetGPUDeviceDriver(gDevice)), ")");
 	}
 	if (text != gOsdText) {

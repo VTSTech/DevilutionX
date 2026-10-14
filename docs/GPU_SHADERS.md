@@ -76,7 +76,7 @@ The release zips ship helper scripts beside the executable that automate this:
    is restored on the next launch.
 
 **Live shader feedback:** the on-screen overlay always shows the active filter and
-backend — e.g. `Shader Filter: ScaleFX 3x (Vulkan)` or `Shader Filter: Off`. The label is
+backend — e.g. `Shader: ScaleFX 3x (Vulkan)` or `Shader: Off`. The label is
 drawn into the game frame itself, so it is upscaled by the active filter and every switch
 lets you compare text sharpness between filters. Every change is also logged to
 `gpu-scaler.log`.

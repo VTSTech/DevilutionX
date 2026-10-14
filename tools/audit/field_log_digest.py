@@ -50,6 +50,9 @@ RE_HEART = re.compile(
 RE_REINIT = re.compile(r"\] Reinit: filter=(\d+)")
 RE_FALLBACK = re.compile(r"custom preset failed to load; Shader Filter is off")
 RE_SHUTDOWN = re.compile(r"\] Shutdown")
+# Session header (round-6 format: `... (build <ts>, exe <version>) ===`; older
+# logs just have `... (build <ts>) ===` — both capture fine).
+RE_SESSION = re.compile(r"=== GPU scaler session \(build ([^)]*)\) ===")
 RE_ERRISH = re.compile(r"\b(error|failed|failure|fallback|warn(ing)?)\b", re.I)
 RE_PNG = re.compile(r"\.png", re.I)
 
@@ -93,6 +96,7 @@ class Digest:
         self.feedback = {}         # name -> texture names
         self.pngs = set()
         self.sessions = 0
+        self.builds = []           # unique session-header build ids, first-seen order
         self.started = False       # saw any event after last Shutdown
         self.linenos = 0
 
@@ -185,6 +189,11 @@ class Digest:
                     self.shutdowns += 1
                     self.started = False
                     continue
+                m = RE_SESSION.search(line)
+                if m:
+                    if m.group(1) not in self.builds:
+                        self.builds.append(m.group(1))
+                    continue
                 if RE_ERRISH.search(line) and "] ok:" not in line:
                     self.exceptions.append((fname, lineno, line.strip()))
             self.close_window(win, fname, -1)
@@ -209,6 +218,8 @@ class Digest:
         out = []
         out.append("=== field log digest | %s | files: %s ==="
                    % (today(), ", ".join(os.path.basename(f) for f in files)))
+        if self.builds:
+            out.append("builds: %s" % " | ".join(self.builds))
         out.append("sessions: %d (shutdowns: %d) | loads: %d | unique: %d | "
                    "fallback: %d | errors/warns: %d"
                    % (self.sessions, self.shutdowns, self.loads,

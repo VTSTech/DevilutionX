@@ -48,6 +48,12 @@ jobs:
       run: |
         apt-get update
         apt-get install -y --no-install-recommends git ca-certificates
+        # CMake's get_git_commit_hash() runs `git log` inside the workspace. In
+        # container jobs the checkout dir is owned by the runner user while the
+        # steps run as root, so git refuses with "dubious ownership" and the exe
+        # silently builds WITHOUT the commit in its version string (the
+        # field-reported "Linux title footer has no commit").
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -75,7 +81,9 @@ jobs:
 
     # gcc/g++ pinned explicitly: PATH resolves /usr/local/bin (GCC 14 from the image);
     # without pins CMake could probe /usr/bin/c++ = bookworm's GCC 12 (no <format>).
-    # NOTE: no '#' comments inside the folded command — YAML joins it into one line.
+    # GIT_COMMIT_HASH pin: GITHUB_SHA is authoritative even if the in-container git
+    # state is unusable (see Bootstrap). NOTE: no '#' comments inside the folded
+    # command — YAML joins it into one line.
     - name: Configure (GCC 14 from /usr/local, bookworm glibc 2.36 base)
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -86,6 +94,7 @@ jobs:
         -DBUILD_TESTING=OFF
         -DCMAKE_C_COMPILER=gcc
         -DCMAKE_CXX_COMPILER=g++
+        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
         -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++'
 
     - name: Build
@@ -108,6 +117,14 @@ jobs:
         # 3) smoke test: the loader resolves every DT_NEEDED / symbol version exactly
         #    as it did on the field-reported Debian 12 failure; --version exits cleanly.
         ./build/devilutionx --version
+        # 4) the version string must carry the git commit: the title-screen footer
+        #    and gpu-scaler.log session headers identify the build with it.
+        VER=$(./build/devilutionx --version 2>&1)
+        echo "embedded version: ${VER}"
+        if ! printf '%s' "${VER}" | grep -qE '[0-9a-f]{7}'; then
+          echo '::error::devilutionx --version carries no git commit - GIT_COMMIT_HASH was not embedded (title footer and gpu-scaler.log cannot identify this build).'
+          exit 1
+        fi
 
     - name: Package
       run: |
@@ -176,6 +193,7 @@ jobs:
         -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
         -DBUILD_TESTING=OFF
         -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
+        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
         -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
 
     - name: Build

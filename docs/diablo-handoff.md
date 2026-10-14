@@ -15,7 +15,7 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | round-5 records (`3f69273e6`) + Debian-12 portability confirmation (docs-only) on top of the user-pushed `67386a72f` linux-ci toolchain fix (bootstrap reports the exact delta; docs-only drift is benign) |
+| repo tip | round-6 tooling round (gpu-scaler.log session header carries the exe version; Linux CI embeds the commit + gates on it; OSD text is `Shader:`) on top of round-5 records + Debian-12 confirmation — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
 | release tag | `gpu-shaders-v9` @ `b0ba28d5f` — tip-most release line (tags mark releases, not rounds) |
 | field evidence | Phase-1: 69 unique presets working, 71 loads, 0 failures across 4 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11; misc 6/18. Proven live: F1 mipmaps ×4 chains, PassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep OriginalHistory5 (`anti-flicker`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
@@ -25,8 +25,10 @@
 **Conventions (adopted field round 4, 2026-10-15):**
 
 - **Digest first:** raw `gpu-scaler.log` → `field_log_digest.py`; the digest is the
-  default paste. Label every log segment `PHASE1 segN <build-id>` so segments match
-  up across sessions.
+  default paste. The log's session header carries the exe version since round 6
+  (`=== GPU scaler session (build <ts>, exe <version>) ===`) and the digest echoes it
+  as a `builds:` line — label segments by hand (`PHASE1 segN <build-id>`) only when
+  mixing builds within one paste.
 - **Exception-only reporting:** for "expected working" sweeps, report only what the
   digest flags (fallbacks / errors / incomplete loads / unclean exit); the digest
   enumerates presets automatically. An empty exceptions block needs no prose.
@@ -755,7 +757,8 @@ feature).
    pick Vulkan (or Metal on macOS); the env var is now belt-and-suspenders.
 3. Walk the preset list (Settings → Graphics → Shader Filter → browse
    folders). For each preset:
-   - Note the OSD name (`Shader Filter: <displayName>`) — if it lies, the
+   - Note the OSD name (`Shader: <displayName>`; pre-round-6 logs say
+     `Shader Filter:`) — if it lies, the
      wrong preset loaded (§9 gotcha).
    - Wait 2 seconds for the chain to compile + the first frame to render.
    - Check the in-game image: visible / black / distorted / flipped.
