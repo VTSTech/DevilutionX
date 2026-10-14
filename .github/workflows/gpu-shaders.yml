@@ -7,6 +7,16 @@
 #     clean Windows install with NO MinGW runtime DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll,
 #     libwinpthread-1.dll). Without these flags the exe does not launch ("DLL errors").
 #     The Package step FAILS the job if a MinGW runtime DLL ever sneaks back in.
+# The Linux job is the mirror image for glibc portability (field report 2026-10-15: the
+# ubuntu-24.04-built binary died on Debian 12 with "GLIBC_2.38 not found"):
+#   - build inside a debian:bookworm container (glibc 2.36) so the artifact runs on
+#     Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current — the OLDEST targeted base
+#     is what defines the floor (a newer builder produces binaries old distros reject)
+#   - -static-libgcc -static-libstdc++ so no GLIBCXX_/CXXABI_ symbol versions are
+#     required (full -static glibc is NOT viable: NSS breaks, Vulkan loader dlopens)
+#   - Portability gate FAILS the job if the max GLIBC_ requirement exceeds 2.36 or any
+#     GLIBCXX_/CXXABI_ requirement sneaks back in; ./devilutionx --version smoke-runs
+#     the loader exactly as it would run on a Debian 12 box.
 # Do NOT remove the CMAKE_C_FLAGS / CMAKE_EXE_LINKER_FLAGS lines below.
 name: GPU Shader Scalers (Windows + Linux)
 
@@ -22,9 +32,18 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux x86_64 (SDL3 + GPU shader scaler)
+    name: Linux x86_64 (SDL3 + GPU shader scaler, glibc 2.36 floor)
     runs-on: ubuntu-24.04
+    container:
+      # Oldest supported base defines the artifact's glibc floor.
+      # glibc 2.36 = Debian 12 bookworm; the binary then also runs on anything newer.
+      image: debian:bookworm
     steps:
+    - name: Bootstrap container (git for actions/checkout)
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends git ca-certificates
+
     - name: Checkout
       uses: actions/checkout@v4
       with:
@@ -32,13 +51,11 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
         # The lib*-dev stack is required by the VENDORED SDL3's X11/Wayland/audio
         # backends. Without it, configure aborts with:
         #   "Couldn't find dependency package for XCURSOR"
-        # (the runner image has libx11/libxext but not the rest; upstream devilutionx
-        # CI gets the same stack transitively via libsdl2-dev).
-        sudo apt-get install -y ninja-build glslang-tools gettext smpq zip patch \
+        # binutils = objdump for the portability gate below.
+        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake g++ binutils \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
           libxtst-dev \
@@ -54,9 +71,28 @@ jobs:
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DBUILD_TESTING=OFF
+        -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++'
 
     - name: Build
       run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Portability gate (glibc 2.36 floor — mirror of the Windows DLL gate)
+      run: |
+        # 1) static libstdc++/libgcc: NO GLIBCXX_/CXXABI_ symbol versions may remain
+        if objdump -T build/devilutionx | grep -qE 'GLIBCXX_|CXXABI_'; then
+          echo '::error::devilutionx still requires libstdc++ symbol versions - the -static-libstdc++ linker flag was lost. Debian 12 would reject this binary (GLIBCXX_3.4.31 not found).'
+          exit 1
+        fi
+        # 2) max GLIBC_ requirement must be <= 2.36 (debian:bookworm base)
+        MAX_GLIBC=$(objdump -T build/devilutionx | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+        echo "max GLIBC_ symbol requirement: ${MAX_GLIBC#GLIBC_} (floor: 2.36)"
+        if [ "$(printf '%s\n2.36\n' "${MAX_GLIBC#GLIBC_}" | sort -V | tail -1)" != "2.36" ]; then
+          echo '::error::devilutionx requires a GLIBC newer than 2.36 - the bookworm build base was lost. Debian 12 would reject this binary.'
+          exit 1
+        fi
+        # 3) smoke test: the loader resolves every DT_NEEDED / symbol version exactly
+        #    as it did on the field-reported Debian 12 failure; --version exits cleanly.
+        ./build/devilutionx --version
 
     - name: Package
       run: |
@@ -66,6 +102,17 @@ jobs:
         # shader helper scripts ship beside the binary (corpus download / cache wipe)
         install -m 0755 Packaging/linux/install_shaders.sh Packaging/linux/clear_shader_cache.sh pkg/
         cp Packaging/resources/COPYING.legend.txt pkg/ 2>/dev/null || true
+        cat > pkg/LINUX-REQUIREMENTS.txt <<'EOT'
+        devilutionx (GPU shader scaler build) - Linux x86_64
+        Built on debian:bookworm (glibc 2.36); static libstdc++/libgcc; SDL3 vendored/static.
+
+        Requires:
+          glibc >= 2.36            Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
+          libvulkan.so.1           (e.g. Debian/Ubuntu: mesa-vulkan-drivers or the NVIDIA driver)
+          X11 or Wayland session   SDL3 backends load at runtime
+        Older glibc systems (Ubuntu 22.04, Debian 11): build from source with the
+        CMake line in .github/workflows/gpu-shaders.yml (Linux job).
+        EOT
         cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64.zip . && cd ..
         # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them
         # (the shipped binaries embed the committed SPIR-V blobs from gpu_shader_spv_prebuilt.hpp)
