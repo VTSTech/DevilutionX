@@ -42,10 +42,10 @@ For a full list of base-game changes, see the [changelog](docs/CHANGELOG.md).
 
 This mod keeps the stock SDL render path fully intact and layers a GPU shader pipeline on top of it:
 
-- **Vulkan GPU render path** — the game still renders internally at its native 640x480/960x540 8-bit paletted surface, but when a shader filter is active, the frame is uploaded to a GPU texture each frame and pushed through an SDL3 GPU (`SDL_GPU`) pipeline backed by **Vulkan** on Windows and Linux (**Metal** on macOS). If no compatible GPU device can be created — driver update, remote desktop, VM — the game logs the failure once and falls back to the stock renderer automatically.
+- **Vulkan GPU render path** — the game still renders internally at its native 640x480/960x540 8-bit paletted surface, but when a shader filter is active, the frame is uploaded to a GPU texture each frame and pushed through an SDL3 GPU (`SDL_GPU`) pipeline backed by **Vulkan** on Windows and Linux (**Metal** on macOS). If no compatible GPU device can be created — driver update, remote desktop, VM without GPU — the shader simply reports as `(Unavailable)` and the game keeps running on the stock render path.
 - **libretro shader preset support** — load `.slangp`/`.slang` presets from a `shaders/` folder next to the executable. Multi-pass chains are translated in-process with glslang to SPIR-V at runtime, with a content-addressed disk cache and sidecar `.spv` fast path for near-instant reloads. There are **no baked-in shaders**: the filters you get are exactly the presets you install (see [Setting Up Shaders](#setting-up-shaders)).
 - **The full RetroArch shader ecosystem** — CRT simulation, xBR, ScaleFX, HQx, and hundreds more, straight from libretro's `slang-shaders` collection. Unlike the stock renderer's plain stretch, these GPU filters reconstruct pixel-art detail: sharper edges, smoother diagonals, and cleaner corner transitions. Some presets (e.g. the HQx family) load PNG lookup textures at runtime.
-- **Live shader feedback** — a label in the bottom-right corner of the frame (e.g. `Shader Filter: ScaleFX 3x (Vulkan)`, `Shader Filter: Off`, or `Shader Filter: HQ3x (unavailable)`) always shows the active filter and backend, and every change is also logged to `gpu-scaler.log`. The choice persists in `diablo.ini` under the `Shader Filter` key.
+- **Live shader feedback** — the on-screen overlay always shows the active filter and backend (e.g. `Shader Filter: ScaleFX 3x (Vulkan)` or `Shader Filter: Off`). If a shader fails to compile or load, the overlay reports it as `(Unavailable)` — and you can select a new shader right from that state without restarting. Every change is also logged to `gpu-scaler.log`, and the choice persists in `diablo.ini` under the `Shader Filter` key.
 - **Audio fix available** — a standalone fix for decoding Diablo's 1996-era WAV files (zero-length RIFF chunks fail on current SDL3_mixer) is maintained on the [`wav-mixer-fix`](https://github.com/VTSTech/DevilutionX/tree/wav-mixer-fix) branch.
 - **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), and per-preset compatibility audits under [docs/audit/](docs/audit/).
 
@@ -90,7 +90,7 @@ Presets are selected from the in-game folder browser, so you can keep the whole 
 2. Start the game and open **Main Menu → Options → Graphics Options**.
 3. Scroll to **Shader Filter** and pick a preset from the folder browser (`Off` uses the stock renderer).
 4. Confirm — the renderer is recreated and the filter applies immediately from the menu. The option is disabled during an ongoing game because it forces a renderer recreation.
-5. On the next launch, if the GPU device cannot be created (driver update, remote desktop, VM without GPU), the game logs the failure once and continues with the stock renderer.
+5. Shaders are loaded immediately upon selecting them — no restart required. If a shader fails to compile or load, the overlay reports it as `(Unavailable)`; you can select a new shader straight from that state and it will load.
 
 The GPU backend can be forced explicitly with the `DEVILUTIONX_GPU_BACKEND=vulkan` environment variable.
 
