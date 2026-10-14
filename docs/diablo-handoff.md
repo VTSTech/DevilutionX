@@ -1,57 +1,55 @@
 # DevilutionX GPU Shaders — Session Handoff
 
-**Last updated:** 2026-10-14 (America/Toronto). **D3D12 fully excised this session** — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted (`gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). Vulkan-only scope now matches the shipped binary. **v2 slang audit complete** (script bug fixed: 1221→701 0-pass presets; real risk distribution now 33%/20%/46% low/med/high — see §12).
+**Last updated:** 2026-10-14 (America/Toronto). **SCOPE CHANGE (read the README first):** this is now a **standalone mod** — upstream `diasurgical/DevilutionX` enforces a no-AI policy, so PR #8737 is dead and all development, bugs, and features live here (pivot dated 2026-10-11 in the README). **No more DX12** (excised last session — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted: `gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). **No more baked shaders** (built-in ScaleFX/HQx filters removed at `77c53bf35`; only shared Vertex/Blit programs remain baked). **PRIMARY GOAL (2026-10-14, user direction): audit the shader implementation and parser against `docs/SLANG_SPEC.md`** — every `.slangp` key and `.slang` semantic annotated with fork implementation status, plus a priority-ordered gap list (see §8). v2 slang audit complete (script bug fixed: 1221→701 0-pass presets; risk distribution 33%/20%/46% low/med/high — see §12). F5/P1 fixes are applied on master `dce1c4222` (§13).
 
 ## 1. Mission (TL;DR)
 
-Fork feature line on **VTSTech/DevilutionX**, targeted at **diasurgical/DevilutionX**:
+Standalone mod on **VTSTech/DevilutionX**, branched from upstream `1.6.0-dev` (see the README "IMPORTANT" note — no upstream PRs):
 
-- **PR #8737 (open, awaiting review):** GPU scaler on the SDL3 GPU API (Vulkan/D3D12/Metal)
-  with build-time-baked shaders, plus a WAV-loading fix. Both to be re-scoped before review
-  (see §2 course correction).
+- **Primary goal (2026-10-14):** **audit the shader implementation and parser against `docs/SLANG_SPEC.md`** and close the gaps in its priority order. The spec doc is the static arm of the campaign (status matrix + 14-item gap list); the field sweep in §12 is the empirical arm; the audit CSVs under `docs/audit/` join the two.
 - **Current feature line (on fork master):** runtime **libretro slang presets**
   (`.slangp`/`.slang`) loaded from `.\shaders\` beside the exe — multi-pass chains,
   in-process glslang → SPIR-V, content-addressed disk cache + sidecar `.spv` fast path.
   Baked ScaleFX/HQx filters and their Settings entries are **removed**; Shader Filter =
   Off + folder-browser presets. Flip-parity fix field-verified; cross-build PNG codec
-  fixed (hq2x LUTs load); **d3dcompile fault root cause found (§7) and parked.**
-- **NEW SCOPE (2026-10-14, user direction):** focus on **Vulkan** + maximize the count
-  of working libretro presets. **D3D12 excised from the shipped code** (see §7 for the
-  history; the §7 wild-call bug no longer matters since the path that contained it is
-  deleted). Vulkan/Metal are the only backends `gpu_scaler.cpp` will accept;
-  `DEVILUTIONX_GPU_BACKEND=vulkan` continues to work as an explicit override.
-  Tooling shipped this session: `scan_pe_for_wild_calls.py` (post-build self-check —
-  catches §7-class build corruption in 7 s), `audit_slang_presets.py` (preset feature
-  extractor — v2 ran on the full slang-shaders tree, see §12).
+  fixed (hq2x LUTs load).
+- **Backend scope:** **Vulkan-only on Windows and Linux** (Metal accepted on macOS at
+  the device level but untested). `DEVILUTIONX_GPU_BACKEND=vulkan` continues to work as
+  an explicit override. D3D12 is excised from the shipped code (§7 is retained as
+  forensics history only; the wild-call bug no longer matters since the path that
+  contained it is deleted).
+- **Tooling on master:** `tools/audit_slang_presets.py` (preset feature
+  extractor — v2 ran on the full slang-shaders tree, see §12), `tools/audit/*`
+  (crossref + codefindings scanners), `scan_pe_for_wild_calls.py` post-build
+  self-check (catches §7-class build corruption in 7 s).
 
 ## 2. State snapshot
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `2c29042` | feature line + flip fix + d3dcompile forensics v1/v2 (incl. mingw include-order fix) + `docs/diablo-handoff.md`; forensics v3 (patch 0013) ready to apply on top |
-| PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | OPEN, awaiting review; 18 commits ahead of upstream master; still contains baked filters + WAV fix |
-| upstream **SDL_mixer PR #906** | `30034b15` | OPEN; fixes zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode); tarball SHA256 `6d175afd…` (needed for pin bump) |
-| fork branch `wav-mixer-fix` | `658e948` | standalone DevilutionX-side WAV fix; optional stopgap, superseded by #906 + pin bump |
+| fork `master` (what CI builds) | `e501dd853` | feature line + F5/P1 audit fixes (`dce1c4222`) + `docs/SLANG_SPEC.md` + README rewritten for the standalone mod; D3D12 excised, built-ins removed |
+| PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | **DEAD — do not pursue.** Upstream enforces a no-AI policy (README, 2026-10-11); the PR will never merge. Kept for reference only; it still contains baked filters + the WAV fix |
+| upstream **SDL_mixer PR #906** | `30034b15` | OPEN; fixes zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode). Nice-to-have, **not gating**: the mod carries its own vendored `3rdParty/SDL3_mixer` patch + `SDL_LoadWAV_IO` fallback |
+| fork branch `wav-mixer-fix` | `658e948` | standalone DevilutionX-side WAV fix; the in-master vendored patch + fallback already cover this |
 | `gpu-shaders-folder` / `gpu-shader-scaler` | — | historical; the feature line lives on fork master (folder branch deleted from remote) |
 | **v3 field binary** | `devilutionx.exe` (PE ts 2026-10-13 18:29:24 UTC) | uploaded by user; analyzed offline in this session; **3 wild direct calls confirmed in on-disk `.text`** at RVAs `0x7D568A` / `0x7D56E2` / `0x292E8D`, all targeting `imageBase − 0x40000000` (= RVA 0 with −1 GiB bias); see §7 |
 
-PRs #8734/#8736: closed, superseded by #8737. Related upstream issue **#4453** (libretro
-shader support request); demo video: https://youtu.be/uQqkW-1UWec?t=12. Verify PR state
-on GitHub HTML (`curl` the PR page — the API rate-limits).
-
-**#8737 course correction** (text ready in `download/PR8737-course-correction.md`):
-1. post the comment (fills in the #906 link); 2. strip the WAV files from the branch
-(`3rdParty/SDL3_mixer` patch + CMake, `Source/engine/sound.cpp`,
-`Source/utils/soundsample.cpp`, GPU_SHADERS.md WAV section); 3. retitle to
-`SDL3: GPU shader scaler (libretro slang presets)`. After #906 merges: 2-line pin-bump
-PR (package: `download/SDL3-mixer-pin-bump.md`; recompute the tarball SHA256 if upstream
-squash-merges; `DEVILUTIONX_SYSTEM_SDL_MIXER=ON` builds only benefit once an upstream
-release exists).
+PRs #8734/#8736/#8737: all dead — upstream (diasurgical) enforces a no-AI policy and this
+is now a standalone mod; report bugs and request features **in this repository**
+(README "IMPORTANT" note). Related upstream issue **#4453** (libretro shader support
+request) and the demo video (https://youtu.be/uQqkW-1UWec?t=12) remain as history.
+The old #8737 course-correction plan (post comment, strip WAV files, retitle) is **moot —
+never post to upstream**. The WAV fix lives in-master: vendored `3rdParty/SDL3_mixer`
+patch + `SoundSample::SetChunk` `SDL_LoadWAV_IO` fallback (documented in GPU_SHADERS.md).
 
 ## 3. Sandbox map
 
-- `/home/z/my-project/devilutionx` — main repo. `origin` = VTSTech fork (push), `upstream`
-  = diasurgical (fetch only). Local `master` tracks fork master (tip may lag; fetch first).
+- `/home/z/my-project/DevilutionX` — main repo (the mod's own GitHub clone: `origin` =
+  VTSTech/DevilutionX, the only remote that matters now). Local `master` tracks origin
+  master (tip may lag; fetch first). The mod's docs live in-repo: `README.md`,
+  `docs/GPU_SHADERS.md` (feature doc), `docs/SLANG_SPEC.md` (normative slang spec +
+  status matrix — the audit baseline), `docs/diablo-handoff.md` (this file),
+  `docs/audit/` (audit report + CSVs).
 - `/home/z/my-project/worklog.md` — append-only multi-agent log; per-round records with
   exact edit-tooling gotchas.
 - `/home/z/my-project/scripts/` — reusable tooling: per-round byte-exact patch scripts
@@ -87,9 +85,9 @@ release exists).
 | Compile | In-process glslang (FetchContent `3rdParty/glslang`) → SPIR-V; cache in `shaders/cache/`; `<name>.vert.spv`/`.frag.spv` sidecars always win |
 | Multi-pass | Per-pass scale rules, filter/wrap, sRGB & float FBOs, aliases, `Original`/`OriginalHistory#`/feedback, LUT PNGs, `#pragma` params at defaults, `frame_count_mod`, minimal history depth |
 | **Pass orientation** | Every pass rendering into an INTERMEDIATE target gets a Y-mirror MVP (`diag(1,-1,1,1)`); last pass keeps the legacy convention so the present blit cancels — even/odd chain flips fixed (`7ea8e6e93`, field-verified); vertex stages without an MVP uniform keep their own (unknown) orientation — flagged `vertexMvp=no` in the load log, none seen in the field |
-| D3D12 | SPIR-V → SPIRV-Cross → HLSL → guarded d3dcompiler (`gpu_d3dcompile.*`); forensics v1–v3 field-tested; **root cause FOUND (§7) — 3 corrupt `E8 rel32` calls in on-disk `.text`, NOT a runtime/driver/OS issue**; clean rebuild + patch-script audit is the fix |
-| Metal | Not done (baked MSL path still exists, unused by filters) |
-| Built-ins | REMOVED (user request, `77c53bf35`): no ScaleFX/HQx pipelines/list entries/`gpu_luts.hpp`; stale ini values 1–6 sanitize to Off; only shared `Vertex`/`Blit` programs remain baked |
+| **D3D12** | **EXCISED (2026-10-14)** — SPIR-V → SPIRV-Cross → HLSL transpile path, guarded d3dcompiler, and forensics tooling all deleted (`gpu_d3dcompile.*`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp`). §7 below is retained as forensics history only; the wild-call bug died with the path |
+| Metal | Accepted on macOS at the device level (`CreateDevice` sets both `SHADERS_SPIRV` + `SHADERS_MSL` props; shared Vertex/Blit programs have MSL in `gpu_shaders_msl.hpp`). Preset passes submit SPIR-V, which SDL's Metal backend transpiles to MSL at runtime — **untested, no field validation yet** |
+| Built-ins | REMOVED (user request, `77c53bf35`): no ScaleFX/HQx pipelines/list entries; `gpu_luts.hpp` is an unreferenced orphan (safe to delete); stale ini values 1–6 sanitize to Off; only shared `Vertex`/`Blit` programs remain baked (the `gpu_scaler_spv` build target still compiles the dead hqx/scalefx sources into the generated header — harmless, trimmable) |
 | UI | Shader Filter = Off + folder-browser entries; enum `100+N` is an index into the CURRENT listing; durable selection = stored relative path (`Graphics.shaderFilterPreset.value`, hidden ini); path committed BEFORE the value change |
 | Hot reload | None in v1 (restart to apply); switching presets live DOES rebuild the chain |
 | Failure contract | Any preset load/run failure → session fallback (classic renderer), game never dies; custom-preset failure turns the filter off for the session |
@@ -102,11 +100,12 @@ release exists).
 `ResolvePresetFilePath`), `slang_translate.*` (.slang → GLSL, std140 reflection, dense
 bindings), `slang_compile.*` (glslang → SPIR-V, cache, sidecar), `preset_runner.*`
 (multi-pass executor: pipelines, history ring, LUTs, sampler cache, backend =
-vulkan | direct3d12), `preset_smoke.cpp` (offline harness). Plus `gpu_d3dcompile.*`
-(guarded d3dcompiler + crash forensics) and `tools/d3dcompiler_smoke.c` (standalone
-device-less compiler test). `3rdParty/glslang|SPIRV-Cross` are FetchContent wrappers.
-Full commit series: `git log b0a3b7bab..2c29042` on fork master (per-round detail in
-worklog).
+vulkan-only after the D3D12 excision), `preset_smoke.cpp` (offline harness).
+`3rdParty/glslang` is a FetchContent wrapper (SPIRV-Cross is still declared but no
+longer linked into the preset path). **Normative reference for all five preset TUs:
+`docs/SLANG_SPEC.md`** — per-key/per-semantic status plus the gap list to work
+(§8). Full commit series: `git log b0a3b7bab..dce1c4222` on fork master (per-round detail in
+worklog); docs-only commits on top through `e501dd853`.
 
 The three wild functions identified in §7 are in DevilutionX's options code (not in
 `preset/` proper) — they are `OptionEntryShaderFilter` / `OptionEntryShaderFilterPreset`
@@ -151,324 +150,43 @@ SYNCHRONOUSLY").
 
 ### TL;DR
 
-The "first D3DCompile AV on RX 560" mystery is solved. The v3 binary has three corrupt
-direct calls baked into `.text` at link time (or by a post-build patch script). The
-shader compiler never gets a chance to fail — the wild call crashes the function
-before reaching it. All runtime/environmental suspects are exonerated. The compile
-guard catches every fault, the session falls back to the regular renderer, the game
-never dies. The fix is a clean rebuild + `objdump` diff to identify the corrupter.
-
-### What v3 proved
-
-v3 (patch 0013, local `2c64dd9`) shipped the **call-site byte decode**. Every faulting
-site decodes as `E8 rel32` — a direct PC-relative call baked into devilutionx.exe's
-`.text`. Not `FF 15` (indirect IAT), not `FF D0` (call rax). The CPU read 5 bytes from
-a fixed RVA, computed `RIP + rel32`, and jumped. No pointer was dereferenced; no
-register was consulted; no D3DCompile was entered.
-
-This kills both readings from the v2 handoff:
-- **(a) stale indirect pointer** — DEAD. No indirect call exists at any faulting site.
-- **(b) D3DCompile went wild** — DEAD. D3DCompile is never entered; the faulting RIP
-  is the wild target itself, the first instruction after the direct call.
-
-### The rename test — NEGATIVE (decisive for environmental hypotheses)
-
-User ran `devilutionx_derp.exe` (byte-identical copy renamed). Crashes were byte-for-byte
-identical (same RVAs `0x7D568A` / `0x7D56E2` / `0x292E8D`, same rel32 bytes, same wild
-target `imageBase − 0x40000000`). The rename test is the gold standard for name-keyed
-corrupters and it came back negative. This kills every name-keyed hypothesis:
-
-| Suspect | Status after rename test |
-|---|---|
-| OBS graphics hook | exonerated (v2: fully unloaded, identical crash) |
-| `d3dcompiler_47.dll` | exonerated (v2: pD3DCompile clean; v3: D3DCompile integrity verified; v3 final: D3DCompile never entered) |
-| `apphelp.dll` / AppCompat SDB / IFEO `VerifierDlls` | exonerated (rename test negative) |
-| Application Verifier (name-keyed) | exonerated (rename test negative) |
-| AMD driver / D3D12 runtime | exonerated (smoke tool passes with same shaders, same d3dcompiler) |
-| Wild IP = `imageBase − 0x40000000` exactly | confirmed (3 of 3 sites, all builds, all runs) |
-
-### On-disk binary analysis (the actual smoking gun)
-
-User uploaded `devilutionx.exe` (16,662,016 bytes, PE32+ x86-64 GUI, stripped to external
-PDB). PE TimeDateStamp `0x6ACE7884` = `2026-10-13 18:29:24 UTC` — matches the v3 build
-banner `Oct 13 2026 18:28:19` in the runtime log (banner = build start, timestamp = link
-completion). This is the exact binary that crashed.
-
-PE Optional Header:
-- `ImageBase = 0x140000000` (default mingw base — confirms §9)
-- `SectionAlignment = 0x1000`, `FileAlignment = 0x200`
-- `DllCharacteristics = 0x0160` → HIGH_ENTROPY_VA + DYNAMIC_BASE (ASLR) + NX_COMPAT.
-  **No GUARD_CF (0x4000)**. No CFG.
-- `DataDirectory[LOAD_CONFIG] = {RVA=0, Size=0}` — **no load config directory at all**.
-  No `__security_cookie`, no CFG function tables, no SafeSEH table.
-- `NumberOfRvaAndSizes = 16` (standard).
-- 12 sections, `.text` at VMA `0x140001000` (RVA `0x1000`), size `0xD0FAC8`, file
-  offset `0x400`.
-
-Three direct calls in `.text` have wild rel32 fields (verified with `objdump -d` on
-the on-disk file — these are NOT runtime artifacts):
-
-| Call RVA | rel32 bytes (LE) | rel32 signed | next-instr RVA | target RVA | target VMA | = imageBase − 0x40000000? |
-|---|---|---|---|---|---|---|
-| `0x7D568A` | `71 A9 82 BF` | -1,081,955,983 | `0x7D568F` | `0xFFFFFFFFC0000000` (-1 GiB) | `0x100000000` | yes |
-| `0x7D56E2` | `19 A9 82 BF` | -1,081,956,071 | `0x7D56E7` | `0xFFFFFFFFC0000000` (-1 GiB) | `0x100000000` | yes |
-| `0x292E8D` | `6E D1 D6 BF` | -1,076,440,722 | `0x292E92` | `0xFFFFFFFFC0000000` (-1 GiB) | `0x100000000` | yes |
-
-A full scan of the 13 MB `.text` section (every `0xE8` opcode, decoded, target
-computed) finds **only 3** such wild calls — exactly the three sites that fault at
-runtime. No others. The wild calls are not in the `.reloc` table (RIP-relative `E8`
-calls never are — the relocation table only contains absolute-relocation entries for
-`mov`/`lea` etc., not PC-relative branches).
-
-### The arithmetic — verified
-
-For all three sites: `rel32 + 0x40000000 = -(call_site_RVA + 5)`, i.e.
-`target_RVA = -0x40000000` exactly, i.e. `target_VMA = imageBase − 0x40000000`.
-
-If you ADD `0x40000000` to each rel32, the target RVA becomes **exactly 0** for all
-three sites. So the link resolved these calls to RVA 0 (the PE MZ header at
-`imageBase + 0`) with a constant −1 GiB bias baked into every rel32. RVA 0 is not
-executable code — it's the MZ header byte.
-
-This is not random corruption. A constant −1 GiB (= 0x40000000, a power of two) applied
-to a class of `E8 rel32` fields, with the corrected target landing on RVA 0 (the
-canonical "unresolved symbol" default), is the signature of either:
-
-1. A post-build binary patcher that walks `.text` looking for `E8` opcodes and rewrites
-   their rel32 operands with an off-by-`0x40000000` arithmetic error. **Prime suspect:
-   `scripts/apply_d3dcompile_forensics.py`** (or another `apply_*.py` script). The 3
-   affected functions are all in user-added code (ShaderFilter option setters), which
-   is consistent with a patch script that targets your own code regions by name or
-   pattern.
-2. A mingw-w64 linker bug with weak symbols defaulting to RVA 0 with a −1 GiB bias.
-   Less likely: would affect many builds, not just this one; the smoke tool builds with
-   the same toolchain and is clean (different code, but same compiler/linker).
-3. An LTO mis-link of three specific functions. Possible but unprovable without a clean
-   rebuild.
-
-### What the wild functions are (identified)
-
-PE contains the mangled symbols `N10devilution23OptionEntryShaderFilterE` and
-`N10devilution29OptionEntryShaderFilterPresetE` — these are DevilutionX's own
-`devilution::OptionEntryShaderFilter` and `OptionEntryShaderFilterPreset` classes.
-The globals at `0x140D14D40` and `0x140D14D20` (referenced by the wild functions via
-the `.rdata` pointers at `0x140EEBB80` and `0x140EEBB90`) are instances of these
-classes.
-
-The three wild functions, identified by `.pdata` (function boundaries) and disassembly:
-
-| Wild call RVA | Enclosing function (RVA range) | Size | Identified as |
-|---|---|---|---|
-| `0x292E8D` | `0x292E40 .. 0x292E93` | 83 bytes | `OptionEntryShaderFilter::SetValue` variant (uses `lea` for keys) |
-| `0x7D568A` | `0x7D5640 .. 0x7D5690` | 80 bytes | `OptionEntryShaderFilter::SetValue` variant (uses globals for keys) |
-| `0x7D56E2` | `0x7D5690 .. 0x7D56E8` | 88 bytes | `OptionEntryShaderFilterPreset::SetValue` variant |
-
-All three share this exact structure (function B disassembled in full):
-
-```
-push rbp; mov rsp,rbp; push rbx; sub rsp, 0x28
-mov rcx, [rip+0x712740]          ; rcx = options key global (0x140ee7d90)
-mov rdx, rbp                     ; rdx = frame ptr
-call 0x140b6f3b8                 ; _setjmp (import thunk → msvcrt.dll!_setjmp, hint 600)
-test eax, eax
-je .main_path                    ; if first call (returns 0), do work
-xor eax, eax; ...; ret          ; longjmp-unwind path: return 0
-.main_path:
-mov rcx, [rip+0x716514]          ; rcx = OptionEntryShaderFilter* (0x140d14d40)
-call 0x140b5ea10                 ; TLS-style slot resolver (helper at 0x140b5ea10, 586 bytes)
-movb $0x1, (%rax)                ; *slot = true (claim option-set flag)
-call *0x93827e(%rip)             ; GetCurrentThreadId()  via IAT slot 0x14110d8f8
-                                 ;   (msvcrt.dll... wait, IAT walks KERNEL32.dll!GetCurrentThreadId hint 555)
-mov rcx, [rip+0x71650f]          ; rcx = OptionEntryShaderFilterPreset* (0x140d14d20)
-mov ebx, eax                     ; ebx = thread id
-call 0x140b5ea10                 ; TLS-style slot resolver
-mov [rax], ebx                   ; *slot = thread id (reentrancy guard)
-call 0x100000000                 ; <-- WILD CALL (last instruction; no ret after)
-nop                              ; alignment padding
-<next function starts immediately>
-```
-
-Imports confirmed by walking `.idata`:
-
-- IAT slot `0x14110D8F8` → `KERNEL32.dll!GetCurrentThreadId` (hint 555) — called by all
-  three wild functions (this is the reentrancy guard for the synchronous-notify path,
-  see §9).
-- Import thunk `0x140b6f3b8` → `msvcrt.dll!_setjmp` (hint 600) — called early by all
-  three wild functions and the parallel non-wild function (SEH setup).
-- Import thunk `0x140b6f5c8` → `msvcrt.dll!strlen` (hint 1084) — used by other code.
-- IAT slot `0x14110E190` → `msvcrt.dll!longjmp` (hint 1020) — called at the end of the
-  parallel non-wild function (see below).
-
-### The parallel non-wild function (tells us what the wild call was supposed to be)
-
-A function at `0x14029A9E0` has the **exact same pattern** as the three wild functions
-— same `_setjmp`-based SEH setup, same `OptionEntryShaderFilter` lookup via
-`0x140b5ea10`, same `GetCurrentThreadId` reentrancy guard via IAT slot
-`0x14110d8f8` — but ends correctly with a call to `longjmp`:
-
-```
-0x14029aa5e:  call *0xe72e94(%rip)       ; GetCurrentThreadId
-0x14029aa64:  lea  rcx, [rip+0xa7a2b5]   ; rcx = OptionEntryShaderFilterPreset* (0x140d14d20)
-0x14029aa6b:  mov  edi, eax              ; edi = thread id
-0x14029aa6d:  call 0x140b5ea10           ; TLS-style slot resolver
-0x14029aa72:  cmp  [rax], edi            ; compare stored thread id
-0x14029aa74:  jne  .cleanup              ; if mismatch, skip the work
-0x14029aa76:  movb $0x0, (%rsi)          ; *bool_slot = false  (release claim)
-...                                           ; (work happens here)
-0x14029aac0:  lea  rcx, [rip+0xdd6ad9]   ; rcx = options key global (0x1410715a0)
-0x14029aac7:  call *0xe736c3(%rip)      ; call *0x14110e190  =  msvcrt.dll!longjmp  (throw path)
-0x14029aacd:  nop
-0x14029aace:  xchg %ax, %ax              ; alignment
-<next function starts>
-```
-
-The intended target for the three wild calls was almost certainly **`longjmp`** (same as
-this parallel function — the SEH-unwind throw path that pairs with the early `_setjmp`).
-Whatever produced the wild rel32 fields resolved the symbol to RVA 0 (unresolved) with
-a constant −1 GiB bias.
-
-### Why the crash happens before D3DCompile
-
-The wild functions are option setters. They run on the synchronous-notify path
-documented in §9 ("Option value changes notify listeners SYNCHRONOUSLY"). When the
-ShaderFilter option is set during preset load, these setters execute, hit the wild
-`call 0x100000000` as their last instruction, and fault. The shader compiler never
-gets called — `D3DCompile` is reached only after the option-setter chain returns, and
-the wild call crashes the function before that point. The compile guard catches the
-fault, the session falls back to the regular renderer, the game survives.
-
-### Root cause — most likely (in descending order of probability)
-
-1. **A post-build binary patch script corrupted these specific call sites.** Prime
-   suspect: `scripts/apply_d3dcompile_forensics.py`. If it walks `.text` looking for
-   `E8` opcodes and rewrites their operands (e.g., to relocate a call from one site to
-   another, or to insert a hook stub), an off-by-`0x40000000` error in the rel32
-   recomputation produces exactly this pattern. The 3 affected functions are all in
-   user-added code (ShaderFilter option setters), consistent with a patch script that
-   targets your own code regions. **This is the only hypothesis consistent with all
-   evidence: only 3 sites affected, all in user code, all with the same constant bias,
-   all targeting RVA 0.**
-2. A mingw-w64 linker bug with weak symbols defaulting to RVA 0 with a −1 GiB bias.
-   Less likely: would affect many builds, not just this one; the smoke tool builds
-   with the same toolchain and is clean.
-3. An LTO mis-link of three specific functions. Unprovable without a clean rebuild.
-
-### Decisive next test (audit step 1 COMPLETE, step 2 pending)
-
-**Step 1 — Audit `apply_d3dcompile_forensics.py`: DONE, EXONERATED.** User
-uploaded the script (from an earlier round zip). Audit results:
-
-- The script is a **pure source patcher**. It edits exactly four files:
-  `Source/engine/render/gpu/gpu_d3dcompile.cpp` (adds includes, replaces
-  `ScalerCrashHandler`, stashes `gD3DCompilerModule = mod;`),
-  `Source/engine/render/gpu/gpu_shaders_hlsl.hpp` (read-only, extracts
-  `kVertex` / `kHqxIndex`), `tools/d3dcompiler_smoke.c` (new file), and
-  `GPU_SHADERS.md` (extends troubleshooting). All `open()` calls use
-  text mode (`"r"` / `"w"` with `newline="\n"`); no `"rb+"` or `"wb"` anywhere.
-- It does NOT walk `.text`, does NOT rewrite `E8 rel32` operands, does NOT
-  touch the compiled `.exe` at all. Grep for the §7 audit targets
-  (`0x40000000`, `0x100000000`, `0x140000000`, `rel32`, `E8`, `0x7D568A`,
-  `0x7D56E2`, `0x292E8D`, `image_base`, `ImageBase`, `seek`, `struct.pack`)
-  returns zero matches.
-- The wild functions identified in §7 are `OptionEntryShaderFilter` /
-  `OptionEntryShaderFilterPreset` setter code — that source lives in
-  `Source/options.cpp` and `Source/options.h`. **This script does NOT touch
-  those files.** The script's edits to `gpu_d3dcompile.cpp` (which uses
-  `setjmp`/`longjmp` for SEH) are in a different translation unit entirely.
-
-→ `apply_d3dcompile_forensics.py` is **NOT** the corrupter. The corrupter is
-either (1) another `apply_*.py` script that hasn't been uploaded yet — the
-handoff §3 mentions multiple `apply_*.py` scripts and `fix_preset_folder_confusion.py`;
-or (2) a build-time / link-time defect in the mingw toolchain itself.
-
-**What's needed from the user:** upload any other `apply_*.py` /
-`fix_*.py` / `gen_*.py` scripts in the sandbox `scripts/` folder,
-especially any that:
-- open the compiled `devilutionx.exe` in binary mode (`"rb+"`, `"wb"`, `"r+b"`)
-- use `seek`, `struct.pack`, `struct.unpack`, `mmap`, or `bytearray`
-- grep for `b"\xe8"`, `0xE8`, `"E8"`, or `rel32`
-- reference `0x100000000`, `0x40000000`, `0x140000000`, `ImageBase`,
-  `image_base`, or `.text`
-
-If the only scripts are source-patchers like `apply_d3dcompile_forensics.py`,
-then the corrupter is the toolchain (case 2 below).
-
-**Step 2 — Clean rebuild + `objdump` diff: PENDING (user-side).** This box
-cannot do it: no `cmake`, `ninja`, or `x86_64-w64-mingw32-gcc` installed;
-no `sudo` to install them. The user needs to run on their Windows box (or
-a Linux box with mingw-w64 cross-build toolchain):
-
-```bash
-git clone https://github.com/VTSTech/DevilutionX.git
-cd DevilutionX
-cmake -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_TOOLCHAIN_FILE=/path/to/mingw-w64-x86_64.cmake
-ninja -C build devilutionx_exe
-# Do NOT run any apply_*.py / fix_*.py post-build.
-# Diff the disassembly:
-objdump -d build/devilutionx.exe > /tmp/clean.s
-objdump -d shipped.exe          > /tmp/shipped.s
-diff /tmp/clean.s /tmp/shipped.s | less
-# Also run the wild-call scanner (shipped this session, see below):
-python3 /home/z/my-project/download/scan_pe_for_wild_calls.py build/devilutionx.exe
-```
-
-- If the clean build's scan reports **0 wild calls** → toolchain is clean →
-  the corrupter is a post-build patch script (case 1). Find and fix it.
-- If the clean build's scan reports **3 wild calls at the same RVAs** →
-  toolchain bug (case 2/3). Bisect: try a different mingw version, try gcc
-  vs clang, try with `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` (no LTO).
-
-**Step 3 — Wild-call scanner (SHIPPED).** A reusable post-build self-check
-has been written to `/home/z/my-project/download/scan_pe_for_wild_calls.py`.
-Run it on any PE32+ x86-64 binary; it disassembles `.text` with `objdump`
-and reports every direct `E8 rel32` call whose target falls outside the
-image's VMA range. Takes ~7 seconds on a 13 MB `.text` (161,816 calls
-scanned). Exit code 0 = safe, 1 = wild calls found. Verified on the v3
-field binary: finds exactly the 3 known wild calls at RVAs `0x7D568A`,
-`0x7D56E2`, `0x292E8D`, all targeting `imageBase − 0x40000000`. Wire this
-into the build pipeline (run after link, before ship) — it would have
-caught the §7 bug before any field test.
-
-### Decisive evidence preserved in this session's sandbox
-
-- `/home/z/my-project/analysis/devilutionx.exe` — the v3 binary you uploaded (16.6 MB,
-  PE32+ x86-64 GUI, stripped, TimeDateStamp 2026-10-13 18:29:24 UTC).
-- `/home/z/my-project/upload/devilutionx.zip` — the same, source archive (in case the
-  extracted file is modified).
-
-The disassembly and PE-header analysis were done with `objdump` 2.44 and a Python
-script that walks `.pdata` / `.reloc` / `.idata`. Re-runnable from this handoff alone
-— the binary is preserved. Key re-run commands:
-
-```bash
-# Verify the 3 wild calls are still in the on-disk file
-cd /home/z/my-project/analysis
-objdump -d --start-address=0x1407D5640 --stop-address=0x1407D56F0 devilutionx.exe
-objdump -d --start-address=0x140292E40 --stop-address=0x140292EA0 devilutionx.exe
-# Both should show "call 0x100000000" as the last instruction before the nop+pad.
-
-# Count wild calls (should be 3, matching the 3 faulting sites)
-objdump -d devilutionx.exe | grep "call.*0x100000000" | wc -l
-```
-
-### What was NOT the cause (so you don't re-litigate)
-
-- OBS — fully exonerated (v2, fully unloaded, identical crash).
-- `d3dcompiler_47.dll` — fully exonerated (v2: pD3DCompile provenance clean; v3:
-  byte-vs-disk integrity verified; v3 final: D3DCompile never entered).
-- AMD driver / D3D12 runtime — exonerated (smoke tool passes with same shaders).
-- `apphelp.dll` / AppCompat SDB / IFEO / Application Verifier — exonerated (rename
-  test negative: `devilutionx_derp.exe` crashes identically).
-- mingw include-order trap (§9 gotcha) — exonerated (different failure mode; this is
-  link-time/post-link, not compile-time).
-- PageHeap / Application Verifier with Heaps — would not have caught this; the corrupt
-  bytes were already wild when the page was mapped. No runtime write to catch.
+This section no longer needed or relevant (VTSTech)
 
 ## 8. Remaining tasks
 
-### Active scope (Vulkan + libretro preset coverage) — primary focus
+### Active scope — audit implementation & parser against `docs/SLANG_SPEC.md` (PRIMARY)
+
+The campaign now has two arms that feed each other:
+
+- **Static arm (the audit proper):** `docs/SLANG_SPEC.md` is the baseline. It documents
+  every `.slangp` key and `.slang` semantic with the fork's implementation status
+  (supported / partial / extension / parsed-unused / unimplemented / divergent),
+  cross-checked against RetroArch's `gfx/video_shader_parse.c`, and ends in a
+  priority-ordered gap list (its §7, 14 items). **Work that list top-down.** The top
+  items, confirmed against master `dce1c4222`:
+  1. **F6 viewport aspect** — `ScaleType::Viewport` ignores the preset's aspect-ratio
+     intent (`viewport_aspect_scale` et al.); unblocks the single largest cluster
+     (232 medium-risk presets: `uses_mvp + viewport_scale`).
+  2. **`PassFeedback#Size` latent crash** — `preset_runner.cpp:859` does
+     `std::stoi(texName.substr(10))`; for `PassFeedback#` (12-char prefix) that slices
+     `"ck#"` → uncaught `std::invalid_argument` → process abort. One-line fix
+     (`substr(12)`); NOT in the audit report's finding set — found during the spec write-up.
+  3. **Param-case quirk** — the parser lowercases `#reference`/override keys but the
+     runner applies `#pragma` param overrides case-sensitively → mixed-case params
+     (Mega Bezel style) silently keep defaults. Harden to case-insensitive.
+  4. **F1 mipmaps** — `mipmap_input` parsed then ignored (892 presets; Mega Bezel-tier,
+     Phase-3 gate).
+  5. …continue per SLANG_SPEC.md §7 (sRGB+float precedence note is already documented
+     there as divergent-but-harmless, 0 presets affected).
+- **Empirical arm (the field sweep):** the §12 validation methodology below. Every
+  sweep failure gets categorized and mapped back onto a SLANG_SPEC status cell —
+  a fallback is either a spec gap already listed (close it) or a new finding (add it
+  to the spec's gap list, then fix).
+
+Reconciliation rule: a preset counts as covered only when its SLANG_SPEC feature set is
+all `supported`/`extension` AND it passes the §12 field sweep acceptance criteria.
+
+### Field validation (empirical arm) — sweep queue
 
 - ✅ **`audit_slang_presets.py` v2 run complete** (§12) — CSV of all 2658
   `.slangp` presets with feature flags + risk heuristic. Risk distribution
@@ -476,7 +194,7 @@ objdump -d devilutionx.exe | grep "call.*0x100000000" | wc -l
   701 presets still report 0 passes (down from 1221 in v1) — these are
   `#reference` inheritance chains where the referenced path doesn't resolve
   under the audit root (mostly `bezel/Mega_Bezel` 468 + `bezel/koko-aio`
-  180 + `hdr/sony_megatron_*` 34).
+  180 + `hdr/sony_megatron_*` 34). CSV lives in-repo: `docs/audit/slang_audit_v2.csv`.
 - ⬜ **Validate the low-risk presets on Vulkan.** Build the game with
   `-DUSE_SDL3=ON -DUSE_GPU_SCALER=ON` (CI does this), drop the
   slang-shaders tree into `shaders/` next to the exe, launch with
@@ -560,17 +278,17 @@ objdump -d devilutionx.exe | grep "call.*0x100000000" | wc -l
 
 ### Carried over from before the pivot
 
-- ⬜ #8737 course correction (§2), then refresh the PR branch from fork master:
-  `git push --force-with-lease origin origin/master:gpu-shaders-combined` (drop
-  `.github/workflows/gpu-shaders.yml` + `cleanup-fork-workflows.*` noise first)
-- ⬜ Watch #906 → after merge, pin-bump PR (`SDL3-mixer-pin-bump.md`)
+- ✅ README + docs aligned to the standalone-mod scope (2026-10-14): README rewritten
+  by the user; `docs/SLANG_SPEC.md` created and committed; `docs/GPU_SHADERS.md`
+  rewritten for the runtime-preset pipeline this session; this handoff reframed.
+- ✅ ~~#8737 course correction (§2)~~ — DEAD, never post to upstream (no-AI policy).
+- ⬜ Watch #906 (optional, not gating): the vendored SDL3_mixer patch +
+  `SDL_LoadWAV_IO` fallback already fix Diablo's 1996 WAVs in-master; a merge upstream
+  would only matter for a future `DEVILUTIONX_SYSTEM_SDL_MIXER=ON` release build.
 - ⬜ 26-i: Linux gcc/clang build verification + clang-format 18 sweep over all new files
-- ⬜ 26-j: GPU_SHADERS.md for runtime presets (NOTE: fork master's copy lacks the
-  forensics troubleshooting section — the 3rd file of the forensics zip was never
-  applied) + PR decision: update #8737 vs new branch + PR (user's call). Add a
-  §7 summary to GPU_SHADERS.md troubleshooting: "if D3DCompile faults, check
-  on-disk bytes at the faulting RVAs before chasing environmental causes; run
-  `scan_pe_for_wild_calls.py`."
+- ✅ 26-j: GPU_SHADERS.md for runtime presets — done (rewritten this session; the
+  baked-filter/`gpu_shader_spv_prebuilt` description is gone; the "two dialects"
+  backend text now matches the D3D12 excision)
 - ⬜ Cosmetic: highlighted row can coincide with an unrelated preset while browsing a
   different folder than the active one (selection itself is correct)
 - ✅ hq2x/PNG codec, screenshots codec, fsr/hqx/stock flips, deadlock, selection, crash
@@ -578,10 +296,11 @@ objdump -d devilutionx.exe | grep "call.*0x100000000" | wc -l
 
 ## 9. Hard-won gotchas (do NOT relearn)
 
-- Repo identity: PRs target **diasurgical/DevilutionX `master`** (not `devilution`, not
-  `development`). Author identity: GitHub maps both `VTSTech
-  <14359327+VTSTech@users.noreply.github.com>` and `Nigel Todman <veritas@vts-tech.org>`;
-  keep one form per series.
+- Repo identity (CHANGED 2026-10-14): this is a **standalone mod** — do NOT open PRs
+  against `diasurgical/DevilutionX` (upstream enforces a no-AI policy; #8737 will never
+  merge). Issues, PRs, and releases live on **VTSTech/DevilutionX**. Author identity:
+  GitHub maps both `VTSTech <14359327+VTSTech@users.noreply.github.com>` and
+  `Nigel Todman <veritas@vts-tech.org>`; keep one form per series.
 - clang-format **18** enforced by CI over `Source`. Verify with a REAL dry-run:
   `clang-format --style=file --dry-run -Werror <files>` — claims without the run have
   been wrong before (8-space indent shipped as "clean").
@@ -676,6 +395,7 @@ objdump -d devilutionx.exe | grep "call.*0x100000000" | wc -l
 - Study samples at `reference/` root: `crt-easymode.*`, `crt-royale.slangp`,
   `scalefx.*`, `sharp-bilinear-simple.slangp`.
 - License: slang-shaders is GPLv3 — verify per-shader headers before bundling anything.
+- `docs/SLANG_SPEC.md` — slang shader specification reference (2026-10-14): every `.slangp` key + `.slang` semantic annotated with fork implementation status (supported/partial/extension/unimplemented/divergent), grounded in a full read of the five preset TUs at master `dce1c4222` and cross-checked against RetroArch's `gfx/video_shader_parse.c`. Includes a priority-ordered gap list for the coverage campaign (F6 viewport aspect, F1 mipmaps, param-case quirk, and a NEW latent crash: `PassFeedback#Size` uniforms hit `stoi("ck#")` in `FillBlockBytes` — uncaught `std::invalid_argument`, not in the audit report's finding set).
 
 ## 11. Restore / reproduce
 
@@ -715,6 +435,12 @@ was always the field-verified one; the runtime preset executor
 SPIRV-Cross → HLSL transpile path is deleted). The work is breadth, not
 depth — find which of the 2658 slang presets work today, fix the high-yield
 failure categories, repeat.
+
+**Relation to the primary audit goal (§8):** this section is the *empirical*
+arm — what actually renders in the field. The *static* arm is
+`docs/SLANG_SPEC.md` (per-key status + gap list). Reconcile after every
+sweep: each fallback category below should either close a listed spec gap or
+add a new row to it.
 
 ### Tooling shipped this session
 
@@ -934,21 +660,24 @@ Diff against the previous sweep's CSV to track progress between fixes.
 
 
 
-## 13. Static audit fixes — history ring & bare scale (2026-10-14, packaged for upload)
+## 13. Static audit fixes — history ring & bare scale (2026-10-14, applied to master)
 
-Full report: `docs/audit/shader-support-audit-2026-10-14.md` (session deliverable, now
-kept in-repo; the audit CSVs moved in-repo too — index below).
+Full report: `docs/audit/shader-support-audit-2026-10-14.md` (kept in-repo; the audit
+CSVs are in-repo too — index below).
 
 Two silent-wrongness bugs confirmed against the v2 audit CSV (2658 presets) and a fresh
-libretro/slang-shaders clone, both fixed on branch `vulkan-preset-fixes` (base
-`2a30fca65`) and packaged as full files + format-patches:
+libretro/slang-shaders clone, **both now applied to fork master in commit `dce1c4222`
+("slang-shaders-audit") and verified in-tree** (history ring allocates `historyDepth_ + 1`
+at `preset_runner.cpp:616`; "scale_type always wins over the bare-scale default" at
+`preset_parser.cpp:229`):
 
 | ID | File | Bug | Wild impact | Fix |
 |---|---|---|---|---|
 | F5 | `preset_runner.cpp/.hpp` | OriginalHistory ring held `depth` slots (needs `depth+1`) and indexed forward (`+N` instead of `-N`): OH1 == current frame at depth 1, shifted taps and never-written-slot sampling at depth >= 3 | 264 presets referencing `OriginalHistory#` (max_hist: 1×13, 3×168, 5×2, 6×8, 7×73) | commit `0feed0710` / patch `0001` |
 | P1 | `preset_parser.cpp` | bare `scale` assignment reset a previously declared `scale_type` to Source (line-order-dependent parse; RetroArch is order-independent) | 897 presets (639 Mega_Bezel, 93 presets/, 36 edge-smoothing, 31 downsample, 28 interpolation); 0 in Phase-1, 68 in Phase-2 | commit `807c8518d` / patch `0002` |
 
-Apply on fork master (`--keep-cr` mandatory, §9):
+Historical apply commands (already done on master; patches kept in `download/` for
+cherry-pick reference — `--keep-cr` mandatory, §9):
 
 ```bash
 git am --keep-cr 0001-preset_runner-fix-OriginalHistory-ring-depth-and-ind.patch
@@ -972,18 +701,20 @@ as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
 - `tools/audit/patch_scale_order.py` — byte-exact TAB-preserving patcher (§9 gotcha workaround)
 - `tools/audit/test_history_ring.cpp` — F5 ring logic proof / regression canary
 
-### State after this package
+### State at master `dce1c4222`
 
 - Phase-1 readiness: 175/185 low-risk presets clean of all known gaps; the 10
   F5-affected Phase-1 presets (`deinterlacing/` bob/motion-adaptive/6×nnedi3,
   `motionblur/mix_frames`, `stereoscopic-3d/shutter-to-anaglyph`, `test/history`
-  max_hist=3) are the ring-fix canaries.
+  max_hist=3) were the ring-fix canaries — now fixed, confirm in the first sweep.
 - Downgraded / non-issues (do not re-litigate): F9 case-mismatch (scanner
   false-positive — strip the `NAME`Feedback suffix before case compare), F1
   mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — defer to Phase 3), F6
   viewport=swapchain (observation), F2 feedback_pass dead key (benign,
   demand-driven feedback), T9/T2/T3/T4/T5 zero wild hits (translator hard-failure
   paths never exercised — strong coverage signal).
-- Still pending (user side): upload/apply the two fixes → CI build → Phase-1 field
-  sweep per §12 reporting format → re-upload a v3 field binary only if the wild-call
-  re-scan is still wanted.
+- Still pending (user side): CI build of master → Phase-1 field sweep per §12
+  reporting format → fold results into the SLANG_SPEC.md gap list (§8 reconciliation
+  rule); re-upload a v3 field binary only if the wild-call re-scan is still wanted.
+- New finding from the spec write-up, not yet fixed: the `PassFeedback#Size`
+  `stoi("ck#")` crash (§8 item 2) — one-line fix, pair it with the next code change.
