@@ -761,8 +761,9 @@ bool ValidateBlockMembers(const std::vector<UniformBlock> &blocks,
 				// the loud translate failure to a logged warning; the
 				// std140 layout is unaffected and FillBlockBytes already
 				// writes the zero-fill fallback for unmatched members.
-				warnings.push_back(StrCat("uniform block member '", name,
-				    "' is not a builtin semantic, texture size, feedback size or #pragma parameter; filling 0"));
+				// * This bloats the log very fast, over 1MB - VTSTech *
+				//warnings.push_back(StrCat("uniform block member '", name,
+				//  "' is not a builtin semantic, texture size, feedback size or #pragma parameter; filling 0"));
 			}
 		}
 	}
