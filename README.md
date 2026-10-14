@@ -9,6 +9,9 @@
 
 <p align="center">
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/6df35aea-9b46-490b-91cc-da78be272647" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/6c932e6a-f388-47ae-ad09-3b6fb8dc8d89" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/7731ede4-8869-4ab7-ab4d-4578a425a623" />
+
 </p>
 
 <sub>*(The health-bar and XP-bar are off by default but can be enabled in the [game settings](https://github.com/diasurgical/DevilutionX/wiki/Config-File). Widescreen can also be disabled if preferred.)*</sub>
