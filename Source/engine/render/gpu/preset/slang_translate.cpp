@@ -415,7 +415,12 @@ bool ParseBlockMembers(const std::string &body, std::vector<UniformMember> &memb
 					error = StrCat("slang: unsized arrays are not supported in uniform blocks: '", member.name, "'");
 					return false;
 				}
-				member.arraySize = std::stoi(countText);
+				try {
+					member.arraySize = std::stoi(countText);
+				} catch (const std::exception &) {
+					error = StrCat("slang: invalid array size for member: '", member.name, "'");
+					return false;
+				}
 				if (member.arraySize <= 0 || member.arraySize > 64) {
 					error = StrCat("slang: invalid array size for member: '", member.name, "'");
 					return false;

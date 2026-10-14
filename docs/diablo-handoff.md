@@ -167,13 +167,14 @@ The campaign now has two arms that feed each other:
   1. **F6 viewport aspect** — `ScaleType::Viewport` ignores the preset's aspect-ratio
      intent (`viewport_aspect_scale` et al.); unblocks the single largest cluster
      (232 medium-risk presets: `uses_mvp + viewport_scale`).
-  2. **`PassFeedback#Size` latent crash** — `preset_runner.cpp:859` does
-     `std::stoi(texName.substr(10))`; for `PassFeedback#` (12-char prefix) that slices
-     `"ck#"` → uncaught `std::invalid_argument` → process abort. One-line fix
-     (`substr(12)`); NOT in the audit report's finding set — found during the spec write-up.
-  3. **Param-case quirk** — the parser lowercases `#reference`/override keys but the
-     runner applies `#pragma` param overrides case-sensitively → mixed-case params
-     (Mega Bezel style) silently keep defaults. Harden to case-insensitive.
+  2. ✅ **`PassFeedback#Size` latent crash** — FIXED (`b70500b19`): length-aware prefix parse in
+     `FillBlockBytes` (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` received
+     `"ck#"` → uncaught `std::invalid_argument` → process abort. The same commit guards the
+     translator's uniform `[N]` size parse (same crash class) and adds the regression test
+     `tools/audit/test_uniform_names.cpp` (13 checks, g++ -O2, exit 0).
+  3. ✅ **Param-case quirk** — FIXED (`b70500b19`): the runner applies `#pragma` param overrides
+     via `CaseInsensitiveEqual`, so the parser's lowercased keys land regardless of shader
+     spelling (Mega Bezel mixed-case params no longer silently keep defaults).
   4. **F1 mipmaps** — `mipmap_input` parsed then ignored (892 presets; Mega Bezel-tier,
      Phase-3 gate).
   5. …continue per SLANG_SPEC.md §7 (sRGB+float precedence note is already documented
@@ -716,5 +717,6 @@ as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
 - Still pending (user side): CI build of master → Phase-1 field sweep per §12
   reporting format → fold results into the SLANG_SPEC.md gap list (§8 reconciliation
   rule); re-upload a v3 field binary only if the wild-call re-scan is still wanted.
-- New finding from the spec write-up, not yet fixed: the `PassFeedback#Size`
-  `stoi("ck#")` crash (§8 item 2) — one-line fix, pair it with the next code change.
+- ✅ New finding from the spec write-up: the `PassFeedback#Size` `stoi("ck#")` crash —
+  FIXED in `b70500b19` together with the param-case fix and the translator `[N]` guard
+  (§8 items 2–3).

@@ -856,7 +856,15 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
                                 w = gameW;
                                 h = gameH;
                         } else if (texName.rfind("PassOutput", 0) == 0 || texName.rfind("PassFeedback", 0) == 0) {
-                                const int idx = std::stoi(texName.substr(10));
+                                // "PassOutput" is a 10-char prefix but "PassFeedback"
+                                // is 12: slicing both at 10 handed stoi("ck#") for the
+                                // feedback form and aborted on an uncaught
+                                // std::invalid_argument (SLANG_SPEC.md gap #4). Covers
+                                // both the <PassFeedback#>Size and the
+                                // <PassFeedback#>FeedbackSize member forms.
+                                const size_t prefixLen =
+                                    texName.rfind("PassFeedback", 0) == 0 ? 12 : 10;
+                                const int idx = std::stoi(texName.substr(prefixLen));
                                 if (idx >= 0 && idx < static_cast<int>(passes_.size())) {
                                         w = static_cast<float>(passes_[static_cast<size_t>(idx)]->outputWidth);
                                         h = static_cast<float>(passes_[static_cast<size_t>(idx)]->outputHeight);
@@ -892,7 +900,12 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
                 float value = 0.0F;
                 bool found = false;
                 for (const ParamOverride &override : preset_.parameters) {
-                        if (override.name == name) {
+                        // Preset keys are lowercased at parse time while #pragma
+                        // parameter identifiers keep their original case; an
+                        // exact-case compare made every mixed-case override (Mega
+                        // Bezel overlays) silently keep defaults (SLANG_SPEC.md
+                        // gap #3).
+                        if (CaseInsensitiveEqual(override.name, name)) {
                                 value = override.value;
                                 found = true;
                                 break;

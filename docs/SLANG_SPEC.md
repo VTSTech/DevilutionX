@@ -57,7 +57,7 @@ Pass targets are re-created only when the game resolution or swapchain size chan
 | Rule | Behavior in `preset_parser.cpp` |
 |---|---|
 | Line form | `key = value`; everything before `=` is the key, everything after the value |
-| Key case | Keys are lowercased at parse time. Consequence: parameter override names become lowercase (see 3.6) |
+| Key case | Keys are lowercased at parse time. Consequence: parameter override names become lowercase; they are matched case-insensitively at application (see 3.6) |
 | Value quoting | A value starting with `"` is taken up to the next `"` (first quoted segment); otherwise trimmed as-is. Optional in all cases — the grammar accepts both `shaders = 2` and `shaders = "2"` |
 | Comments | `#` starts a comment (full-line or trailing) unless it opens the line as `#reference`; a `#` inside double quotes never starts a comment. Trailing comments on a `#reference` line break the directive match (the whole line must match the directive regex) |
 | Unknown keys | Silently ignored |
@@ -123,7 +123,7 @@ Divergence (audit F6): `viewport` resolves against the raw swapchain with no asp
 | `parameters` gating | Supported | A key only counts as a parameter override if listed in `parameters` (or via the overlay heuristic below) |
 | Overlay heuristic | Extension | When a `#reference`d overlay (Mega Bezel `.params` files) declares no `parameters` list at all, any unknown key whose value parses fully as a number is accepted as an override. Unknown names stay inert at runtime (applied only if they match a `#pragma parameter`) |
 | Merge | Supported | Parent overrides accumulate across `#reference` parents; the child file's own keys replace same-named inherited overrides |
-| Application | Partial (quirk) | `preset_runner.cpp` fills a UBO member with: preset override (exact-case name match) → `#pragma` default → 0.0. But the parser lowercased the override key (3.1), so an override only lands when the shader's parameter/member name is lowercase. Mixed-case Mega Bezel parameters (`ABS_APECT_mult`-style) silently fall back to pragma defaults. Fix is a case-insensitive compare at the two application sites — cheap hardening, do it with the Phase-3 pass |
+| Application | Supported | `preset_runner.cpp` fills a UBO member with: preset override (case-insensitive name match, fixed in `b70500b19` — gap #3) → `#pragma` default → 0.0. Before the fix the parser-lowercased override key only matched lowercase shader names, so mixed-case Mega Bezel parameters (`ABS_APECT_mult`-style) silently kept pragma defaults |
 | Uniforms UI | Unimplemented | Parameters are fixed per session at defaults/overrides; there is no in-game slider UI. By design (§4 of the handoff) |
 
 ### 3.7 `#reference` inheritance and path resolution
@@ -220,7 +220,7 @@ Sampler declarations are rewritten to dense bindings (set 0 vertex / set 2 fragm
 |---|---|---|
 | Plain UBO per stage | Supported (max 1) | Rewritten to `std140` + SDL3 GPU descriptor conventions: vertex UBO → set 1 binding 0; fragment UBO → set 3 binding 0. A second plain UBO per stage is a hard error ("spec allows one UBO") — never occurs in the corpus (audit T5) |
 | `push_constant` block | Supported | Re-homed as a std140 UBO (binding 1 when a plain UBO exists in the same stage, else binding 0), pushed per draw. SDL3 GPU push-constant size limits do not apply |
-| std140 layout | Supported | Computed by the translator: `float/vec2/3/4`, `int/ivec2-4`, `uint/uvec2-4`, `bool`, `mat4`/`mat4x4`; arrays sized 1..64 with std140 stride (rounded to a full vec4); multi-name declarations (`float A, B;`) handled. Unsized arrays are a hard error |
+| std140 layout | Supported | Computed by the translator: `float/vec2/3/4`, `int/ivec2-4`, `uint/uvec2-4`, `bool`, `mat4`/`mat4x4`; arrays sized 1..64 with std140 stride (rounded to a full vec4); multi-name declarations (`float A, B;`) handled. Unsized or non-numeric sizes are a hard error (the size parse is guarded — previously a malformed `[x2]` aborted on uncaught `stoi`) |
 | Standalone uniforms | Unimplemented | `uniform float x;` outside a block is not rewritten — it would compile with glslang's auto-assigned set/binding and then violate the SDL3 GPU descriptor model. Not present in the corpus (all semantic uniforms live in blocks) |
 | Member validation | Supported | Every block member must be a recognized semantic (4.7), a `<Texture>Size`/`<Texture>FeedbackSize` form, or a `#pragma parameter` name (case-insensitive at validation). Unknown members are a loud translate error — this is the main early-warning gate against unsupported semantics |
 
@@ -240,8 +240,8 @@ All size semantics carry the spec's `vec4(x, y, 1/x, 1/y)` payload; a `vec2` mem
 | `FrameTime` | float | Supported | Duration of the previous frame in microseconds (RetroArch extension; 5 corpus presets) |
 | `PASSINDEX` | int | Extension | Current pass index. Not in the libretro spec or RetroArch; supported because packs use it |
 | `Rotation` | uint | Unimplemented | Spec builtin (0..3). Not in the member whitelist — a shader using it fails translation loudly. Rare in the corpus; add to `slang_translate.cpp` + `FillBlockBytes` when a rotating-content preset matters |
-| `<Texture>Size` | vec4 | Supported (one latent bug) | Texture size by name: `Source` → input; `Original`/`OriginalHistory#` → game frame; `PassOutput#` → that pass's output; alias/`#pragma name`/LUT → that texture's size. It is valid per spec to declare a size without the texture itself |
-| `PassFeedback#Size` | vec4 | **Broken (latent crash)** | `FillBlockBytes` parses the index with `substr(10)` — correct for `PassOutput#` (10 chars) but wrong for `PassFeedback#` (12 chars), so `stoi` gets `"ck#"` and throws `std::invalid_argument`, which is uncaught and aborts the process. Validation (4.6) accepts the member, so translation does not catch it. Exposure unknown (the codefindings scan did not test this form; `PassFeedback#` samplers exist in 23 presets, `<PassFeedback#>Size` presumably near-zero). One-line fix: length-aware index parse in `preset_runner.cpp`. Same defect applies to the `<Texture>FeedbackSize` form when `<Texture>` is `PassFeedback#` |
+| `<Texture>Size` | vec4 | Supported | Texture size by name: `Source` → input; `Original`/`OriginalHistory#` → game frame; `PassOutput#` → that pass's output; alias/`#pragma name`/LUT → that texture's size. It is valid per spec to declare a size without the texture itself. (The one latent bug this family had — the `PassFeedback#Size` index parse — is fixed, next row) |
+| `PassFeedback#Size` | vec4 | Supported | Fixed in `b70500b19` (gap #4): the index parse is prefix-length-aware (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` got `"ck#"` and the uncaught `std::invalid_argument` aborted the process. Covers both the `<PassFeedback#>Size` and `<PassFeedback#>FeedbackSize` member forms (the Feedback-suffix strip lands on the same branch). Regression-tested in `tools/audit/test_uniform_names.cpp` |
 | `<Texture>FeedbackSize` | vec4 | Supported | Same size as the texture (feedback shares the pass output's size) |
 | `User#Size` | vec4 | Unimplemented | Falls into the alias/LUT lookup by literal name `User#` and resolves to (0, 0) rather than the indexed LUT's size. No corpus preset observed using it |
 
@@ -296,10 +296,10 @@ Unchanged from the handoff (§12 acceptance criteria): compiles clean, first fra
 | `Original` / `Source` / `OriginalHistory0..8` | Supported | runner | Ring depth+1, seeded, T-N (F5 fixed); cap 8 vs spec unbounded |
 | `PassOutput#` | Supported | translate, runner | Causality enforced |
 | `PassFeedback#` / `<name>Feedback` | Supported | runner | Demand-driven double buffering (F2: `feedback_pass` dead) |
-| `PassFeedback#Size` uniform | **Broken** | runner | `stoi("ck#")` latent crash (4.7) |
+| `PassFeedback#Size` uniform | Supported | runner | Length-aware index parse (gap #4 fixed, `b70500b19`); was a `stoi("ck#")` latent crash (4.7) |
 | LUTs incl. mipmap LUTs, `User#` | Supported | runner | 8-bit upload; `User#Size` unresolved |
 | `mipmap_input` | Partial (F1) | runner | No-op for pass outputs / chain input (1 mip level) |
-| Parameters: `#pragma parameter` + preset overrides | Partial | translate, runner | Case quirk: lowercased keys vs case-sensitive application (3.6); no UI (by design) |
+| Parameters: `#pragma parameter` + preset overrides | Supported | translate, runner | Case-insensitive application (gap #3 fixed, `b70500b19`); no UI (by design) |
 | `#reference` inheritance + ancestor path fallback | Supported | parser | Multi-parent; last non-empty chain wins (code/comment mismatch note) |
 | UBO (≤1/stage) + push-constant re-homing, std140 | Supported | translate, runner | Unsized arrays / extra UBOs / standalone uniforms unsupported |
 | Semantic member validation | Supported | translate | Whitelist + `<Tex>Size` forms + param names; `Rotation` missing |
@@ -322,8 +322,8 @@ Ordered by expected yield for the Vulkan coverage campaign; corpus numbers from 
 
 1. **Viewport scale = swapchain, no aspect derivation (F6)** — `preset_runner.cpp`. 1355 presets; the dominant Phase-2 combo (`uses_mvp + viewport_scale`, 232 presets) funnels here. Accept for fullscreen; revisit if border/bezel presets misletterbox.
 2. **`mipmap_input` no-op for pass outputs (F1)** — `preset_runner.cpp` (target allocation + no per-frame mip generation). 892 presets but 888 Mega_Bezel-tier; implement mip-chained outputs + `SDL_GenerateMipmapsForGPUTexture` per frame only when Phase 3 starts.
-3. **Parameter override case quirk** — `preset_parser.cpp` lowercases keys; `preset_runner.cpp` applies overrides case-sensitively. Mixed-case parameters (Mega Bezel `.params` overlays) silently keep pragma defaults. Two case-insensitive compares fix it; bundle with the Phase-3 hardening.
-4. **`PassFeedback#Size` latent crash** — `preset_runner.cpp` `FillBlockBytes` uses the `PassOutput`-length `substr(10)` for both prefixes; `PassFeedback#` yields `"ck#"` to `stoi` → uncaught `std::invalid_argument`. New finding (not in the audit report). One-line length-aware parse; fix before any preset family using feedback sizes is attempted.
+3. ✅ **Parameter override case quirk** — FIXED (`b70500b19`): `preset_runner.cpp` applies overrides via `CaseInsensitiveEqual`; the parser's lowercased keys now land regardless of the `#pragma` spelling. Was: mixed-case parameters (Mega Bezel `.params` overlays) silently kept pragma defaults.
+4. ✅ **`PassFeedback#Size` latent crash** — FIXED (`b70500b19`): length-aware index parse in `FillBlockBytes` (plus the same-class guard on the translator's uniform `[N]` size parse, which previously aborted on non-numeric sizes instead of erroring loudly). Regression test: `tools/audit/test_uniform_names.cpp`.
 5. **`Rotation` semantic missing** — `slang_translate.cpp` whitelist + `FillBlockBytes`. Loud failure at translate; add (uint 0..3, identity for a non-rotating frontend) when needed.
 6. **`#pragma format` token gaps** — `preset_runner.cpp` mapping table: add `R8G8_UINT`, `R8G8_SINT`, `R16G16_UINT`, `R16G16_SINT`, `R32G32_UINT`, `R32G32_SINT`, and the two `A2B10G10R10_*_PACK32` tokens (the latter only if HDR10 outputs ever matter). Current behavior: warn + RGBA8 fallback.
 7. **`clamp_to_border` wrap mode** — `preset_parser.cpp` maps it to clamp-to-edge; SDL3 GPU can express border clamping (`SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER`) if a preset ever needs it. Unrepresented in the corpus.
