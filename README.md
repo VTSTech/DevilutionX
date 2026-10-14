@@ -49,7 +49,7 @@ This mod keeps the stock SDL render path fully intact and layers a GPU shader pi
 - **Audio fix available** — a standalone fix for decoding Diablo's 1996-era WAV files (zero-length RIFF chunks fail on current SDL3_mixer) is maintained on the [`wav-mixer-fix`](https://github.com/VTSTech/DevilutionX/tree/wav-mixer-fix) branch.
 - **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), and per-preset compatibility audits under [docs/audit/](docs/audit/).
 
-See it in action: [shader demo video](https://youtu.be/uQqkW-1UWec?t=12).
+See it in action: [shader demo video](https://www.youtube.com/watch?v=Fc72CjCcHH4).
 
 # Requirements
 
@@ -111,15 +111,6 @@ Build notes:
 - Shader presets are compiled at runtime by the bundled glslang (`3rdParty/glslang`) — no external shader toolchain is needed at build time.
 - The SDL_GPU device, swapchain, and pipelines are created lazily and torn down on shutdown and renderer reinitialization, so switching a shader filter to `Off` (or losing the GPU) restores the exact stock render path.
 - CI ([gpu-shaders.yml](.github/workflows/gpu-shaders.yml)) builds Windows x64 and Linux x64 on every push, manual dispatch, and release.
-
-# Branches
-
-| Branch | Purpose |
-| --- | --- |
-| `master` | Main development line — what CI builds |
-| `gpu-shaders-combined` | Snapshot of the original upstream PR feature branch |
-| `gpu-shader-scaler` | Historical GPU scaler prototype |
-| `wav-mixer-fix` | Standalone WAV decode fix (zero-length RIFF chunks in Diablo's 1996 files) |
 
 # Contributing
 
