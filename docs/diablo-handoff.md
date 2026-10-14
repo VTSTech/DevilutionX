@@ -1,6 +1,6 @@
 # DevilutionX GPU Shaders — Session Handoff
 
-**Last updated:** 2026-10-15 (America/Toronto). **SCOPE CHANGE (read the README first):** this is now a **standalone mod** — upstream `diasurgical/DevilutionX` enforces a no-AI policy, so PR #8737 is dead and all development, bugs, and features live here (pivot dated 2026-10-11 in the README). **No more DX12** (excised last session — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted: `gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). **No more baked shaders** (built-in ScaleFX/HQx filters removed at `77c53bf35`; only shared Vertex/Blit programs remain baked). **PRIMARY GOAL (2026-10-14, user direction): audit the shader implementation and parser against `docs/SLANG_SPEC.md`** — every `.slangp` key and `.slang` semantic annotated with fork implementation status, plus a priority-ordered gap list (see §8). v2 slang audit complete (script bug fixed: 1221→701 0-pass presets; risk distribution 33%/20%/46% low/med/high — see §12). F5/P1 fixes are applied on master `dce1c4222` (§13). **2026-10-15 (user direction): D3D12 field-binary forensics and wild-call scanning are RETIRED — all v3-binary / wild-call references were removed from this file; §7 is now a stub.** **2026-10-15 (second refresh): VTSTech moved the 40-preset field-sweep list in-repo (`docs/audit/shader-test-list-2026-10-15.{md,csv}`), documented the release helper scripts in GPU_SHADERS.md, tagged `gpu-shaders-v8` (release zips now ship `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe), and the README references both scripts and the in-repo audit artifacts.** **2026-10-15 (field round 3): the first live sweep log against the 40-preset list surfaced two failures — both fixed on `664d0f740` (macro-aliased sampler declarations for the nnedi3 deinterlacing chain; per-pass format downgrade with SDL error text for `test/format.slangp`) plus two latent bugs found while verifying (`#pragma format` was never wired to the runner; numeric pass keys were swallowed by the .params overlay tolerance, silently breaking scale for 1196 corpus presets). Field round 3 details in §8.**
+**Last updated:** 2026-10-15 (America/Toronto). **SCOPE CHANGE (read the README first):** this is now a **standalone mod** — upstream `diasurgical/DevilutionX` enforces a no-AI policy, so PR #8737 is dead and all development, bugs, and features live here (pivot dated 2026-10-11 in the README). **No more DX12** (excised last session — debug code removed from `gpu_scaler.cpp`/`preset_runner.cpp`/`main.cpp`/`gpu_scaler.hpp`/`preset_runner.hpp`/`Source/CMakeLists.txt`/`docs/GPU_SHADERS.md`; 4 files deleted: `gpu_d3dcompile.{cpp,hpp}`, `tools/d3dcompiler_smoke.c`, `gpu_shaders_hlsl.hpp` — 1905 lines total). **No more baked shaders** (built-in ScaleFX/HQx filters removed at `77c53bf35`; only shared Vertex/Blit programs remain baked). **PRIMARY GOAL (2026-10-14, user direction): audit the shader implementation and parser against `docs/SLANG_SPEC.md`** — every `.slangp` key and `.slang` semantic annotated with fork implementation status, plus a priority-ordered gap list (see §8). v2 slang audit complete (script bug fixed: 1221→701 0-pass presets; risk distribution 33%/20%/46% low/med/high — see §12). F5/P1 fixes are applied on master `dce1c4222` (§13). **2026-10-15 (user direction): D3D12 field-binary forensics and wild-call scanning are RETIRED — all v3-binary / wild-call references were removed from this file; §7 is now a stub.** **2026-10-15 (second refresh): VTSTech moved the 40-preset field-sweep list in-repo (`docs/audit/shader-test-list-2026-10-15.{md,csv}`), documented the release helper scripts in GPU_SHADERS.md, tagged `gpu-shaders-v8` (release zips now ship `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe), and the README references both scripts and the in-repo audit artifacts.** **2026-10-15 (field round 3): the first live sweep log against the 40-preset list surfaced two failures — both fixed on `664d0f740` (macro-aliased sampler declarations for the nnedi3 deinterlacing chain; per-pass format downgrade with SDL error text for `test/format.slangp`) plus two latent bugs found while verifying (`#pragma format` was never wired to the runner; numeric pass keys were swallowed by the .params overlay tolerance, silently breaking scale for 1196 corpus presets). Field round 3 details in §8.** **2026-10-15 (field round 4): fork history was REBASED — `dce1c4222`/`664d0f740` no longer resolve (content verified in-tree; new tip `f49a29ce5`, tag `gpu-shaders-v9` at `b0ba28d5f`, see §2). The koko-aio-ng repeat-include known issue is FIXED (`c1ee40544`: include-once per stage bucket — §8). First Phase-1 field segment: 15/15 unique presets working across denoisers/reshade/sharpen, 0 fallbacks, with F1 mipmaps and PassFeedback confirmed live for the first time (magicbloom) — §8 field round 4.** **Segment 2 (same day, continued log): `denoisers/` complete (7/7) and `blurs/` 15/17 slots clean — including a 24-pass chain (`dual_filter_bloom`, longest field-tested) and F1 mipmaps on three more chains. Phase-1 total now 36 unique presets working, 38 loads, 0 failures across three logs.**
 
 ## 1. Mission (TL;DR)
 
@@ -24,8 +24,9 @@ Standalone mod on **VTSTech/DevilutionX**, branched from upstream `1.6.0-dev` (s
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `664d0f740` | feature line + F5/P1 audit fixes (`dce1c4222`) + `docs/SLANG_SPEC.md` + README rewritten for the standalone mod; D3D12 excised, built-ins removed; + field rounds 1–2 fixes, translate preflight harness, log-bloat fix, in-repo sweep list (`f729f49e2`), doc-forensics retirement (`c4cb1c8e1`), README helper-script references (`af6a0e8fc`), field round 3 fixes (`664d0f740`) |
+| fork `master` (what CI builds) | `f49a29ce5` | **history REBASED 2026-10-15** — pre-rebase hashes `dce1c4222` (F5/P1) and `664d0f740` (round 3) no longer resolve; content verified in-tree (rebased line `537ad782b`). On top: **round-4 include fix** (`c1ee40544`, koko-aio-ng per-stage-bucket include-once), `install_git.cmd` (`0874f803d`), Linux `install_shaders.sh`/`clear_shader_cache.sh` + CI tweak (`e6ba06ab4`), `tools/audit/status_report.py` (`f49a29ce5`); field round 4 = Phase-1 segment 1, 15/15 working (§8) |
 | release tag **`gpu-shaders-v8`** | `92831323e` | v8 release binaries; first release shipping `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe (corpus download / cache wipe) |
+| release tag **`gpu-shaders-v9`** | `b0ba28d5f` | v9 release binaries (README refresh); adds Linux helper scripts + `install_git.cmd` vs v8; `status_report.py` is post-v9 on master |
 | PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | **DEAD — do not pursue.** Upstream enforces a no-AI policy (README, 2026-10-11); the PR will never merge. Kept for reference only; it still contains baked filters + the WAV fix |
 | upstream **SDL_mixer PR #906** | `30034b15` | OPEN; fixes zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode). Nice-to-have, **not gating**: the mod carries its own vendored `3rdParty/SDL3_mixer` patch + `SDL_LoadWAV_IO` fallback |
 | fork branch `wav-mixer-fix` | `658e948` | standalone DevilutionX-side WAV fix; the in-master vendored patch + fallback already cover this |
@@ -190,6 +191,12 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
 - ✅ **Field round 3 (2026-10-15):** deinterlacing cluster live-tested; nnedi3
   chain fixed (macro-aliased sampler declarations) — re-test the three nnedi3
   Tier 1a canaries plus any koko-ambi/koko-aio preset on the next sweep build.
+- ✅ **Field round 4 (2026-10-15, Phase-1 breadth segment 1):** two sessions on one
+  v9-lineage Windows CI build — 16 preset loads / 15 unique, **0 fallbacks, 0
+  crashes, clean shutdown**; F1 mipmaps + PassFeedback confirmed live for the
+  first time (magicbloom); segment 2 swept
+  `denoisers/` (complete) + `blurs/` (15/17) incl. a clean 24-pass chain — 36
+  unique presets working total. Details in the round-4 subsection below.
 - ✅ **`audit_slang_presets.py` v2 run complete** (§12) — CSV of all 2658
   `.slangp` presets with feature flags + risk heuristic. Risk distribution
   after the script bug fix: low=886 (33%), medium=539 (20%), high=1233 (46%).
@@ -212,6 +219,13 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
   presets (top dirs: `reshade/` 50, `misc/` 18,
   `handheld/` 17, `presets/` 14, `deinterlacing/` 10, `dithering/` 10,
   `crt/` 9).
+  **Progress (field round 4, 2026-10-15, segments 1+2):** 36 Phase-1 presets
+  confirmed working across `denoisers/` (7/7 — dir complete), `blurs/` (15/17),
+  `reshade/` (8), `sharpen/` (6); tiered list updated (Tier 1b Anime4k + Tier 2a
+  FilmGrain/bsnes-gamma-ramp/bilateral-2p/gauss_4tap `working`; Tier 1a
+  backfilled from round 3). Still open: nnedi3 ×3 + koko re-tests, then the
+  remaining low-risk dirs (`misc/` 18, `handheld/` 17, `presets/` 14,
+  `deinterlacing/` 10, `dithering/` 10, `crt/` 9, and the rest of `reshade/`).
 - ⬜ **Validate the 539 medium-risk presets** — top dirs: `presets/` 105,
   `edge-smoothing/` 87, `crt/` 70, `handheld/` 35, `border/` 34,
   `interpolation/` 32, `downsample/` 26, `pixel-art-scaling/` 20.
@@ -339,18 +353,83 @@ macro-alias keeps + the vertex-stage guard + format downgrade decision),
 `test/` field presets re-created in-repo under `tools/audit/field-presets/test/`
 (history / feedback / feedback-noncausal / format + README).
 
-**NEW known issue (next round): koko-aio-ng fails glslang on repeat-includes.**
-`ResolveIncludes` is include-once GLOBALLY (a visited-set), but
+**RESOLVED (2026-10-15, `c1ee40544`, field round 4 code round): koko-aio-ng repeat-includes.**
+`ResolveIncludes` WAS include-once GLOBALLY (a visited-set), but
 `bezel/koko-aio/shaders-ng/shift_and_bleed.slang` deliberately includes
 `includes/functions.include.slang` in BOTH stage sections (line 23 vertex, line 67
-fragment); include-once places the content only in the vertex bucket, so the
+fragment); include-once placed the content only in the vertex bucket, so the
 fragment stage misses `rgb2yiq` and glslang fails (`no matching overloaded function
 found`). Confirmed identical on the pre-round-3 translator (not a round-3
-regression). A naive "expand every occurrence" breaks the inverse pattern (shared +
-fragment re-include ⇒ duplicate definitions), so the correct design is
-include-once PER STAGE BUCKET (resolve includes after the stage split, or track
-visited per bucket). Affected: koko-aio-ng family (3 presets) and any other
-repeat-includer; koko-ambi is NOT affected (verified 6/6 passes compile).
+regression). Fixed exactly as designed here: include-once is now scoped PER STAGE
+BUCKET — the include walker uses the same `#pragma stage` matcher as the stage
+splitter and keeps a visited set per bucket (shared/vertex/fragment), plus an
+active-include stack guarding cross-bucket self-recursion that per-bucket sets
+cannot see. Regression presets: `tools/audit/field-presets/test/r4-include.slangp`
++ `r4_*.inc`/`r4_include.slang`. Sweep tooling landed with it:
+`tools/audit/sweeps/{corpus_translate_sweep,corpus_sweep_diff,include_diff_replica,verify_glslang_changed}.py`.
+Field re-test of the koko-aio-ng family (3 presets) still pending on the next sweep
+build; koko-ambi unaffected (verified 6/6 passes compile).
+
+### Field round 4 — Phase-1 breadth, segment 1 (2026-10-15, v9-lineage build `Oct 14 2026 21:03:48`)
+
+Two sessions in one `gpu-scaler.log`, Vulkan, 1920x1080 — 16 preset loads / 15
+unique: **15/15 working, 0 fallbacks, 0 crashes, clean `Shutdown`**. Log-only
+evidence: visual acceptance per §12 (no flip/black/corruption) is presumed but was
+not explicitly reported; nothing in the log suggests a defect. Coverage CSV:
+`vulkan-coverage-2026-10-15.csv` (sandbox `download/`); tiered-list CSV filled
+in-repo (round-3 Tier 1a backfill + round-4 rows).
+
+| dir | working presets (passes) |
+|---|---|
+| `denoisers/` | crt-fast-bilateral-super-xbr (8) — loaded in BOTH sessions: session 1 compiled all 8 fresh (~0.6 s, 20.2 s dwell), session 2 hit 8/8 disk cache (~0.35 s, 14.3 s dwell) |
+| `reshade/` | magicbloom (12), bloom (9), lut (1), halftone-print (2), bsnes-gamma-ramp (1), blendoverlay (1), NormalsDisplacement (1), FilmGrain (1, 63.5 s dwell) |
+| `sharpen/` | super-xbr-super-res (11), Anime4k (4), adaptive-sharpen-multipass (2), adaptive-sharpen (1), rca_sharpen (1), cheap-sharpen (1) |
+
+First field confirmations:
+
+- **F1 mipmaps (first live hit):** magicbloom runs 11 mip-chained pass outputs —
+  `mipmapped inputs (F1): pass outputs with mip chains [0..10], chain-input copy
+  off`; its blur pyramid descends 1440x810 → 76x43 with zero errors.
+- **PassFeedback (first live hit post-pivot):** magicbloom pass 10 samples
+  `tMagicBloom_AdaptFeedback` (auto-exposure adaptation ring) — the 23-preset
+  (0.9%) pass-feedback cluster gets its first field data point (the Tier 1c
+  pass-feedback canary `crt-geom-deluxe-ntsc-adaptive` is still queued).
+- **Cache, both modes:** cross-preset shader hits (`LUT.slang` shared by
+  lut/halftone-print/bsnes-gamma-ramp; `stock.slang` + super-xbr passes shared
+  across denoisers/sharpen chains) and full-chain hits on session-2 reload (8/8).
+- **LUT/texture plumbing:** SamplerLUT1/2 (hyllian multiLUT), SamplerLUT,
+  `overlay` (blendoverlay), `displacementMap` (NormalsDisplacement),
+  `Dirt`/`Sprite` (bloom LightingCombine), `tMagicBloom_Dirt` — every PNG loaded,
+  no codec errors.
+- **`Original` semantic** sampled throughout the bloom chain
+  (`textures=[Source, Original]`).
+- **Aliases** across chains: XbrSource, diff_refpass, REF, PreBloomPass,
+  SamplerBloom1–5, LensFlare1–3, tMagicBloom_1–8/Small/Adapt.
+- **Hot-switching:** 16 Reinit cycles without a single load failure or fallback;
+  OSD name matched the selection on every switch.
+- **Game-state transition:** dungeon `ShowProgress` under Anime4k, no reinit
+  errors, then clean shutdown.
+
+Pacing: 235–315 frames per 5 s heartbeat (~47–63 fps at 1080p).
+
+**Segment 2 (same day, continued log — `denoisers/` + `blurs/`):** 22 loads /
+21 unique (+ crt-fast-bilateral re-loaded, 8/8 cache in ~31 ms) — **all working,
+0 errors/warnings/fallbacks, clean exit**. Highlights:
+
+- **Longest field-tested chain:** `blurs/dual_filter_bloom` — 24 passes, loaded
+  from cache in ~0.1 s, zero errors (siblings 18/8 passes also clean).
+- **F1 mipmaps ×3 more:** mip chains on pass outputs [20] / [14] / [4] of the
+  dual_filter bloom variants — F1 now field-proven on 4 distinct chains.
+- **Cache reuse at scale:** 78 cache-hit lines; `dual_filter/upsample|downsample.slang`
+  shared across all six dual_filter chains, `kawase/linearize.slang` across kawase.
+- **Dirs:** `denoisers/` complete (7/7); `blurs/` 15/17 listing slots — slots 110
+  and 113 skipped in the browser (no failures; just untested).
+- **Tier 2a canaries landed:** `denoisers/bilateral-2p`, `blurs/gauss_4tap`.
+
+Still queued from
+earlier rounds: nnedi3 ×3 + koko-ambi/koko-aio re-tests (the round-3 fixes and the
+round-4 include fix are both in this build lineage but were not exercised by this
+log).
 
 ### D3D12 — fully excised
 

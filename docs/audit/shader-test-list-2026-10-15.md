@@ -1,8 +1,10 @@
 # Vulkan Field Sweep — Shader Test List (2026-10-15)
 
-Phase-1 field sweep per `docs/diablo-handoff.md` §12. Master tip: `92831323e` + doc cleanup `22388a08d`.
+Phase-1 field sweep per `docs/diablo-handoff.md` §12. Master tip: `f49a29ce5` (history rebased 2026-10-15; the `92831323e`/`22388a08d` hashes below are pre-rebase).
 
 > **Field round 3 (2026-10-15):** first live log is in — Tier 1a partial results: bob/motion-adaptive deinterlacing, mix_frames, shutter-to-anaglyph, `test/history` + `test/feedback` all working; `test/feedback-noncausal` correctly rejected (negative control); **nnedi3-nns16/nns64 failed and are fixed on `664d0f740`** (macro-aliased sampler declarations — re-test all three nnedi3 canaries on the next build); **`test/format` failed and is fixed** (per-pass format downgrade + `#pragma format` wiring — the in-repo copy lives at `tools/audit/field-presets/test/`). koko-ambi/koko-aio presets: sampler handling fixed, but koko-aio-ng has a separate repeat-include issue (handoff §8, next round).
+>
+> **Field round 4 (2026-10-15):** Phase-1 breadth segment 1 — **15/15 unique presets working** across `denoisers/` (1), `reshade/` (8), `sharpen/` (6); 0 fallbacks, 0 crashes, clean shutdown (v9-lineage build, 2 sessions, 16 loads). First live confirmations: **F1 mipmaps** (magicbloom, 11 mip-chained pass outputs) and **PassFeedback** (magicbloom adapt ring). CSV updated: Tier 1a backfilled from round 3 (nnedi3-nns16/nns64 = fallback→fixed, re-test pending), Tier 1b Anime4k + Tier 2a FilmGrain/bsnes-gamma-ramp = working. Full per-preset results: `vulkan-coverage-2026-10-15.csv` (round deliverables). Next: nnedi3 ×3 + koko-ambi/koko-aio re-tests, then the remaining Tier 2a/2b rows.
 
 ## How to test
 
