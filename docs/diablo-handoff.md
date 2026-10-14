@@ -167,12 +167,12 @@ The campaign now has two arms that feed each other:
   1. **F6 viewport aspect** — `ScaleType::Viewport` ignores the preset's aspect-ratio
      intent (`viewport_aspect_scale` et al.); unblocks the single largest cluster
      (232 medium-risk presets: `uses_mvp + viewport_scale`).
-  2. ✅ **`PassFeedback#Size` latent crash** — FIXED (`b70500b19`): length-aware prefix parse in
+  2. ✅ **`PassFeedback#Size` latent crash** — FIXED (`6f13d787f`): length-aware prefix parse in
      `FillBlockBytes` (10 for `PassOutput#`, 12 for `PassFeedback#`); previously `stoi` received
      `"ck#"` → uncaught `std::invalid_argument` → process abort. The same commit guards the
      translator's uniform `[N]` size parse (same crash class) and adds the regression test
      `tools/audit/test_uniform_names.cpp` (13 checks, g++ -O2, exit 0).
-  3. ✅ **Param-case quirk** — FIXED (`b70500b19`): the runner applies `#pragma` param overrides
+  3. ✅ **Param-case quirk** — FIXED (`6f13d787f`): the runner applies `#pragma` param overrides
      via `CaseInsensitiveEqual`, so the parser's lowercased keys land regardless of shader
      spelling (Mega Bezel mixed-case params no longer silently keep defaults).
   4. **F1 mipmaps** — `mipmap_input` parsed then ignored (892 presets; Mega Bezel-tier,
@@ -286,7 +286,10 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
 - ⬜ Watch #906 (optional, not gating): the vendored SDL3_mixer patch +
   `SDL_LoadWAV_IO` fallback already fix Diablo's 1996 WAVs in-master; a merge upstream
   would only matter for a future `DEVILUTIONX_SYSTEM_SDL_MIXER=ON` release build.
-- ⬜ 26-i: Linux gcc/clang build verification + clang-format 18 sweep over all new files
+- 🔶 26-i: Linux gcc/clang build verification — clang-format 18 half DONE (2026-10-14,
+  `bfcd6940a`): reformatted `preset_runner.cpp/.hpp`, `gpu_scaler.cpp`, `main.cpp`
+  (space-indent shipped across the whole subsystem); whole-tree dry-run rescan
+  (696 files) = 0 violations; the only non-whitespace delta was one line-join.
 - ✅ 26-j: GPU_SHADERS.md for runtime presets — done (rewritten this session; the
   baked-filter/`gpu_shader_spv_prebuilt` description is gone; the "two dialects"
   backend text now matches the D3D12 excision)
@@ -304,7 +307,10 @@ all `supported`/`extension` AND it passes the §12 field sweep acceptance criter
   `Nigel Todman <veritas@vts-tech.org>`; keep one form per series.
 - clang-format **18** enforced by CI over `Source`. Verify with a REAL dry-run:
   `clang-format --style=file --dry-run -Werror <files>` — claims without the run have
-  been wrong before (8-space indent shipped as "clean").
+  been wrong before (8-space indent shipped as "clean"). Note the CI job (jidicula
+  v4.18.0) scans EVERY C/C++ file under `Source` + `test`, not just the diff — one
+  stale-indented file anywhere turns the push red, and docs-only pushes don't trigger
+  it at all (paths-ignore), so silence is not proof. Sweep closed 2026-10-14 (`bfcd6940a`).
 - **Include-order trap:** `<tlhelp32.h>` (and similar Windows headers) must come AFTER
   `<windows.h>` — mingw-w64 headers don't self-prime. `SortIncludes: true` re-sorts
   single blocks alphabetically, so separate order-dependent headers with a blank line +
@@ -718,5 +724,5 @@ as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
   reporting format → fold results into the SLANG_SPEC.md gap list (§8 reconciliation
   rule); re-upload a v3 field binary only if the wild-call re-scan is still wanted.
 - ✅ New finding from the spec write-up: the `PassFeedback#Size` `stoi("ck#")` crash —
-  FIXED in `b70500b19` together with the param-case fix and the translator `[N]` guard
+  FIXED in `6f13d787f` together with the param-case fix and the translator `[N]` guard
   (§8 items 2–3).

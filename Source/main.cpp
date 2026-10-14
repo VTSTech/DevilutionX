@@ -29,38 +29,38 @@
 #if !defined(__APPLE__)
 extern "C" const char *__asan_default_options() // NOLINT(bugprone-reserved-identifier, readability-identifier-naming)
 {
-        return "halt_on_error=0";
+	return "halt_on_error=0";
 }
 #endif
 
 extern "C" int main(int argc, char **argv)
 {
 #ifdef __SWITCH__
-        switch_romfs_init();
-        switch_enable_network();
+	switch_romfs_init();
+	switch_enable_network();
 #ifdef PACKET_ENCRYPTION
-        randombytes_switchrandom_init();
+	randombytes_switchrandom_init();
 #endif
 #endif
 #ifdef __3DS__
-        ctr_sys_init();
+	ctr_sys_init();
 #endif
 #ifdef __vita__
-        vita_enable_network();
+	vita_enable_network();
 #ifdef PACKET_ENCRYPTION
-        randombytes_vitarandom_init();
+	randombytes_vitarandom_init();
 #endif
 #endif
 #ifdef NXDK
-        nxMountDrive('E', "\\Device\\Harddisk0\\Partition1\\");
+	nxMountDrive('E', "\\Device\\Harddisk0\\Partition1\\");
 #endif
 #ifdef GPERF_HEAP_MAIN
-        HeapProfilerStart("main");
+	HeapProfilerStart("main");
 #endif
 
-        const int result = devilution::DiabloMain(argc, argv);
+	const int result = devilution::DiabloMain(argc, argv);
 #ifdef GPERF_HEAP_MAIN
-        HeapProfilerStop();
+	HeapProfilerStop();
 #endif
-        return result;
+	return result;
 }
