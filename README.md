@@ -58,7 +58,7 @@ Presets are selected from the in-game folder browser
 
 See it in action:
 
-[![Demo](https://img.youtube.com/vi/Fc72CjCcHH4/0.jpg)](https://www.youtube.com/watch?v=Fc72CjCcHH4)
+[![Demo](https://img.youtube.com/vi/PHQl0EOa7L8/0.jpg)](https://www.youtube.com/watch?v=PHQl0EOa7L8)
 
 # Requirements
 
