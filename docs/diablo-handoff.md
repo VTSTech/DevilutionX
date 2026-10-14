@@ -15,11 +15,11 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | `d314db61e` — field round 4 segment 2; docs/tooling rounds may sit on top (bootstrap reports the exact delta; docs-only drift is benign) |
+| repo tip | round-5 records (`3f69273e6`) + Debian-12 portability confirmation (docs-only) on top of the user-pushed `67386a72f` linux-ci toolchain fix (bootstrap reports the exact delta; docs-only drift is benign) |
 | release tag | `gpu-shaders-v9` @ `b0ba28d5f` — tip-most release line (tags mark releases, not rounds) |
-| field evidence | Phase-1: 36 unique presets working, 38 loads, 0 failures across 3 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped, untested). Proven live: F1 mipmaps ×4 chains, PassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain (`dual_filter_bloom`) |
+| field evidence | Phase-1: 69 unique presets working, 71 loads, 0 failures across 4 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11; misc 6/18. Proven live: F1 mipmaps ×4 chains, PassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep OriginalHistory5 (`anti-flicker`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
-| next queue | ① nnedi3 ×3 re-tests + koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544`) on next build ② low-risk dirs: misc 18, handheld 17, presets 14, deinterlacing 10, dithering 10, crt 9, reshade rest 42 ③ then medium-risk clusters (§8) |
+| next queue | ① koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ② low-risk remainder: misc 12, handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ③ then medium-risk clusters (§8) |
 | backburner | SLANG_SPEC §7 gap-list tail; 26-i Linux gcc/clang build matrix; browse-highlight cosmetic |
 
 **Conventions (adopted field round 4, 2026-10-15):**
@@ -62,7 +62,7 @@ Standalone mod on **VTSTech/DevilutionX**, branched from upstream `1.6.0-dev` (s
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `d314db61e` | **history REBASED 2026-10-15** — pre-rebase hashes `dce1c4222` (F5/P1) and `664d0f740` (round 3) no longer resolve; content verified in-tree (rebased line `537ad782b`). On top: **round-4 include fix** (`c1ee40544`, koko-aio-ng per-stage-bucket include-once), `install_git.cmd` (`0874f803d`), Linux `install_shaders.sh`/`clear_shader_cache.sh` + CI tweak (`e6ba06ab4`), `tools/audit/status_report.py` (`f49a29ce5`); field round 4 = Phase-1 segments 1+2, 36 unique working (§8); on top: `09e78c24c` (round-4 sweep records) + `d314db61e` (segment-2 records, `tools/audit/field_log_digest.py` + `tools/audit/session_bootstrap.py`) |
+| fork `master` (what CI builds) | `d314db61e` | **history REBASED 2026-10-15** — pre-rebase hashes `dce1c4222` (F5/P1) and `664d0f740` (round 3) no longer resolve; content verified in-tree (rebased line `537ad782b`). On top: **round-4 include fix** (`c1ee40544`, koko-aio-ng per-stage-bucket include-once), `install_git.cmd` (`0874f803d`), Linux `install_shaders.sh`/`clear_shader_cache.sh` + CI tweak (`e6ba06ab4`), `tools/audit/status_report.py` (`f49a29ce5`); field round 4 = Phase-1 segments 1+2, 36 unique working (§8); on top: `09e78c24c` (round-4 sweep records) + `d314db61e` (segment-2 records, `tools/audit/field_log_digest.py` + `tools/audit/session_bootstrap.py`); field round 5: `dithering/` 16/16 + `deinterlacing/` 11/11 closed + misc 6/18 — 69 unique total (§8); linux CI container now `gcc:14-bookworm` (glibc 2.36 floor, GCC 14, gated; user-pushed `67386a72f`) — build FIELD-CONFIRMED on Debian 12 bookworm: Vulkan backend, preset loads + pass targets clean, 2026-10-15 (§8) |
 | release tag **`gpu-shaders-v8`** | `92831323e` | v8 release binaries; first release shipping `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe (corpus download / cache wipe) |
 | release tag **`gpu-shaders-v9`** | `b0ba28d5f` | v9 release binaries (README refresh); adds Linux helper scripts + `install_git.cmd` vs v8; `status_report.py` is post-v9 on master |
 | PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | **DEAD — do not pursue.** Upstream enforces a no-AI policy (README, 2026-10-11); the PR will never merge. Kept for reference only; it still contains baked filters + the WAV fix |
@@ -466,10 +466,35 @@ Highlights:
   and 113 skipped in the browser (no failures; just untested).
 - **Tier 2a canaries landed:** `denoisers/bilateral-2p`, `blurs/gauss_4tap`.
 
-Still queued from
-earlier rounds: nnedi3 ×3 + koko-ambi/koko-aio re-tests (the round-3 fixes and the
-round-4 include fix are both in this build lineage but were not exercised by this
-log).
+**Field round 5, segment 1 (next build — `dithering/` + `deinterlacing/` + `misc/`
+head):** 33 loads / 33 unique — **all working, 0 errors/warnings/fallbacks, clean
+shutdown**. Highlights:
+
+- **Two dirs closed:** `dithering/` 16/16, `deinterlacing/` 11/11; `misc/` started
+  6/18 (alphabetical head, a–c).
+- **Round-3 nnedi3 macro-alias fix CONFIRMED LIVE:** all five nnedi3 variants
+  (nns16/32/64/128/256) loaded their 5-pass chains clean — 4 disk-cache hits each
+  (nns128: 1). The round-3 fallbacks (nns16/nns64) and the never-tested nns256
+  all pass; nns32/nns128 are bonus coverage.
+- **First float-framebuffer field confirmation:** `gtu-v050-deinterlaced` (audit
+  risk: high — float-fb + viewport-scale + 12 #pragma params), 3 passes, clean.
+- **Deep history ring:** `misc/anti-flicker` (OriginalHistory5) field-clean.
+- **Longest chains this segment:** `mdapt` / `sgenpt-mix-multipass`, 6 passes each.
+- 20 cache hits, 34 reinits, no PNG textures (none expected in these dirs).
+
+**Portability loop CLOSED (same round):** the `gcc:14-bookworm` container build
+(pushed as `linux ci gcc:14-bookworm`) produced a Linux zip that runs on the
+Debian 12 VM (bookworm, kernel 6.1.0-53-amd64): launched clean, Vulkan backend
+selected, presets (`anamorphic`, `res-independent-scanlines`) loaded with correct
+pass targets (game 853x480/1280x720 → swapchain 1366x768). The oldest-base
+defines-the-artifact strategy is field-verified — a binary built against bookworm
+glibc 2.36 loads on stock Debian 12, and the CI gate (max GLIBC_ 2.36, zero
+dynamic GLIBCXX_) held. Ubuntu 24.04 remains covered (≥ floor). These two preset
+loads were a smoke run, not a digest sweep — no ledger rows.
+
+Still queued: koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` —
+still unexercised by any field log), then the low-risk remainder: misc 12,
+handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113.
 
 ### D3D12 — fully excised
 
