@@ -931,3 +931,59 @@ Diff against the previous sweep's CSV to track progress between fixes.
   §4 failure contract. `DEVILUTIONX_GPU_BACKEND=vulkan` continues to work
   as an explicit override (belt-and-suspenders, since D3D12 is no longer
   selectable).
+
+
+
+## 13. Static audit fixes — history ring & bare scale (2026-10-14, packaged for upload)
+
+Full report: `docs/audit/shader-support-audit-2026-10-14.md` (session deliverable, now
+kept in-repo; the audit CSVs moved in-repo too — index below).
+
+Two silent-wrongness bugs confirmed against the v2 audit CSV (2658 presets) and a fresh
+libretro/slang-shaders clone, both fixed on branch `vulkan-preset-fixes` (base
+`2a30fca65`) and packaged as full files + format-patches:
+
+| ID | File | Bug | Wild impact | Fix |
+|---|---|---|---|---|
+| F5 | `preset_runner.cpp/.hpp` | OriginalHistory ring held `depth` slots (needs `depth+1`) and indexed forward (`+N` instead of `-N`): OH1 == current frame at depth 1, shifted taps and never-written-slot sampling at depth >= 3 | 264 presets referencing `OriginalHistory#` (max_hist: 1×13, 3×168, 5×2, 6×8, 7×73) | commit `0feed0710` / patch `0001` |
+| P1 | `preset_parser.cpp` | bare `scale` assignment reset a previously declared `scale_type` to Source (line-order-dependent parse; RetroArch is order-independent) | 897 presets (639 Mega_Bezel, 93 presets/, 36 edge-smoothing, 31 downsample, 28 interpolation); 0 in Phase-1, 68 in Phase-2 | commit `807c8518d` / patch `0002` |
+
+Apply on fork master (`--keep-cr` mandatory, §9):
+
+```bash
+git am --keep-cr 0001-preset_runner-fix-OriginalHistory-ring-depth-and-ind.patch
+git am --keep-cr 0002-preset_parser-bare-scale-must-not-reset-a-declared-s.patch
+```
+
+or upload the three full files (`preset_parser.cpp`, `preset_runner.cpp`,
+`preset_runner.hpp`) — they are byte-identical to the fix commits. The F5 logic is
+proven by `tools/audit/test_history_ring.cpp` (pre-fix logic FAILS depth 1/3/7 exactly
+as predicted; fixed logic passes the full N×T matrix, g++ -O2, exit 0).
+
+### In-repo audit artifacts (added 2026-10-14)
+
+- `docs/audit/shader-support-audit-2026-10-14.md` — full static audit report
+- `docs/audit/slang_audit_v2.csv` — v2 preset audit, 2658 presets (previously session-only)
+- `docs/audit/vulkan-audit-codefindings-affected.csv` — per-preset F5/F1/F6 exposure cross-ref
+- `docs/audit/slang-codefindings-scan.csv` — per-preset P1/F9/T2–T5/F8 corpus scan
+- `tools/audit_slang_presets.py` — v2 preset auditor (pre-existing; CSV to stdout)
+- `tools/audit/audit_crossref.py` — joins audit CSV × code findings
+- `tools/audit/scan_codefindings.py` — byte-level corpus scanner
+- `tools/audit/patch_scale_order.py` — byte-exact TAB-preserving patcher (§9 gotcha workaround)
+- `tools/audit/test_history_ring.cpp` — F5 ring logic proof / regression canary
+
+### State after this package
+
+- Phase-1 readiness: 175/185 low-risk presets clean of all known gaps; the 10
+  F5-affected Phase-1 presets (`deinterlacing/` bob/motion-adaptive/6×nnedi3,
+  `motionblur/mix_frames`, `stereoscopic-3d/shutter-to-anaglyph`, `test/history`
+  max_hist=3) are the ring-fix canaries.
+- Downgraded / non-issues (do not re-litigate): F9 case-mismatch (scanner
+  false-positive — strip the `NAME`Feedback suffix before case compare), F1
+  mipmap_input no-op (892 presets but 888 Mega_Bezel-tier — defer to Phase 3), F6
+  viewport=swapchain (observation), F2 feedback_pass dead key (benign,
+  demand-driven feedback), T9/T2/T3/T4/T5 zero wild hits (translator hard-failure
+  paths never exercised — strong coverage signal).
+- Still pending (user side): upload/apply the two fixes → CI build → Phase-1 field
+  sweep per §12 reporting format → re-upload a v3 field binary only if the wild-call
+  re-scan is still wanted.

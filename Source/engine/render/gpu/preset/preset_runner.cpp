@@ -610,7 +610,10 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 
         // Chain-input history ring.
         if (historyDepth_ > 0) {
-                history_.assign(static_cast<size_t>(historyDepth_), nullptr);
+                // depth+1 slots: the slot at historySlot_ holds the CURRENT
+                // frame (blitted at the top of Run) and OriginalHistory1..N
+                // need N further slots behind it (OriginalHistoryN = T-N).
+                history_.assign(static_cast<size_t>(historyDepth_) + 1, nullptr);
                 for (SDL_GPUTexture *&tex : history_) {
                         SDL_GPUTextureCreateInfo info {};
                         info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -648,6 +651,7 @@ void Runner::ReleaseTargets()
                 }
         }
         history_.clear();
+        historySeeded_ = false;
         targetGameWidth_ = 0;
         targetGameHeight_ = 0;
         targetSwapchainWidth_ = 0;
@@ -934,10 +938,29 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
         swapchainWidth_ = swapchainWidth;
         swapchainHeight_ = swapchainHeight;
 
-        // Update the chain-input history ring: the current input overwrites the
-        // slot that held the oldest frame, so OriginalHistoryN resolves to
-        // ring[(slot + N) % depth].
+        // Update the chain-input history ring: the current input overwrites
+        // the slot at historySlot_; older frames live at decreasing slot
+        // indices (historySlot_ advances forward by one every frame), so
+        // OriginalHistoryN resolves to ring[(historySlot_ - N) mod size].
         if (!history_.empty()) {
+                // Seed every slot with the current frame on the first run (and
+                // after every target resize) so early OriginalHistory# reads
+                // see valid content instead of undefined texture memory.
+                if (!historySeeded_) {
+                        for (SDL_GPUTexture *slotTex : history_) {
+                                SDL_GPUBlitInfo seed {};
+                                seed.source.texture = gameTex;
+                                seed.source.w = static_cast<Uint32>(gameWidth);
+                                seed.source.h = static_cast<Uint32>(gameHeight);
+                                seed.destination.texture = slotTex;
+                                seed.destination.w = static_cast<Uint32>(gameWidth);
+                                seed.destination.h = static_cast<Uint32>(gameHeight);
+                                seed.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                                seed.filter = SDL_GPU_FILTER_NEAREST;
+                                SDL_BlitGPUTexture(cmd, &seed);
+                        }
+                        historySeeded_ = true;
+                }
                 SDL_GPUBlitInfo blit {};
                 blit.source.texture = gameTex;
                 blit.source.w = static_cast<Uint32>(gameWidth);
@@ -1004,7 +1027,10 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
                                         if (idx == 0 || history_.empty()) {
                                                 tex = gameTex;
                                         } else {
-                                                const size_t slot = (static_cast<size_t>(historySlot_) + static_cast<size_t>(idx))
+                                                // Frame T-N sits N slots behind the just-written
+                                                // current-frame slot (slots advance forward per frame).
+                                                const size_t slot = (static_cast<size_t>(historySlot_)
+                                                                            + history_.size() - static_cast<size_t>(idx))
                                                     % history_.size();
                                                 tex = history_[slot];
                                         }

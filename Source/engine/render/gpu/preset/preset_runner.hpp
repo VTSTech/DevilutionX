@@ -98,6 +98,7 @@ private:
         int historyDepth_ = 0;                  // Max referenced OriginalHistory# index.
         std::vector<SDL_GPUTexture *> history_; // Ring of chain-input copies.
         int historySlot_ = 0;
+        bool historySeeded_ = false;            // All ring slots hold valid content.
 
         int targetGameWidth_ = 0;
         int targetGameHeight_ = 0;

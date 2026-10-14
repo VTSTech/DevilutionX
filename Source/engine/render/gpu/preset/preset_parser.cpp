@@ -225,8 +225,12 @@ void ApplyPassKey(PassDef &pass, const std::string &key, const std::string &valu
 	} else if (key == "frame_count_mod") {
 		pass.frameCountMod = static_cast<uint32_t>(std::max(0, ParseInt(value, 0)));
 	} else if (key == "scale") {
-		pass.scaleX = { ScaleType::Source, ParseFloat(value, 1.0F) };
-		pass.scaleY = pass.scaleX;
+		// RetroArch parses preset keys order-independently: a declared
+		// scale_type always wins over the bare-scale default. Fill in the
+		// scale VALUE only and keep the type this pass already has
+		// (ScaleType::Source unless scale_type(_x/_y) preceded).
+		pass.scaleX.scale = ParseFloat(value, 1.0F);
+		pass.scaleY.scale = pass.scaleX.scale;
 	} else if (key == "scale_x") {
 		pass.scaleX.scale = ParseFloat(value, 1.0F);
 	} else if (key == "scale_y") {
