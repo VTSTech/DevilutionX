@@ -82,9 +82,12 @@ jobs:
     # gcc/g++ pinned explicitly: PATH resolves /usr/local/bin (GCC 14 from the image);
     # without pins CMake could probe /usr/bin/c++ = bookworm's GCC 12 (no <format>).
     # GIT_COMMIT_HASH pin: GITHUB_SHA is authoritative even if the in-container git
-    # state is unusable (see Bootstrap). NOTE: no '#' comments inside the folded
-    # command — YAML joins it into one line.
+    # state is unusable (see Bootstrap). shell: bash is REQUIRED — container steps run
+    # under sh (dash) by default and dash rejects the ${GITHUB_SHA:0:7} substring
+    # expansion ("Bad substitution"); every other step here is POSIX-clean on purpose.
+    # NOTE: no '#' comments inside the folded command — YAML joins it into one line.
     - name: Configure (GCC 14 from /usr/local, bookworm glibc 2.36 base)
+      shell: bash
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DUSE_SDL3=ON
@@ -179,6 +182,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch glslang-tools
 
+    # Configure (exact flags of the verified local build). GIT_COMMIT_HASH is NOT
+    # pinned here on purpose: the VM checkout's git works (no container ownership
+    # issue), so CMake falls back to `git log -1 --format=%h` and the footer carries
+    # the hash. (The ${GITHUB_SHA:0:7} bashism from round 6 is a no-op under pwsh —
+    # removed; only the Linux container needs the explicit pin + shell: bash.)
     - name: Configure (exact flags of the verified local build)
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -193,7 +201,6 @@ jobs:
         -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
         -DBUILD_TESTING=OFF
         -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
-        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
         -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
 
     - name: Build
