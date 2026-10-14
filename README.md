@@ -66,7 +66,7 @@ Download the latest [release](https://github.com/VTSTech/devilutionX/releases/la
 
 - Copy `DIABDAT.MPQ` from the CD or Diablo installation (or [extract it from the GoG installer](https://github.com/diasurgical/devilutionX/wiki/Extracting-MPQs-from-the-GoG-installer)) to the DevilutionX folder.
 - To run the Diablo: Hellfire expansion, you will also need to copy `hellfire.mpq`, `hfmonk.mpq`, `hfmusic.mpq`, and `hfvoice.mpq`.
-- Optional: install the libretro shader pack — see [Setting Up Shaders](#setting-up-shaders) (on Windows, run the included `install_shaders.cmd`).
+- Optional: install the libretro shader pack — see [Setting Up Shaders](#setting-up-shaders) (on Windows, run the included `install_shaders.cmd`; on Linux, `install_shaders.sh`).
 
 For more detailed instructions: [Installation Instructions](./docs/installing.md).
 
@@ -82,10 +82,11 @@ git lfs pull
 
 The `git lfs pull` step matters: some presets (like HQ2x) reference PNG lookup textures, and without pulling the LFS assets those PNGs are left as pointer stubs, so the presets that need them will fail to load or render incorrectly. Make sure `git-lfs` is installed and initialized (`git lfs install`) before cloning.
 
-On Windows, the release zip (v8 and newer) ships two helper scripts beside `devilutionx.exe` that automate the above:
+The release zips ship helper scripts beside the executable that automate the above:
 
-- `install_shaders.cmd` — wipes and re-downloads `shaders\` beside the exe (shallow clone plus `git lfs pull`; needs `git` and `git-lfs` on `PATH`).
-- `clear_shader_cache.cmd` — deletes `shaders\cache\`, the translated-shader compile cache. It is rebuilt automatically on the next preset load; run it after a corpus update or a game update if presets misbehave.
+- `install_shaders.cmd` (Windows) / `install_shaders.sh` (Linux) — wipes and re-downloads `shaders/` beside the executable (fresh clone plus `git lfs pull`; needs `git` and `git-lfs` — the Linux script prints the per-distro install command if either is missing).
+- `clear_shader_cache.cmd` (Windows) / `clear_shader_cache.sh` (Linux) — deletes `shaders/cache/`, the translated-shader compile cache. It is rebuilt automatically on the next preset load; run it after a corpus update or a game update if presets misbehave.
+- `install_git.cmd` (Windows) — one-time helper for machines without `git`: installs Git for Windows (bundling Git LFS) via winget so `install_shaders.cmd` can run.
 
 Presets are selected from the in-game folder browser, so you can keep the whole collection or just the handful of `.slangp` files you actually use.
 
