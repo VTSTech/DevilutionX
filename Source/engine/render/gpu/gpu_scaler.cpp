@@ -865,6 +865,11 @@ bool Reinit(SDL_Window *window)
 					}
 					if (EnsureFilterResources(gFilter))
 						return true;
+				} else {
+					// ROB-24: mirror the first claim site - a failed claim must not
+					// leave gWindow set, or the Shutdown() below releases a window
+					// this device never claimed.
+					gWindow = nullptr;
 				}
 			}
 		}
@@ -1018,7 +1023,17 @@ void PresentFrame(const SDL_Surface &frame)
 		destScale = 1.0F;
 	} else {
 		// Builtin HQ2x/ScaleFX filters were removed; only runtime
-		// presets render here.
+		// presets render here. ROB-25: count and log this skip like every
+		// other present-path skip - an unexpected filter value must not
+		// present as a permanent silent black screen with a healthy heartbeat.
+		++sSkippedFrames;
+		static Uint32 sLastFilterSkipLog = 0;
+		const Uint32 nowTickFilter = SDL_GetTicks();
+		if (sLastFilterSkipLog == 0 || nowTickFilter - sLastFilterSkipLog >= 5000) {
+			LogFileLine(StrCat("present skip: unexpected filter value ", static_cast<int>(gFilter),
+			    " (not a custom preset); skipping presentation"));
+			sLastFilterSkipLog = nowTickFilter;
+		}
 		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
@@ -1054,6 +1069,14 @@ void PresentFrame(const SDL_Surface &frame)
 	{
 		const int bytesPerRow = gameWidth * 4;
 		auto *dst = static_cast<uint8_t *>(SDL_MapGPUTransferBuffer(gDevice, transfer, false));
+		if (dst == nullptr) {
+			// ROB-16: device loss / allocation failure must cost one skipped
+			// frame like every neighboring stage, not a memcpy to NULL outside
+			// the failure contract.
+			LogFailHard("frame transfer buffer map failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
+		}
 		const auto *src = static_cast<const uint8_t *>(frame.pixels);
 		if (frame.pitch == bytesPerRow) {
 			std::memcpy(dst, src, static_cast<size_t>(bytesPerRow) * gameHeight);
@@ -1064,6 +1087,14 @@ void PresentFrame(const SDL_Surface &frame)
 		SDL_UnmapGPUTransferBuffer(gDevice, transfer);
 
 		SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
+		if (copyPass == nullptr) {
+			// ROB-17: device loss at copy-pass begin - submit the empty command
+			// buffer (post-acquire contract) and fail visibly instead of blitting
+			// the previous frame contents with a clean log.
+			LogFailHard("frame upload copy pass begin failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
+		}
 		SDL_GPUTextureTransferInfo transferSrc {};
 		transferSrc.transfer_buffer = transfer;
 		transferSrc.offset = 0;
@@ -1074,8 +1105,16 @@ void PresentFrame(const SDL_Surface &frame)
 		region.w = gameWidth;
 		region.h = gameHeight;
 		region.d = 1;
-		SDL_UploadToGPUTexture(copyPass, &transferSrc, &region, false);
+		const bool uploaded = SDL_UploadToGPUTexture(copyPass, &transferSrc, &region, false);
 		SDL_EndGPUCopyPass(copyPass);
+		if (!uploaded) {
+			// ROB-17: upload rejection (device loss, rejected region) - fail
+			// visibly instead of presenting the stale gGameTex contents as a
+			// frozen frame with a healthy heartbeat.
+			LogFailHard("frame texture upload failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
+		}
 	}
 
 	FragUniforms uniforms {};

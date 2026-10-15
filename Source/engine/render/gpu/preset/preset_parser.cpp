@@ -349,9 +349,10 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	}
 	// A preset may #reference several parents (a shader-chain preset plus
 	// one or more .params overlays, as the Mega Bezel collection does).
-	// Parents merge in order: the first chain providing passes wins,
-	// textures and parameter overrides accumulate, and this file's own keys
-	// are still applied on top afterwards.
+	// Parents merge in order: the LAST chain providing passes wins (each
+	// parent with a non-empty chain overwrites the previous one), textures
+	// and parameter overrides accumulate, and this file's own keys are
+	// still applied on top afterwards.
 	for (const std::string &referencePath : referencePaths) {
 		const std::string parentPath = ResolvePresetFilePath(preset.dir, referencePath);
 		Preset parentPreset;
@@ -624,7 +625,13 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	}
 	for (TextureDef &tex : preset.textures) {
 		if (tex.name.empty() || tex.path.empty()) {
-			error = StrCat("preset texture has no path: ", tex.name.empty() ? "(unnamed)" : tex.name, " (", path, ")");
+			// MAINT-19: name the actual problem - an empty-name texture (a bare
+			// "= x.png" line) previously logged "has no path", sending field
+			// debugging the wrong way.
+			if (tex.name.empty())
+				error = StrCat("preset texture has an empty name (", path, ")");
+			else
+				error = StrCat("preset texture '", tex.name, "' has no path (", path, ")");
 			return false;
 		}
 	}

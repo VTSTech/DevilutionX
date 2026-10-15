@@ -22,8 +22,6 @@ namespace preset {
  * @return true on success; on failure `out` is left untouched and `error`
  * contains a human-readable reason.
  */
-bool ParsePreset(const std::string &path, Preset &out, std::string &error, int referenceDepth);
-
 bool ParsePreset(const std::string &path, Preset &out, std::string &error);
 
 /**

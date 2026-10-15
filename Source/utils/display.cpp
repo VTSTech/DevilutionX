@@ -833,6 +833,11 @@ void ReinitializeRenderer()
 	if (scalerWanted) {
 		// The GPU scaler replaces the SDL_Renderer presentation path.
 		if (renderer != nullptr) {
+			// ROB-14: SDL_DestroyRenderer destroys every texture created from the
+			// renderer. Drop our handle to the display texture first (mirroring
+			// dx_cleanup) - otherwise the next ReinitializeTexture() destroys an
+			// already-freed texture through this stale unique_ptr.
+			texture = nullptr;
 			SDL_DestroyRenderer(renderer);
 			renderer = nullptr;
 			// The window has been presented to by the SDL_Renderer's

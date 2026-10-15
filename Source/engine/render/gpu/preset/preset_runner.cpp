@@ -410,7 +410,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		// forever, so a torn/corrupt blob failed SDL_CreateGPUShader on every
 		// session until the user manually wiped shaders/cache/. Treat the
 		// rejection as a cache miss: delete the blobs and recompile from
-		// source once (cache is refreshed by that compile).
+		// source once (the retry compiles fresh; the cache itself is
+		// repopulated by the next clean load).
 		if ((pass->vertexShader == nullptr || pass->fragmentShader == nullptr)
 		    && spirvSource == preset::SpirvSource::Cache) {
 			LogWarn("GPU scaler preset (pass {}): GPU rejected the cached SPIR-V; deleting the cache blobs and recompiling ({})",
@@ -1438,6 +1439,16 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		sourceTex = target;
 	}
 
+	// ROB-15: capture the present target BEFORE the double-buffer flip. The
+	// pass loop above just rendered the final pass into outputTex[curBuffer];
+	// reading the slot after the flip returned the OTHER buffer for a
+	// double-buffered final pass - the previous frame's render, or undefined
+	// GPU memory on the first frame / after ReleaseTargets().
+	PassRuntime *last = passes_.back();
+	*outTexture = last->outputTex[last->curBuffer];
+	*outWidth = last->outputWidth;
+	*outHeight = last->outputHeight;
+
 	// Flip the double-buffered outputs for the next frame's feedback reads.
 	for (PassRuntime *pass : passes_) {
 		if (pass->doubleBuffered)
@@ -1445,11 +1456,6 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 	}
 	if (!history_.empty())
 		historySlot_ = (historySlot_ + 1) % static_cast<int>(history_.size());
-
-	PassRuntime *last = passes_.back();
-	*outTexture = last->outputTex[last->curBuffer];
-	*outWidth = last->outputWidth;
-	*outHeight = last->outputHeight;
 	return true;
 }
 

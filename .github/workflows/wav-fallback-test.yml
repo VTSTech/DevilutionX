@@ -36,6 +36,9 @@ on:
   push:
     paths:
       - 'Source/utils/soundsample.cpp'
+      - 'Source/utils/soundsample.h'
+      - 'Source/engine/sound.cpp'
+      - 'Source/mpq/mpq_reader.hpp'
       - 'CMakeLists.txt'
       - 'CMake/Definitions.cmake'
       - '.github/workflows/wav-fallback-test.yml'

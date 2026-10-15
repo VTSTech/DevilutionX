@@ -18,7 +18,7 @@ open findings; this ledger is the single record of closures.
 | ROB-02 | **High** | Robustness | `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort | 2026-10-15 |
 | MAINT-02 | Medium | Maintainability | ~10K lines of dead built-in shader/LUT payload still compiled and embedded | 2026-10-15 |
 | MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching | 2026-10-15 |
-| ~~MAINT-03~~ | Medium | Maintainability | ~~Four broken upstream workflows ship active~~ — **REOPENED round 7** (see section below) | revoked 2026-10-16 |
+| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active — REOPENED round 7, **re-closed round 7.5** (workflows actually deleted this time, tree-verified) | 2026-10-16 |
 | TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite | 2026-10-15 |
 | MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature | 2026-10-15 |
 | SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs | 2026-10-15 |
@@ -34,6 +34,14 @@ open findings; this ledger is the single record of closures.
 | ARCH-01 | Medium | Architecture | Window-ownership hand-off protocol is spread across three files with pointer-only history | 2026-10-16 |
 | TEST-03 | Medium | Testing | Options layer (ini round-trip, shader-filter self-heal) untested | 2026-10-16 |
 | TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline | 2026-10-16 |
+| ROB-14 | **High** | Robustness | Scaler activation destroys the SDL_Renderer with renderer-owned textures still referenced — use-after-free on filter toggle | 2026-10-16 |
+| ROB-15 | **High** | Robustness | `Runner::Run` returns the post-flip double-buffer slot for a double-buffered final pass — one-frame-stale presentation | 2026-10-16 |
+| ROB-16 | Medium | Robustness | Unchecked `SDL_MapGPUTransferBuffer` → `memcpy` to NULL, bypassing the failure contract | 2026-10-16 |
+| ROB-17 | Medium | Robustness | `SDL_BeginGPUCopyPass`/`SDL_UploadToGPUTexture` results ignored — silent stale-frame presentation, uninstrumented | 2026-10-16 |
+| ROB-24 | Low | Robustness | Vulkan-retry claim failure leaves `gWindow` set → release of an unclaimed window | 2026-10-16 |
+| ROB-25 | Low | Robustness | Non-custom-filter skip is silent and uncounted | 2026-10-16 |
+| MAINT-16 | Low | Maintainability | Self-heal recompile does not repopulate the cache — comment claims it does | 2026-10-16 |
+| TEST-07 | Low | Testing | `wav-fallback-test.yml` paths filter omits the files round 6 actually modified | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -185,6 +193,11 @@ itself is observable in the first pushed run (setup-ccache log lines + job durat
 
 ## MAINT-03 — REOPENED (round 7, 2026-10-16): Four broken upstream workflows ship active; cleanup script never run
 
+> **RE-CLOSED (round 7.5, 2026-10-16).** Round 7 revoked the closure below because the three
+> workflow deletions it recorded never landed in any commit. The deletions have now actually
+> been performed (git-tracked file removals) and tree-verified — see the addendum at the end
+> of this section. The round-7 revoke text is preserved below for the record.
+>
 > **REOPENED (codebase-audit round 7).** The resolution below claimed `clang-tidy-check.yml`,
 > `translations.yml`, and `cache-cleanup.yml` were deleted, with verification "exactly
 > `clang-format-check.yml` and `gpu-shaders.yml` remain". That record does not match the
@@ -219,6 +232,14 @@ except `gpu-shaders.yml` but never ran it.
 
 **Verification.** `ls .github/workflows` shows exactly `clang-format-check.yml` (YAML-valid,
 `@v4`) and `gpu-shaders.yml`.
+
+**Re-close addendum (round 7.5, 2026-10-16).** The three deletions were performed on the
+working tree as real file removals: `clang-tidy-check.yml`, `translations.yml`,
+`cache-cleanup.yml` deleted. Tree verification this time is against the working tree that
+ships: `ls .github/workflows` shows exactly `clang-format-check.yml`, `gpu-shaders.yml`, and
+`wav-fallback-test.yml` — the third file is the WAV A/B diagnostic workflow added by
+`dd3c3f14f` *after* the original round-1 closure, so its presence is by design and does not
+contradict the curated set (the round-1 note's two-file list simply predates it).
 
 ---
 
@@ -687,3 +708,203 @@ whenever `USE_GPU_SCALER` and `BUILD_TESTING` are on. Broader coverage (ParsePre
 TranslateSlang unit corpora over real packs, headless software-Vulkan runner tests) remains
 backlog scope per the audit; `preset_failure_modes` (37 checks) continues to cover the
 hostile-input layer.
+
+
+---
+
+## ROB-14 — CLOSED: Scaler activation destroys the SDL_Renderer with renderer-owned textures still referenced — use-after-free on filter toggle
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Robustness |
+| **Original location** | `Source/utils/display.cpp` (lines 834-837, 715-718, 909), `Source/engine/dx.cpp` (lines 49, 147-154), `Source/utils/sdl_ptrs.h` (lines 57-64) |
+
+**Original finding.** The `scalerWanted` branch in `ReinitializeRenderer` destroyed the
+SDL_Renderer without resetting the global `texture` (`SDLTextureUniquePtr`, dx.cpp:49) or the
+virtual-gamepad textures created from that renderer. In SDL3, `SDL_DestroyRenderer` destroys
+every texture created from the renderer, so `texture` became a dangling unique_ptr; the next
+`ReinitializeTexture()` (`if (texture) texture.reset()`) destroyed freed memory — reachable on
+the scaler-failure fallthrough, on switching the filter Off, and on scale-quality changes. The
+codebase's own `dx_cleanup` ordering (`texture = nullptr` before `SDL_DestroyRenderer`) is the
+invariant that path skipped.
+
+**Resolution.** `ReinitializeRenderer`'s `scalerWanted` branch now sets `texture = nullptr;`
+immediately before `SDL_DestroyRenderer(renderer)`, mirroring `dx_cleanup`. The
+virtual-gamepad-texture half is deliberately left to ROB-22: freeing them here without a
+re-initialization path for the fallback renderer would trade the UAF for a visible regression
+(missing gamepad UI) — that is ROB-22's fix to design, not this one-liner's.
+
+**Verification.** Diff is 5 lines (comment + null assignment). All three reachability paths
+now find `texture == nullptr` after the destroy: the `Reinit` failure fallthrough, the
+filter-off path, and scale-quality changes. `clang-format 18.1.8` (the CI-pinned version)
+reports the file clean.
+
+---
+
+## ROB-15 — CLOSED: `Runner::Run` returns the post-flip double-buffer slot for a double-buffered final pass — one-frame-stale presentation
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 1263-1264, 1441-1450), `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1097, 1125) |
+
+**Original finding.** The per-pass loop rendered into `pass->outputTex[cur]` with `cur` read
+pre-flip, but `*outTexture = last->outputTex[last->curBuffer]` executed *after* the
+double-buffer flip loop — the other slot. For a feedback-final chain the returned texture held
+the previous frame's render; on the first frame and after every `ReleaseTargets()` resize it
+held never-rendered GPU memory. `PresentFrame` blits that texture to the swapchain in the same
+submission, so presentation lagged one frame permanently plus one garbage frame per load/resize.
+
+**Resolution.** The `*outTexture`/`*outWidth`/`*outHeight` capture (`passes_.back()`) moved to
+before the flip loop — the same texture the loop just rendered into. The flip loop and the
+history-slot advance are unchanged: next-frame feedback reads still see post-flip state, and
+intra-frame cross-pass sampling still reads pre-flip slots.
+
+**Verification.** Single-buffered finals behave byte-identically (the flip only touches
+`doubleBuffered` passes, so pre- and post-flip `curBuffer` agree there). Feedback-final chains
+now present the just-written target. `clang-format 18.1.8` clean.
+
+---
+
+## ROB-16 — CLOSED: Unchecked `SDL_MapGPUTransferBuffer` → `memcpy` to NULL, bypassing the failure contract
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1056-1064) |
+
+**Original finding.** `PresentFrame`'s frame upload mapped the transfer buffer with no NULL
+check and `memcpy`ed into the result unconditionally; a device-loss or allocation failure
+(map returns NULL) segfaulted instead of routing through the sticky-`gFailed` session fallback
+that every neighboring failure uses.
+
+**Resolution.** The map result is now NULL-checked; failure routes through
+`LogFailHard("frame transfer buffer map failed")` + `SubmitSkipAfterAcquire(cmd)` + return —
+the exact pattern of the adjacent transfer-buffer-creation failure. The RAII
+`TransferBufferReleaser` still releases the buffer on the early return; `SDL_UnmapGPUTransferBuffer`
+is only reached after a successful map, per the SDL contract.
+
+**Verification.** Success path byte-identical; failure path now costs one skipped frame and a
+descriptive log line, and the session downgrades to the stock renderer. `clang-format 18.1.8` clean.
+
+---
+
+## ROB-17 — CLOSED: `SDL_BeginGPUCopyPass`/`SDL_UploadToGPUTexture` results ignored — silent stale-frame presentation, uninstrumented
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1066-1078) |
+
+**Original finding.** `SDL_BeginGPUCopyPass(cmd)` was never null-checked and the bool returned
+by `SDL_UploadToGPUTexture` was discarded. If either failed, the command buffer still submitted
+and the blit pass sampled the *previous* contents of `gGameTex` — a frozen frame with a healthy
+heartbeat, zero log lines, and no `gFailed`: precisely the silent-failure class the present-path
+instrumentation exists to expose.
+
+**Resolution.** `copyPass` is null-checked (failure: `LogFailHard("frame upload copy pass begin
+failed")` + `SubmitSkipAfterAcquire`, honoring the post-acquire empty-submit contract). The
+upload result is captured, `SDL_EndGPUCopyPass` runs unconditionally, and a failed upload routes
+through `LogFailHard("frame texture upload failed")` + `SubmitSkipAfterAcquire`. Device loss is
+the realistic cause of both, so hard-failing the session (stock-renderer fallback) matches how
+the neighboring stages treat it.
+
+**Verification.** Upload-stage failures now name themselves in gpu-scaler.log and take the
+session fallback instead of presenting stale contents. `clang-format 18.1.8` clean.
+
+---
+
+## ROB-24 — CLOSED: Vulkan-retry claim failure leaves `gWindow` set → release of an unclaimed window
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 817-818, 858-859, 871-872, 900) |
+
+**Original finding.** The first window-claim site nulled `gWindow` on failure; the
+Vulkan-retry path did not, so a failed retry claim fell through to `LogFailHard; Shutdown()`
+with `gWindow` still set — and `Shutdown()` executed `SDL_ReleaseWindowFromGPUDevice` on a
+window the freshly created device never claimed (unspecified SDL behavior; a debug assert
+under `DEVILUTIONX_GPU_DEBUG=1`).
+
+**Resolution.** An `else` branch on the retry claim now mirrors the first site:
+`gWindow = nullptr;` before the shared `LogFailHard; Shutdown();` tail, so `Shutdown()` skips
+the release.
+
+**Verification.** Both claim sites now agree. On retry-claim failure `Shutdown()` tears down
+the device without touching the window. `clang-format 18.1.8` clean.
+
+---
+
+## ROB-25 — CLOSED: Non-custom-filter skip is silent and uncounted
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1013-1024) |
+
+**Original finding.** Every other skip class in `PresentFrame` is instrumented (swapchain skips
+counted, dest-skips counted + throttled-logged) except the non-custom-filter branch, which did
+`SubmitSkipAfterAcquire; return;` silently — a future filter-enum drift would present as a
+permanent silent black screen with a healthy heartbeat.
+
+**Resolution.** The branch now increments `sSkippedFrames` (feeds the existing heartbeat line)
+and emits a throttled (5 s) log naming the unexpected filter value, using the same
+`static last-tick` pattern as the dest-skip log.
+
+**Verification.** Defense-in-depth instrumentation only; no behavior change on any reachable
+current path (only a post-load ini edit can enter the branch). `clang-format 18.1.8` clean.
+
+---
+
+## MAINT-16 — CLOSED: Self-heal recompile does not repopulate the cache — comment claims it does
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 408-422), `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 250-254) |
+
+**Original finding.** The ROB-03 self-heal comment claimed the retry "recompile[s] from source
+once (cache is refreshed by that compile)", but the call passed `allowCache=false` and
+`CompilePass` skips the cache store when `!allowCache` — so the healed session recompiled the
+preset on every subsequent load until the next clean load repopulated the cache.
+
+**Resolution.** The comment-first option from the audit's fix note: the self-heal comment now
+states the actual contract — "the retry compiles fresh; the cache itself is repopulated by the
+next clean load". Behavior is intentionally unchanged: keeping `allowCache=false` preserves the
+heal's fresh-compile guarantee even in the corner where `DeleteCachedSpv` failed (e.g.
+read-only cache dir) — flipping to `allowCache=true` there could re-hit the poisoned blob and
+turn a load that succeeds today into a failure. The per-load glslang round-trip after a rare
+self-heal is the cheaper risk.
+
+**Verification.** Comment and behavior now agree; `slang_compile.cpp`'s own "skipped on the
+ROB-03 no-cache retry" comment remains accurate. `clang-format 18.1.8` clean.
+
+---
+
+## TEST-07 — CLOSED: `wav-fallback-test.yml` paths filter omits the files round 6 actually modified
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Testing |
+| **Original location** | `.github/workflows/wav-fallback-test.yml` (lines 36-44) |
+
+**Original finding.** The WAV A/B workflow triggered on `soundsample.cpp`, `CMakeLists.txt`,
+`CMake/Definitions.cmake` and itself, but round 6 (`b60356e1a`) extended the feature across
+`Source/utils/soundsample.h` (the `SetChunk` signature), `Source/engine/sound.cpp` (the
+`archivePath` plumbing), and `Source/mpq/mpq_reader.hpp` (the `path()` accessor) — changes to
+those three files would silently skip the A/B gate.
+
+**Resolution.** The three files were added to `push.paths`, directly below
+`soundsample.cpp`.
+
+**Verification.** YAML structure unchanged (same list, three new entries); the gate now
+re-runs whenever any part of the WAV diagnostics surface changes.

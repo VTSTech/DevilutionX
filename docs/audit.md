@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 7)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 19 closed → [deltas.md](deltas.md) | 53 open: **2 High / 17 Medium / 34 Low**
+72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 28 closed → [deltas.md](deltas.md) | 44 open: **0 High / 14 Medium / 30 Low**
 
 ---
 
@@ -28,7 +28,9 @@
 
 ## Executive Summary
 
-**Status:** Round 7 (2026-10-16). Code is unchanged since round 6 (`b60356e1a` — the only newer commit, `8341ef99f`, is docs-only). All 19 remaining closures were regression-verified in-tree and hold. A fresh-eyes full sweep of the mod (scaler/present lifecycle, parser/translator, runner/compiler, tests/CI) produced **25 new findings — 2 High, 11 Medium, 12 Low** — and **reopened MAINT-03**: the three workflows its closure claimed to delete were never actually removed from any commit and still ship with the broken `actions/checkout@v7` pin. Closed-finding resolutions remain in [deltas.md](deltas.md). The 53 findings below are open.
+**Fix round 7.5 (2026-10-16, later the same day).** The Priority Matrix's entire Immediate row shipped as one low-risk patch: **ROB-14** (the `scalerWanted` branch now nulls `texture` before `SDL_DestroyRenderer`, mirroring `dx_cleanup`), **ROB-15** (`Runner::Run` captures the present target before the double-buffer flip), **ROB-16** (map NULL routes through `LogFailHard` + skip), **ROB-17** (copy-pass begin and upload results checked), and the **MAINT-03 re-close** — the three zombie workflows actually deleted this time and tree-verified (`ls .github/workflows` shows exactly `clang-format-check.yml`, `gpu-shaders.yml`, `wav-fallback-test.yml`, the third added by design after round 1). Riders closed alongside: **ROB-24** (retry-claim failure nulls `gWindow`), **ROB-25** (non-custom-filter skip counted + throttled-logged), **MAINT-16** (self-heal comment corrected to match the fresh-compile contract), **TEST-07** (wav A/B paths filter extended to the round-6 file set). All five touched C++ files are clean under `clang-format 18.1.8`, the CI-pinned version. Two findings are partially fixed and stay open with cross-notes: **MAINT-09** (parser `#reference` merge comment corrected; the translator's aggregated unknown-UBO-member count remains) and **MAINT-19** (dead 4-arg `ParsePreset` declaration deleted, texture validation error reworded; the bare `shaderpath` behavior decision remains with the maintainer). Closures are recorded in [deltas.md](deltas.md). **The 44 findings below are open: 0 High / 14 Medium / 30 Low.**
+
+**Status:** Round 7 (2026-10-16). Code is unchanged since round 6 (`b60356e1a` — the only newer commit, `8341ef99f`, is docs-only). All 19 remaining closures were regression-verified in-tree and hold. A fresh-eyes full sweep of the mod (scaler/present lifecycle, parser/translator, runner/compiler, tests/CI) produced **25 new findings — 2 High, 11 Medium, 12 Low** — and **reopened MAINT-03**: the three workflows its closure claimed to delete were never actually removed from any commit and still ship with the broken `actions/checkout@v7` pin. Closed-finding resolutions remain in [deltas.md](deltas.md). At the close of round 7 the open set stood at 53.
 
 This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. Rounds 1–6 examined the fork's entire delta and its integration points, the engine's game loop and options architecture, and the build/CI/packaging layer, down to individual SDL_GPU API invocations; round 7 re-walked the same surface with fresh eyes targeting state-machine ordering, unchecked SDL return values, resource lifetime across renderer hand-off, and translation-layer input handling.
 
@@ -52,11 +54,6 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| ROB-14 | **High** | Robustness | Scaler activation destroys the SDL_Renderer with renderer-owned textures still referenced — use-after-free on filter toggle |
-| ROB-15 | **High** | Robustness | `Runner::Run` returns the post-flip double-buffer slot for a double-buffered final pass — one-frame-stale presentation |
-| MAINT-03 | Medium | Maintainability | REOPENED (round 7): the three "deleted" workflows were never removed from any commit and still ship `actions/checkout@v7` |
-| ROB-16 | Medium | Robustness | Unchecked `SDL_MapGPUTransferBuffer` → `memcpy` to NULL, bypassing the failure contract |
-| ROB-17 | Medium | Robustness | `SDL_BeginGPUCopyPass`/`SDL_UploadToGPUTexture` results ignored — silent stale-frame presentation, uninstrumented |
 | ROB-18 | Medium | Robustness | Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it |
 | ROB-19 | Medium | Robustness | `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path |
 | ROB-20 | Medium | Robustness | Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard) |
@@ -79,22 +76,19 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 | ROB-11 | Low | Robustness | LUT upload size computed in Uint32; no dimension cap on preset LUTs |
 | ROB-12 | Low | Robustness | Preset parser accepts six image extensions the PNG-only build cannot decode |
 | ROB-13 | Low | Robustness | Known Integer Scaling crash remains (deliberately unfixed, documented) |
-| ROB-24 | Low | Robustness | Vulkan-retry claim failure leaves `gWindow` set → release of an unclaimed window |
-| ROB-25 | Low | Robustness | Non-custom-filter skip is silent and uncounted |
 | ROB-26 | Low | Robustness | Hard swapchain-acquire failure is indistinguishable from a minimized-window skip |
 | ROB-28 | Low | Robustness | Locale-dependent float parsing in the preset pipeline (latent) |
 | ROB-29 | Low | Robustness | glslang compile path has no lock (latent until async/hot-reload) |
 | MAINT-08 | Low | Maintainability | Trim/lowercase/case-compare utilities triplicated across preset TUs |
-| MAINT-09 | Low | Maintainability | Comment/code mismatches: `#reference` merge order and silent UBO validation |
+| MAINT-09 | Low | Maintainability | Comment/code mismatches: `#reference` merge order and silent UBO validation — *parser comment fixed r7.5; translator aggregate-count half open* |
 | MAINT-10 | Low | Maintainability | Diagnostics log written next to the executable — fails silently in protected dirs |
 | MAINT-11 | Low | Maintainability | Stale packaging metadata: DEB SDL2 deps, Brewfile, vcpkg version, docs/building.md |
 | MAINT-12 | Low | Maintainability | God-files at engine core: diablo.cpp 3553 lines, scrollrt.cpp 1933 lines |
 | MAINT-13 | Low | Maintainability | Broken symlink blobs in repo break tooling and cross-compile helpers |
 | MAINT-14 | Low | Maintainability | Misleading legacy name: `nthread_has_500ms_passed` no longer means 500 ms |
-| MAINT-16 | Low | Maintainability | Self-heal recompile does not repopulate the cache — comment claims it does |
 | MAINT-17 | Low | Maintainability | Driver-rejected sidecar `.spv` never self-heals (only the cache path does) |
 | MAINT-18 | Low | Maintainability | `ScanPresets` lacks the hidden-folder/`cache` exclusions the browser enforces |
-| MAINT-19 | Low | Maintainability | Parser nits: dead 4-arg `ParsePreset` decl, bare `shaderpath` dropped, empty-key error misleads |
+| MAINT-19 | Low | Maintainability | Parser nits: dead 4-arg `ParsePreset` decl, bare `shaderpath` dropped, empty-key error misleads — *2 of 3 nits fixed r7.5; bare `shaderpath` decision open* |
 | PERF-01 | Low | Performance | Per-frame transfer buffer create/map/unmap round-trip |
 | PERF-02 | Low | Performance | Per-pass, per-frame heap allocations and repeated string parsing in Runner::Run |
 | PERF-03 | Low | Performance | Dead work in the present path: unused fitScale and unread uniform member |
@@ -104,7 +98,6 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 | ARCH-02 | Low | Architecture | Fork branding and asset-integrity hard aborts are entangled with upstream init |
 | TEST-04 | Low | Testing | Baked-shader drift: regenerated SPIR-V is never diffed against the committed header |
 | TEST-05 | Low | Testing | Fixture-dependent tests silently skip when MPQ assets are absent |
-| TEST-07 | Low | Testing | `wav-fallback-test.yml` paths filter omits the files round 6 actually modified |
 
 Severity levels:
 - **High** — Affects correctness, security, or data integrity. Fix soon.
@@ -239,63 +232,6 @@ The `Runner::Run` header documents a `false` return as "frame must be skipped (t
 Combining the game's own Integer Scaling option with a desktop resolution that is not a whole-number multiple crashes: the integer factor truncates to 0 → divide-by-zero in `CalculatePreferredWindowSize`, and `PresentFrame` has a latent zero-size-fit path honoring the same option. VTSTech explicitly ruled this out of scope on 2026-10-14, and the failure signature is documented for support triage (GPU_SHADERS.md §Troubleshooting) with an abandoned fix diff snapshotted in the mod packaging notes. It is filed here solely so the audit record is complete and so the deliberate-unfixed status is visible next to the other robustness items; if anyone touches window-size math for another reason, the fix is small and should ride along.
 
 **Impact:** Documented as known; closure is opportunistic whenever display.cpp is next modified.
-
-#### ROB-14: Scaler activation destroys the SDL_Renderer with renderer-owned textures still referenced — use-after-free on filter toggle
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Robustness |
-| **File(s)** | `Source/utils/display.cpp` (lines 834-837, 715-718, 333, 909), `Source/engine/dx.cpp` (lines 49, 147-154), `Source/utils/sdl_ptrs.h` (lines 57-64) |
-
-The `scalerWanted` branch in `ReinitializeRenderer` destroys the SDL_Renderer (`SDL_DestroyRenderer` at display.cpp:836) but never resets the global `texture` (`SDLTextureUniquePtr`, dx.cpp:49) or the virtual-gamepad textures created from that renderer. In SDL3, `SDL_DestroyRenderer` destroys every texture created from the renderer, so `texture` becomes a dangling unique_ptr. The codebase's own invariant acknowledges this ordering: `dx_cleanup` nulls `texture` and calls `FreeVirtualGamepadTextures()` *before* `SDL_DestroyRenderer` (dx.cpp:147-154). This path skips both. The dangling pointer is then destroyed by the next `ReinitializeTexture()` (`if (texture) texture.reset();` at display.cpp:717-718 → `SDLTextureDeleter` → `SDL_DestroyTexture` on freed memory), which is reached (a) in the same call when `gpu_scaler::Reinit` fails and control falls through to display.cpp:909, (b) when the filter is switched Off (scalerWanted false → SDL_Renderer path → :909), and (c) on scale-quality changes during a GPU session (display.cpp:333). The ordinary "select a preset with upscale on" flow therefore hits a use-after-free — heap corruption that can crash or silently corrupt, on both the success path (dangle persists until the next recreate) and the failure path (immediate UAF).
-
-Fix: in the `scalerWanted` branch, `texture = nullptr;` (and free/re-create gamepad textures per ROB-22) before `SDL_DestroyRenderer`, mirroring `dx_cleanup`.
-
-**Impact:** The mod's primary interaction — turning the shader filter on or off — stops risking heap corruption on every platform where the SDL_Renderer path was previously active.
-
-#### ROB-15: `Runner::Run` returns the post-flip double-buffer slot for a double-buffered final pass — one-frame-stale presentation
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 1263-1264, 1441-1450), `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1097, 1125) |
-
-The per-pass loop renders each pass into `pass->outputTex[cur]` with `cur = pass->curBuffer` read *pre-flip* (`:1263-1264`), so intra-frame chaining correctly samples the just-written texture. After the loop, the double-buffer flip runs (`pass->curBuffer = 1 - pass->curBuffer`, `:1442-1445`) and only afterwards does the output read happen: `*outTexture = last->outputTex[last->curBuffer]` (`:1449-1450`) — the *post-flip* slot. For a final pass that is double-buffered (it or any pass taps its `PassFeedback` — the translator permits pass j < last referencing `PassFeedback#last`, which is exactly what forces the last pass to be double-buffered), the returned texture holds the **previous frame's** render; on the first frame and after every `ReleaseTargets()` resize it holds never-rendered, undefined GPU memory. `PresentFrame` blits this texture to the swapchain in the same submission (gpu_scaler.cpp:1097, 1125), so the presented image lags one frame permanently plus one garbage frame after every load/resize. Non-double-buffered finals return the just-written `outputTex[0]` and are unaffected — confirming the post-flip read is unintended.
-
-Fix: capture `*outTexture` from the pre-flip `last` target (the same texture the loop just rendered into) before the flip loop.
-
-**Impact:** Feedback-final chains (self-feedback/accumulation finals) display correctly instead of presenting a persistent one-frame lag with an undefined frame after every preset load or window resize.
-
-#### ROB-16: Unchecked `SDL_MapGPUTransferBuffer` → `memcpy` to NULL, bypassing the failure contract
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1056-1064) |
-
-`PresentFrame`'s frame upload does `auto *dst = static_cast<uint8_t *>(SDL_MapGPUTransferBuffer(gDevice, transfer, false));` with no NULL check, then `std::memcpy(dst, src, …)` unconditionally, then `SDL_UnmapGPUTransferBuffer` — also on a never-mapped buffer. `SDL_MapGPUTransferBuffer` returns NULL on failure (device loss, allocation failure — plausible on the low-memory handheld targets this tree builds for, and amplified by PERF-01's per-frame buffer churn). Every other failure in this function routes through `LogFailHard` → sticky `gFailed` → session fallback; this one segfaults instead, killing the game the failure contract exists to protect.
-
-Fix: check the map result and route NULL through `LogFailHard` + `SubmitSkipAfterAcquire` like every neighboring failure.
-
-**Impact:** A device-loss/allocation hiccup costs one skipped frame instead of a crash outside the failure contract.
-
-#### ROB-17: `SDL_BeginGPUCopyPass`/`SDL_UploadToGPUTexture` results ignored — silent stale-frame presentation, uninstrumented
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1066-1078) |
-
-`SDL_BeginGPUCopyPass(cmd)` is never null-checked and the bool returned by `SDL_UploadToGPUTexture(copyPass, &transferSrc, &region, false)` is discarded. If either fails (device-lost at pass begin, upload rejection), the command buffer still submits: the blit pass samples the *previous* contents of `gGameTex` and presents them — a frozen frame with a healthy heartbeat, zero log lines, and no `gFailed`. This is precisely the "silent black/frozen screen with a clean log" failure class the round-9 instrumentation (present heartbeat, dest-skip counter and throttled logging) was built to expose, yet the upload stage itself is uninstrumented.
-
-Fix: null-check the copy pass and check the upload result; on failure take the same counted/logged skip (or `LogFailHard`) path as the neighboring stages.
-
-**Impact:** Upload-stage failures become visible and recoverable instead of presenting a frozen frame with a healthy log.
-
 #### ROB-18: Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it
 
 | Property | Value |
@@ -360,7 +296,7 @@ Fix: name-dedupe the plain rewrite path (first binding wins) in addition to the 
 | **Category** | Robustness |
 | **File(s)** | `Source/utils/display.cpp` (lines 834-837), `Source/engine/dx.cpp` (lines 318-321, 341), `Source/controls/touch/renderers.cpp` (`InitVirtualGamepadTextures`/`FreeVirtualGamepadTextures`), `Source/controls/touch/renderers.h` (lines 74-77) |
 
-`InitVirtualGamepadTextures(*renderer)` (gamemenu.cpp:316, interfac.cpp:565) fills each `ButtonTexture::texture` (`SDLTextureUniquePtr`) created from the live SDL_Renderer. When the scaler-activation path destroys that renderer (ROB-14's site, display.cpp:836), those handles dangle — the destroy path calls neither `FreeVirtualGamepadTextures()` nor re-creates them afterwards. Two failure modes follow: (a) the next `FreeVirtualGamepadTextures()` runs the deleter → `SDL_DestroyTexture` on freed memory; (b) after the dx.cpp:318-321 GPU-failure fallback creates a fresh renderer, `InitVirtualGamepadTextures` is never re-run (unlike `ResizeWindow`, which does re-initialize at display.cpp:1042), so `RenderVirtualGamepad` (dx.cpp:341) operates on dangling non-null pointers → `SDL_RenderTexture` on freed memory, or SDL failure → `ErrSdl` → fatal — the game-never-dies contract broken on touch UIs. Scoped Medium because the virtual gamepad is touch-build territory; the desktop CI matrix never creates these textures.
+`InitVirtualGamepadTextures(*renderer)` (gamemenu.cpp:316, interfac.cpp:565) fills each `ButtonTexture::texture` (`SDLTextureUniquePtr`) created from the live SDL_Renderer. When the scaler-activation path destroys that renderer (the site the round-7.5 ROB-14 fix touched: `texture` is now nulled there before `SDL_DestroyRenderer`, display.cpp:836 — but the gamepad textures are not), those handles dangle — the destroy path calls neither `FreeVirtualGamepadTextures()` nor re-creates them afterwards. Two failure modes follow: (a) the next `FreeVirtualGamepadTextures()` runs the deleter → `SDL_DestroyTexture` on freed memory; (b) after the dx.cpp:318-321 GPU-failure fallback creates a fresh renderer, `InitVirtualGamepadTextures` is never re-run (unlike `ResizeWindow`, which does re-initialize at display.cpp:1042), so `RenderVirtualGamepad` (dx.cpp:341) operates on dangling non-null pointers → `SDL_RenderTexture` on freed memory, or SDL failure → `ErrSdl` → fatal — the game-never-dies contract broken on touch UIs. Scoped Medium because the virtual gamepad is touch-build territory; the desktop CI matrix never creates these textures.
 
 Fix: free gamepad textures before the renderer destroy in the scaler-activation branch, and re-run `InitVirtualGamepadTextures` after any renderer (re)creation, matching `ResizeWindow`'s behavior.
 
@@ -379,35 +315,6 @@ Three defects share one function. (a) The `<TextureName>Size` branch (`:1104-112
 Fix: reorder the parameter lookup ahead of the `Size` branch, make writes type- and size-aware, and clamp writes to the member's byte width.
 
 **Impact:** Parameter-driven packs (CRT masks, curvature, any `*Size`-named parameter) render with the user's values instead of silent zeros/bit-garbage.
-
-#### ROB-24: Vulkan-retry claim failure leaves `gWindow` set → release of an unclaimed window
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 817-818, 858-859, 871-872, 900) |
-
-The first window-claim site nulls the pointer on failure (`gWindow = nullptr; Shutdown();`, `:817-818`). The Vulkan-retry path does not: `gWindow = window; if (SDL_ClaimWindowForGPUDevice(gDevice, gWindow)) { … }` (`:858-859`) has no else, so on claim failure control falls to `LogFailHard(…); Shutdown();` (`:871-872`) with `gWindow` still set — and `Shutdown()` executes `SDL_ReleaseWindowFromGPUDevice(gDevice, gWindow)` (`:900`) on a window the freshly created device never claimed. Releasing an unclaimed window is unspecified SDL behavior (and can surface as a debug assert under `DEVILUTIONX_GPU_DEBUG=1`, the mod's own field instrument). The two claim sites disagree, which is the tell.
-
-Fix: mirror the first site — null `gWindow` when the retry claim fails.
-
-**Impact:** The retry path cleans up within the SDL API contract instead of relying on unspecified behavior.
-
-#### ROB-25: Non-custom-filter skip is silent and uncounted
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1013-1024) |
-
-Every skip class in `PresentFrame` is instrumented — swapchain skips counted at `:978`, dest-skips counted and throttled-logged at `:1148-1157` — except the non-custom-filter branch, which does `SubmitSkipAfterAcquire(cmd); return;` with no counter and no log line. Today the only route in is a post-load ini edit or future enum drift (options.cpp:474-475 heals legacy values 1..99), so reachability is narrow, but if a non-None, non-custom value ever reached `gFilter`, the result would be a permanent silent black screen with a healthy heartbeat — the exact signature the codebase's instrumentation philosophy exists to prevent.
-
-Fix: increment a counter and emit a one-line log (throttled) naming the unexpected filter value.
-
-**Impact:** Defense-in-depth for the filter enum, consistent with the rest of the present path's instrumentation.
-
 #### ROB-26: Hard swapchain-acquire failure is indistinguishable from a minimized-window skip
 
 | Property | Value |
@@ -452,21 +359,6 @@ Fix: add a mutex around `CompileStageToSpv` (compile is cold-path; contention is
 
 ---
 ### Maintainability
-
-#### MAINT-03: REOPENED (round 7) — the three "deleted" workflows were never removed from any commit and still ship `actions/checkout@v7`
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Maintainability |
-| **File(s)** | `.github/workflows/{clang-tidy-check,translations,cache-cleanup}.yml` |
-
-Round 1 closed this as "curated": `clang-format-check.yml` kept and fixed, `clang-tidy-check.yml`/`translations.yml`/`cache-cleanup.yml` deleted, with the verification note "`ls .github/workflows` shows exactly `clang-format-check.yml` and `gpu-shaders.yml`". That record does not match the shipped history: `git log --all --diff-filter=D` shows the three files were deleted only in the initial fork squash (`e93decc0c`), re-added by `8ebe60f39 combined to master` (2026-10-12), and never removed afterwards — they exist at every commit of the audit-fix lineage, including the closure commits themselves. All three still pin `actions/checkout@v7` (`cache-cleanup.yml:12`, `clang-tidy-check.yml:21`, `translations.yml:25`) and two trigger on push to `master`, so the red-X noise the closure claimed to eliminate is still live (or the workflows silently no-op, depending on whether `@v7` resolves at run time). What *did* land and is verified: `clang-format-check.yml` uses `actions/checkout@v4` (`:25`) with `jidicula/clang-format-action@v4.18.0`, the `cleanup-fork-workflows` scripts are gone, and dependabot maintains the set. The closure was likely performed on a working tree that was never committed — the same class of gap this reopen exists to catch.
-
-Fix: actually delete the three workflows (they remain upstream tooling with no role on this fork), or repair them deliberately; then re-close with a tree-level verification (`git ls-tree HEAD .github/workflows/`).
-
-**Impact:** The workflow set matches the ledger again, and closure records regain their trustworthiness.
-
 #### MAINT-08: Trim/lowercase/case-compare utilities triplicated across preset TUs
 
 | Property | Value |
@@ -564,21 +456,6 @@ The Linux and Windows CI jobs install `glslang-tools` from apt with no version p
 Fix: pin the apt package version, or build/validate the baked blobs with the vendored glslang the runtime path already FetchContents.
 
 **Impact:** Baked shader bytes become a function of the repo, not of the runner image.
-
-#### MAINT-16: Self-heal recompile does not repopulate the cache — comment claims it does
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Maintainability |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 408-422), `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 250-254) |
-
-The ROB-03 self-heal comment says the retry "recompile[s] from source once (cache is refreshed by that compile)" (`:412-414`), but the call passes `/*allowCache=*/false` (`:422`) and `CompilePass` explicitly skips the cache store when `!allowCache` (`if (allowCache && !cacheVert.empty())`, slang_compile.cpp:251, per its own "skipped on the ROB-03 no-cache retry" comment). The healed session therefore recompiles that preset on every subsequent load until the next clean load repopulates the cache — behavior differs from the comment, costing a glslang round-trip per load after any self-heal. Doc/behavior mismatch only; the next clean session does fix the cache.
-
-Fix: pass `allowCache=true` for the heal retry (the corrupt entries were already deleted), or correct the comment.
-
-**Impact:** Post-self-heal loads hit the cache as the comment promises.
-
 #### MAINT-17: Driver-rejected sidecar `.spv` never self-heals (only the cache path does)
 
 | Property | Value |
@@ -620,6 +497,22 @@ Three small parser inconsistencies found while re-walking the key-dispatch path.
 Fix: delete the dead overload, reject bare `shaderpath` with a named error (or implement it), and reword the empty-name validation error.
 
 **Impact:** The parser's surface matches its spec, and error messages point at the real problem.
+**Round-7.5 partial fix (2026-10-16):** the dead 4-arg `ParsePreset` overload is deleted
+from the header (no definition, no callers — the first external caller would have been a
+linker error), and the texture validation error now says which of name/path is actually
+missing (`preset texture has an empty name (...)` vs `preset texture 'x' has no path
+(...)`) instead of always blaming the path. Still open: bare `shaderpath` handling.
+Rejecting it with a named error would hard-fail presets that currently load (the line is
+silently dropped today), and implementing it would invent semantics RetroArch does not
+define — both behavior changes, so the choice is left to the maintainer.
+
+**Round-7.5 partial fix (2026-10-16):** the parser-side `#reference` merge comment now
+states the actual semantics ("the LAST chain providing passes wins", matching the
+per-parent overwrite at the merge site); the behavior question itself stays tracked as
+SLANG_SPEC gap #13. Still open: the translator half — `ValidateBlockMembers`' disabled
+per-item warning should become a single aggregated count logged once per preset
+("N unknown UBO members coerced to 0") so silent coercion is observable.
+
 
 ---
 
@@ -808,20 +701,6 @@ Fix: port the runner's pragma-name pre-scan into `preset_smoke`'s known-name set
 
 **Impact:** The smoke harness predicts in-game translation for the pragma-name idiom real packs use.
 
-#### TEST-07: `wav-fallback-test.yml` paths filter omits the files round 6 actually modified
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Testing |
-| **File(s)** | `.github/workflows/wav-fallback-test.yml` (lines 36-44), `Source/utils/soundsample.h`, `Source/engine/sound.cpp`, `Source/mpq/mpq_reader.hpp` |
-
-The WAV-fallback A/B workflow triggers on changes to `Source/utils/soundsample.cpp`, `CMakeLists.txt`, `CMake/Definitions.cmake`, and itself — but round 6 (`b60356e1a`) extended the feature across `Source/utils/soundsample.h` (the `SetChunk` signature), `Source/engine/sound.cpp` (the `archivePath` plumbing), and `Source/mpq/mpq_reader.hpp` (the `path()` accessor). A future change to those three files — say, altering the `SetChunk` diagnostics contract or the archive accessor — will not re-trigger the A/B build, so coverage silently drifts from the code it gates. The workflow was added in `dd3c3f14f`, *before* round 6 widened the file set, and was never updated.
-
-Fix: add the three files to the `push.paths` list.
-
-**Impact:** The A/B gate re-runs whenever any part of the WAV diagnostics surface changes.
-
 ---
 
 ## Priority Matrix
@@ -830,11 +709,11 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 
 | Timeline | Findings |
 |----------|----------|
-| **Immediate** (next 1–2 builds) | ROB-14 (renderer-destroy UAF — one-line fix mirroring `dx_cleanup`), ROB-15 (pre-flip outTexture capture), ROB-16 (map NULL check), ROB-17 (copy-pass/upload checks), MAINT-03 reopen (delete the three zombie workflows — trivial) |
-| **Short term** (planned work) | ROB-18 (backend retry), ROB-19 (non-fatal window recreate), ROB-20 (file-size caps + catch-all), ROB-21 (sampler dedupe), ROB-22 (gamepad textures), ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
-| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-24, ROB-25, ROB-26, ROB-28, ROB-29, MAINT-08 through MAINT-14, MAINT-16 through MAINT-19, PERF-01 through PERF-05, FEAT-02, FEAT-04, ARCH-02, TEST-04, TEST-05, TEST-07 |
+| **Immediate** (next 1–2 builds) | *(empty — the entire previous Immediate row shipped as the 2026-10-16 quick-fix batch: ROB-14, ROB-15, ROB-16, ROB-17, MAINT-03 re-close; see [deltas.md](deltas.md))* |
+| **Short term** (planned work) | ROB-18 (backend retry), ROB-19 (non-fatal window recreate), ROB-20 (file-size caps + catch-all), ROB-21 (sampler dedupe), ROB-22 (gamepad textures — the remaining half of the former ROB-14), ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
+| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-26, ROB-28, ROB-29, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-06, FEAT-02, FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
-Sequencing notes: ROB-14 and ROB-15 are the round-7 Highs and are each a bounded, low-risk diff — take them together in one patch with the ROB-16/17 checks (same function neighborhood in `gpu_scaler.cpp`/`preset_runner.cpp`). MAINT-03's re-close should ride the next docs/CI commit. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with ROB-18 (backend retry) — decide the backend policy once, in one change.
+Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the short-term queue opens at ROB-18/ROB-19 (both bounded fallback-path changes) and ROB-22 (gamepad textures — design the free/re-init pairing before touching `ReinitializeRenderer` again). ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with ROB-18 (backend retry) — decide the backend policy once, in one change.
 
 ---
 
