@@ -11,7 +11,7 @@ dated with an America/Toronto timestamp. Upstream (diasurgical) release
 history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
-## 1.6.0-dev-27548c8 (2026-10-15 03:04 EDT)
+## 1.6.0-dev-1d9d84d (2026-10-15 3:26:39 AM)
 
 Codebase audit fixes, round 1 — the two High robustness findings and the
 dead-payload cleanup, from the audit in `audit.md`.
