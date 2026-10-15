@@ -15,11 +15,11 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | round-6 tooling round (gpu-scaler.log session header carries the exe version; Linux CI embeds the commit + gates on it; OSD text is `Shader:`) on top of round-5 records + Debian-12 confirmation — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
+| repo tip | round-6 code + tooling (gpu-scaler.log session header carries the exe version; Linux CI embeds + gates the commit — dash-safe `shell: bash` configure, user-confirmed passing; OSD text is `Shader:`) on top of round-5 records + Debian-12 confirmation — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
 | release tag | `gpu-shaders-v9` @ `b0ba28d5f` — tip-most release line (tags mark releases, not rounds) |
-| field evidence | Phase-1: 69 unique presets working, 71 loads, 0 failures across 4 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11; misc 6/18. Proven live: F1 mipmaps ×4 chains, PassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep OriginalHistory5 (`anti-flicker`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8) |
+| field evidence | Phase-1: 101 unique presets working, 103 loads, 0 failures across 5 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38. Proven live: F1 mipmaps ×5 chains, PassFeedback + TextGeneratePassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep history rings OriginalHistory5/6 (`anti-flicker`, `glass`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8); Linux CI configure dash fix field-confirmed round 6 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
-| next queue | ① koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ② low-risk remainder: misc 12, handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ③ then medium-risk clusters (§8) |
+| next queue | ① koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ② low-risk remainder: handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ③ then medium-risk clusters (§8) |
 | backburner | SLANG_SPEC §7 gap-list tail; 26-i Linux gcc/clang build matrix; browse-highlight cosmetic |
 
 **Conventions (adopted field round 4, 2026-10-15):**
@@ -64,7 +64,7 @@ Standalone mod on **VTSTech/DevilutionX**, branched from upstream `1.6.0-dev` (s
 
 | Ref | Tip | State |
 |---|---|---|
-| fork `master` (what CI builds) | `d314db61e` | **history REBASED 2026-10-15** — pre-rebase hashes `dce1c4222` (F5/P1) and `664d0f740` (round 3) no longer resolve; content verified in-tree (rebased line `537ad782b`). On top: **round-4 include fix** (`c1ee40544`, koko-aio-ng per-stage-bucket include-once), `install_git.cmd` (`0874f803d`), Linux `install_shaders.sh`/`clear_shader_cache.sh` + CI tweak (`e6ba06ab4`), `tools/audit/status_report.py` (`f49a29ce5`); field round 4 = Phase-1 segments 1+2, 36 unique working (§8); on top: `09e78c24c` (round-4 sweep records) + `d314db61e` (segment-2 records, `tools/audit/field_log_digest.py` + `tools/audit/session_bootstrap.py`); field round 5: `dithering/` 16/16 + `deinterlacing/` 11/11 closed + misc 6/18 — 69 unique total (§8); linux CI container now `gcc:14-bookworm` (glibc 2.36 floor, GCC 14, gated; user-pushed `67386a72f`) — build FIELD-CONFIRMED on Debian 12 bookworm: Vulkan backend, preset loads + pass targets clean, 2026-10-15 (§8) |
+| fork `master` (what CI builds) | `d314db61e` | **history REBASED 2026-10-15** — pre-rebase hashes `dce1c4222` (F5/P1) and `664d0f740` (round 3) no longer resolve; content verified in-tree (rebased line `537ad782b`). On top: **round-4 include fix** (`c1ee40544`, koko-aio-ng per-stage-bucket include-once), `install_git.cmd` (`0874f803d`), Linux `install_shaders.sh`/`clear_shader_cache.sh` + CI tweak (`e6ba06ab4`), `tools/audit/status_report.py` (`f49a29ce5`); field round 4 = Phase-1 segments 1+2, 36 unique working (§8); on top: `09e78c24c` (round-4 sweep records) + `d314db61e` (segment-2 records, `tools/audit/field_log_digest.py` + `tools/audit/session_bootstrap.py`); field round 5: `dithering/` 16/16 + `deinterlacing/` 11/11 closed + misc 6/18 — 69 unique total (§8); linux CI container now `gcc:14-bookworm` (glibc 2.36 floor, GCC 14, gated; user-pushed `67386a72f`) — build FIELD-CONFIRMED on Debian 12 bookworm: Vulkan backend, preset loads + pass targets clean, 2026-10-15 (§8); field round 6: `misc/` complete 38/38 — 101 unique total (§8); round-6 CI: log session header carries the exe version, OSD `Shader:`, Linux configure dash-safe (`shell: bash`) + commit-embedded version gate — configure user-confirmed passing |
 | release tag **`gpu-shaders-v8`** | `92831323e` | v8 release binaries; first release shipping `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe (corpus download / cache wipe) |
 | release tag **`gpu-shaders-v9`** | `b0ba28d5f` | v9 release binaries (README refresh); adds Linux helper scripts + `install_git.cmd` vs v8; `status_report.py` is post-v9 on master |
 | PR **#8737** (`gpu-shaders-combined`) | `b11054ba2` | **DEAD — do not pursue.** Upstream enforces a no-AI policy (README, 2026-10-11); the PR will never merge. Kept for reference only; it still contains baked filters + the WAV fix |
@@ -495,8 +495,32 @@ dynamic GLIBCXX_) held. Ubuntu 24.04 remains covered (≥ floor). These two pres
 loads were a smoke run, not a digest sweep — no ledger rows.
 
 Still queued: koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` —
-still unexercised by any field log), then the low-risk remainder: misc 12,
-handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113.
+still unexercised by any field log), then the low-risk remainder: handheld 17,
+presets 14, crt 9, reshade rest 42, blurs slots 110/113.
+
+**Field round 6, segment 1 (first self-identifying log — `misc/` complete):**
+32 loads / 32 unique — **all working, 0 errors/warnings/fallbacks, clean
+shutdown**. The digest's `builds:` line named the exe automatically (round-6
+session header) — the log labels itself, no hand tagging.
+
+- **`misc/` CLOSED: 38/38 across rounds 5+6** (round 5 took the a–c head, this
+  segment the remaining 32; zero failures in the dir).
+- **Firsts:** F1 mip chain on `misc/geom` (pass 0 — 5th distinct F1 chain),
+  `print-resolution` TextGeneratePassFeedback (second feedback preset after
+  magicbloom), `glass` OriginalHistory6 deep ring, `patchy-color` 3 passes +
+  6 LUTs (longest misc chain).
+- Cache accounting note: 5 aggregate cache hits vs 4 preset-attributed — one
+  hit outside any load window (scaler-internal pass, e.g. session init);
+  expected under the digest's accounting rule.
+
+**Linux CI dash fix FIELD-CONFIRMED (same round):** round 6's
+`-DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}` configure pin tripped `Bad substitution`
+— container steps run under `sh` (dash), which has no substring expansion. Fix:
+`shell: bash` on the Linux Configure step (bash ships in the gcc:14-bookworm
+image); the Windows-side pin was removed (no-op under pwsh — the VM's git-log
+fallback always worked). User-confirmed on the live CI: configure passes and
+the build compiles. A workflow-shell validator (each step's script run through
+its effective shell + bashism scan) now guards this failure class pre-push.
 
 ### D3D12 — fully excised
 

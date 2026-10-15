@@ -68,3 +68,35 @@ misc/ascii.slangp,working,ok,"segment 3: 1 pass"
 misc/bead.slangp,working,ok,"segment 3: 1 pass"
 misc/chroma.slangp,working,ok,"segment 3: 1 pass (15 #pragma parameters)"
 misc/chromaticity.slangp,working,ok,"segment 3: 1 pass"
+misc/cmyk-halftone-dot.slangp,working,ok,"segment 4: 1 pass, 1 cache hit"
+misc/cocktail-cabinet.slangp,working,ok,segment 4: 1 pass
+misc/color-mangler.slangp,working,ok,segment 4: 1 pass (18 #pragma parameters)
+misc/colorimetry.slangp,working,ok,segment 4: 1 pass
+misc/convergence.slangp,working,ok,segment 4: 1 pass
+misc/deband.slangp,working,ok,segment 4: 1 pass
+misc/edge-detect.slangp,working,ok,segment 4: 1 pass
+misc/ega.slangp,working,ok,segment 4: 1 pass
+misc/geom-append.slangp,working,ok,segment 4: 1 pass (16 #pragma parameters)
+misc/geom.slangp,working,ok,segment 4: 2 passes - F1 mip chain on pass 0 field-confirmed (5th distinct F1 chain); 2 cache hits (16 #pragma parameters)
+misc/glass.slangp,working,ok,segment 4: 1 pass - OriginalHistory6 deep history field-clean (#include depth 4; 30 #pragma parameters)
+misc/grade-no-LUT.slangp,working,ok,segment 4: 1 pass (49 #pragma parameters)
+misc/grade.slangp,working,ok,segment 4: 1 pass (53 #pragma parameters)
+misc/half_res.slangp,working,ok,"segment 4: 1 pass, 1 cache hit"
+misc/image-adjustment.slangp,working,ok,segment 4: 1 pass (24 #pragma parameters)
+misc/img_mod.slangp,working,ok,segment 4: 1 pass (#include depth 4; 37 #pragma parameters)
+misc/natural-vision.slangp,working,ok,segment 4: 1 pass
+misc/night-mode.slangp,working,ok,segment 4: 1 pass
+misc/ntsc-colors.slangp,working,ok,segment 4: 1 pass
+misc/patchy-color.slangp,working,ok,segment 4: 3 passes - longest chain this segment; 6 LUTs (27 #pragma parameters)
+misc/pixel-weave-4x2.slangp,working,ok,segment 4: 1 pass
+misc/pixel-weave-sync.slangp,working,ok,segment 4: 1 pass
+misc/print-resolution.slangp,working,ok,segment 4: 2 passes - TextGeneratePassFeedback field-confirmed
+misc/relief.slangp,working,ok,segment 4: 1 pass
+misc/retro-palettes.slangp,working,ok,segment 4: 1 pass
+misc/ss-gamma-ramp.slangp,working,ok,segment 4: 1 pass
+misc/test-pattern-append.slangp,working,ok,segment 4: 1 pass (14 #pragma parameters)
+misc/test-pattern-prepend.slangp,working,ok,segment 4: 1 pass (14 #pragma parameters)
+misc/tonemapping.slangp,working,ok,segment 4: 1 pass
+misc/white_point.slangp,working,ok,segment 4: 1 pass
+misc/yiq-hue-adjustment.slangp,working,ok,segment 4: 1 pass
+misc/simple_color_controls.slangp,working,ok,"segment 4: 1 pass - Tier 1b misc row cleared"

@@ -8,7 +8,7 @@ motionblur/mix_frames.slangp,Tier 1a — F5 history-ring canaries,1,low,"mvp, or
 stereoscopic-3d/shutter-to-anaglyph.slangp,Tier 1a — F5 history-ring canaries,1,low,"mvp, orig-history",working,ok,"field round 3: log-clean (pre-round-3-fix build)"
 test/history.slangp,Tier 1a — F5 history-ring canaries,1,low,"mvp, orig-history",working,ok,"field round 3: log-clean (pre-round-3-fix build)"
 scanlines/scanlines-Modern.slangp,Tier 1b — field round 1 fix confirmations,1,medium,"mvp, viewport-scale",,,
-misc/simple_color_controls.slangp,Tier 1b — field round 1 fix confirmations,1,medium,mvp,,,
+misc/simple_color_controls.slangp,Tier 1b — field round 1 fix confirmations,1,medium,mvp,working,ok,"field round 6: 1 pass — Tier 1b misc row cleared"
 sharpen/Anime4k.slangp,Tier 1b — field round 1 fix confirmations,4,low,mvp,working,ok,"field round 4: survived dungeon ShowProgress + clean shutdown; v9-lineage build"
 scanlines/ossc.slangp,Tier 1b — field round 1 fix confirmations,1,medium,"mvp, viewport-scale",,,
 ntsc/ntsc-adaptive.slangp,Tier 1b — field round 1 fix confirmations,4,medium,"mvp, float-fb",,,
@@ -57,6 +57,37 @@ misc/anti-flicker.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, orig-histor
 misc/ascii.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,"field round 5: 1 pass"
 misc/bead.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,"field round 5: 1 pass"
 misc/chroma.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,"field round 5: 1 pass (15 #pragma parameters)"
+misc/cmyk-halftone-dot.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,"field round 6: 1 pass, 1 cache hit"
+misc/cocktail-cabinet.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/color-mangler.slangp,Tier 2a — low-risk breadth,1,medium,mvp,working,ok,field round 6: 1 pass (18 #pragma parameters)
+misc/colorimetry.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/convergence.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/deband.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/edge-detect.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/ega.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/geom-append.slangp,Tier 2a — low-risk breadth,1,high,"mvp, viewport-scale, mipmap",working,ok,field round 6: 1 pass (16 #pragma parameters)
+misc/geom.slangp,Tier 2a — low-risk breadth,2,high,"mvp, viewport-scale, mipmap",working,ok,field round 6: 2 passes — F1 mip chain on pass 0 field-confirmed (5th distinct F1 chain); 2 cache hits (16 #pragma parameters)
+misc/glass.slangp,Tier 2a — low-risk breadth,1,high,"mvp, orig-history, viewport-scale, includes",working,ok,field round 6: 1 pass — OriginalHistory6 deep history field-clean (#include depth 4; 30 #pragma parameters)
+misc/grade-no-LUT.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,field round 6: 1 pass (49 #pragma parameters)
+misc/grade.slangp,Tier 2a — low-risk breadth,1,medium,mvp,working,ok,field round 6: 1 pass (53 #pragma parameters)
+misc/half_res.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,"field round 6: 1 pass, 1 cache hit"
+misc/image-adjustment.slangp,Tier 2a — low-risk breadth,1,medium,mvp,working,ok,field round 6: 1 pass (24 #pragma parameters)
+misc/img_mod.slangp,Tier 2a — low-risk breadth,1,high,"mvp, viewport-scale, includes",working,ok,field round 6: 1 pass (#include depth 4; 37 #pragma parameters)
+misc/natural-vision.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/night-mode.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/ntsc-colors.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/patchy-color.slangp,Tier 2a — low-risk breadth,3,high,"mvp, lut, float-fb",working,ok,field round 6: 3 passes — longest chain this segment; 6 LUTs (27 #pragma parameters)
+misc/pixel-weave-4x2.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,field round 6: 1 pass
+misc/pixel-weave-sync.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,field round 6: 1 pass
+misc/print-resolution.slangp,Tier 2a — low-risk breadth,2,low,"mvp, pass-feedback",working,ok,field round 6: 2 passes — TextGeneratePassFeedback field-confirmed
+misc/relief.slangp,Tier 2a — low-risk breadth,1,medium,"mvp, viewport-scale",working,ok,field round 6: 1 pass
+misc/retro-palettes.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/ss-gamma-ramp.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/test-pattern-append.slangp,Tier 2a — low-risk breadth,1,medium,mvp,working,ok,field round 6: 1 pass (14 #pragma parameters)
+misc/test-pattern-prepend.slangp,Tier 2a — low-risk breadth,1,medium,mvp,working,ok,field round 6: 1 pass (14 #pragma parameters)
+misc/tonemapping.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/white_point.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
+misc/yiq-hue-adjustment.slangp,Tier 2a — low-risk breadth,1,low,mvp,working,ok,field round 6: 1 pass
 edge-smoothing/xbr/other presets/2xBR-lv1-multipass.slangp,Tier 2b — medium-risk cluster reps,4,medium,"mvp, viewport-scale",,,
 handheld/3ds-lcd-grid-v2.slangp,Tier 2b — medium-risk cluster reps,3,medium,"mvp, orig-history, includes",,,
 border/effect-border-iq.slangp,Tier 2b — medium-risk cluster reps,1,medium,"mvp, viewport-scale, lut",,,
