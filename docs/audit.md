@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-15
 **Audit commit:** `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-47 Findings (40 open / 7 closed → [deltas.md](deltas.md)) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST
+40 Findings (all open) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 7 closed → [deltas.md](deltas.md)
 
 ---
 
@@ -28,9 +28,9 @@
 
 ## Executive Summary
 
-**Status update (2026-10-15):** 7 findings are closed — ROB-01, ROB-02, MAINT-02, MAINT-01, MAINT-03, TEST-02, MAINT-06 — resolutions and verification are recorded in [deltas.md](deltas.md). 40 findings remain open (1 High, 15 Medium, 24 Low). TEST-01 is partially addressed: the hostile-input preset harness now runs in CI as `preset_failure_modes`. The narrative below describes the codebase as audited at commit `27548c8`.
+**Status:** 7 findings closed since this audit — resolutions in [deltas.md](deltas.md). The 40 findings below are open.
 
-This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 47 findings break down as 5 High, 18 Medium, and 24 Low across all seven categories.
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 40 open findings break down as 1 High, 15 Medium, and 24 Low across all seven categories.
 
 The most consequential theme is a **failure-contract violation cluster**: the mod's explicit design promise is that a bad preset or a GPU problem "never dies" — the session falls back to the stock renderer — yet several reachable paths throw uncaught exceptions (`std::stoi` on malformed texture names in `preset_runner.cpp`, a 30-byte preset declaring `shaders = 2147483647` triggering a ~250 GB allocation) that terminate the process outright (ROB-01, ROB-02). The second theme is **the mod ships without a safety net**: zero tests reference the ~15K-line GPU pipeline (TEST-01) and no CI workflow executes the existing 60-target gtest suite (TEST-02), while every push rebuilds the full vendored dependency tree from scratch with no caching (MAINT-01). The third theme is **untrusted-input trust boundaries**: preset files downloaded from the internet can reference arbitrary files anywhere on disk for compilation and texture loading (SEC-01), and compiled SPIR-V sidecars bypass all translation-layer guarantees on a magic-number check alone (SEC-03). Finally, the CI/packaging layer has correctness gaps that reach users directly: release builds are produced but never attached to GitHub Releases (MAINT-04), and the shipped zips cannot run Hellfire because `mods/hf.mpq` is not packaged (MAINT-05).
 
@@ -52,11 +52,7 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| ROB-01 | **High** | Robustness | ~~Uncaught `std::stoi` on texture binding names terminates the process mid-frame~~ — **CLOSED** → [deltas.md](deltas.md) |
-| ROB-02 | **High** | Robustness | ~~`shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort~~ — **CLOSED** → [deltas.md](deltas.md) |
-| MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching  ~~CI rebuilds entire vendored dep tree on every push to every branch, no caching~~ — **CLOSED** → [deltas.md](deltas.md) |
 | TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline |
-| TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite  ~~No CI workflow ever runs the existing test suite~~ — **CLOSED** → [deltas.md](deltas.md) |
 | SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs |
 | ROB-03 | Medium | Robustness | Torn cache write permanently poisons a shader cache entry, no recompile fallback |
 | ROB-04 | Medium | Robustness | Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades |
@@ -65,11 +61,8 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 | ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII |
 | ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
 | ROB-09 | Medium | Robustness | Corrupt `diablo.ini` hard-fails startup with no recovery path |
-| MAINT-02 | Medium | Maintainability | ~~10K lines of dead built-in shader/LUT payload still compiled and embedded~~ — **CLOSED** → [deltas.md](deltas.md) |
-| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run  ~~Four broken upstream workflows ship active; cleanup script never run~~ — **CLOSED** → [deltas.md](deltas.md) |
 | MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases |
 | MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire |
-| MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature  ~~vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature~~ — **CLOSED** → [deltas.md](deltas.md) |
 | FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets |
 | FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message |
 | FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log |
@@ -620,11 +613,11 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 
 | Timeline | Findings |
 |----------|----------|
-| **Immediate** (next 1-2 builds) | ~~ROB-01 (stoi crash)~~ ✅, ~~ROB-02 (allocation DoS)~~ ✅, ~~TEST-02 (run ctest in CI)~~ ✅, ~~MAINT-01 (CI caching + trigger filter)~~ ✅, TEST-01 (preset failure-mode harness registered; broader GPU-pipeline coverage still open) |
-| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), ~~MAINT-02 (delete dead shader payload)~~ ✅, ~~MAINT-03 (run cleanup-fork-workflows)~~ ✅, MAINT-04 (release upload step), MAINT-05 (package hf.mpq), ~~MAINT-06 (vcpkg sdl3 feature)~~ ✅, ARCH-01 (window claim protocol), TEST-03 (options tests) |
+| **Immediate** (next 1-2 builds) | TEST-01 (preset failure-mode harness registered; broader GPU-pipeline coverage still open) |
+| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), MAINT-04 (release upload step), MAINT-05 (package hf.mpq), ARCH-01 (window claim protocol), TEST-03 (options tests) |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-04, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-07 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
-Sequencing notes: TEST-01/TEST-02 belong in the immediate window despite being testing items — the ROB-01/ROB-02 fixes are one-line guards whose regressions only stay fixed if *something* runs; adding the preset failure-mode tests alongside the crash fixes is the cheapest possible verification. ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point. MAINT-02 (dead payload removal) should land before any future touch of the shader headers, so the diff doesn't re-review dead code.
+Sequencing notes: ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point.
 
 ---
 

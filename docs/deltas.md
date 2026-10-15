@@ -9,8 +9,8 @@
 This ledger tracks findings that have been **fixed and verified**. Each entry preserves the
 original audit finding (title, severity, location) and records the resolution actually shipped:
 what changed, in which files, and how it was verified. Once an entry appears here it is removed
-from the open-findings detail in `audit.md` (the master table there keeps a CLOSED pointer for
-traceability).
+from `audit.md` entirely — its master table, priority matrix, and counts list only the
+open findings; this ledger is the single record of closures.
 
 | ID | Severity | Category | Title | Closed |
 |----|----------|----------|-------|--------|
