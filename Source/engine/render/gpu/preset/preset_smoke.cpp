@@ -7,10 +7,15 @@
  * to SPIR-V with the in-process glslang frontend. No SDL_GPU device is
  * created, so this runs headless (CI / sandbox friendly).
  *
- * Exit code 0 when every preset compiles (or passes --allow-failures with
- * at least one success). Prints per-preset diagnostics.
+ * Exit code 0 when every preset compiles. Prints per-preset diagnostics.
  *
- * Usage: preset_smoke [--root <dir>] [--limit N] [--quiet]
+ * --expect-fail inverts the contract for a MALFORMED corpus (TEST-01):
+ * exit 0 only when every preset fails cleanly - a non-empty error string
+ * per failure, never a crash - locking the ROB-01/ROB-02 failure contract
+ * in mechanically.
+ *
+ * Usage: preset_smoke --root <dir> [--limit N] [--quiet] [--expect-fail]
+ *                    [--dump <dir>] [--disasm]
  */
 
 #include <cstdint>
@@ -38,6 +43,7 @@ int main(int argc, char **argv)
 	bool disasm = false;
 	int limit = -1;
 	bool quiet = false;
+	bool expectFail = false;
 	for (int i = 1; i < argc; ++i) {
 		const std::string arg = argv[i];
 		if (arg == "--root" && i + 1 < argc) {
@@ -46,6 +52,8 @@ int main(int argc, char **argv)
 			limit = std::atoi(argv[++i]);
 		} else if (arg == "--quiet") {
 			quiet = true;
+		} else if (arg == "--expect-fail") {
+			expectFail = true;
 		} else if (arg == "--dump" && i + 1 < argc) {
 			dumpDir = argv[++i];
 		} else if (arg == "--disasm") {
@@ -65,6 +73,7 @@ int main(int argc, char **argv)
 	int okCount = 0;
 	int failCount = 0;
 	int passTotal = 0;
+	int emptyErrorCount = 0;
 	std::string firstFailure;
 	std::string firstFailurePreset;
 
@@ -77,6 +86,8 @@ int main(int argc, char **argv)
 		std::string error;
 		if (!preset::ParsePreset(path, preset, error)) {
 			++failCount;
+			if (error.empty())
+				++emptyErrorCount;
 			if (firstFailure.empty()) {
 				firstFailure = "parse: " + error;
 				firstFailurePreset = entry.displayName;
@@ -181,6 +192,8 @@ int main(int argc, char **argv)
 				std::printf("ok   %s (%zu passes)\n", entry.displayName.c_str(), preset.passes.size());
 		} else {
 			++failCount;
+			if (presetError.empty())
+				++emptyErrorCount;
 			if (firstFailure.empty()) {
 				firstFailure = presetError;
 				firstFailurePreset = entry.displayName;
@@ -193,5 +206,14 @@ int main(int argc, char **argv)
 	std::printf("\nresult: %d ok, %d failed, %d passes compiled\n", okCount, failCount, passTotal);
 	if (!firstFailure.empty())
 		std::printf("first failure (%s): %s\n", firstFailurePreset.c_str(), firstFailure.c_str());
+	if (expectFail) {
+		// TEST-01 malformed corpus: every scanned preset must fail
+		// cleanly with a non-empty error string. Failure-by-crash or a
+		// failure without an explanation both fail this run.
+		const bool allFailedCleanly = okCount == 0 && failCount == runLimit && emptyErrorCount == 0;
+		std::printf("expect-fail: %s (%d of %d failed with a non-empty error string)\n",
+		    allFailedCleanly ? "met" : "NOT met", failCount - emptyErrorCount, runLimit);
+		return allFailedCleanly ? 0 : 1;
+	}
 	return failCount == 0 ? 0 : 1;
 }

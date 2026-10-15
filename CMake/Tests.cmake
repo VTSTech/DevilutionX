@@ -292,6 +292,25 @@ if(USE_GPU_SCALER)
   target_include_directories(preset_failure_modes_test PRIVATE
     "${PROJECT_SOURCE_DIR}/Source")
   add_test(NAME preset_failure_modes COMMAND preset_failure_modes_test)
+
+  # TEST-01: register the full-pipeline preset_smoke harness against the
+  # committed micro-corpus (test/fixtures/preset_smoke). The corpus is
+  # copied into <build>/shaders/.preset-smoke because the SEC-01 sandbox
+  # (IsPathInsideShaderRoot) only resolves shader references inside the
+  # shader root (<SDL_GetBasePath()>/shaders); the dot prefix keeps the
+  # corpus out of the in-game preset browser (ListPresetDir hides it).
+  if(TARGET preset_smoke)
+    add_custom_target(preset_smoke_corpus
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/test/fixtures/preset_smoke"
+        "${CMAKE_BINARY_DIR}/shaders/.preset-smoke"
+      VERBATIM)
+    add_dependencies(preset_smoke preset_smoke_corpus)
+    add_test(NAME preset_smoke_corpus
+      COMMAND preset_smoke --root "${CMAKE_BINARY_DIR}/shaders/.preset-smoke/good" --quiet)
+    add_test(NAME preset_smoke_malformed
+      COMMAND preset_smoke --root "${CMAKE_BINARY_DIR}/shaders/.preset-smoke/malformed" --expect-fail)
+  endif()
 endif()
 
 # The fork's settings browser (options.cpp, compiled with USE_GPU_SCALER)

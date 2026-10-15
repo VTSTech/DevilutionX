@@ -28,9 +28,9 @@
 
 ## Executive Summary
 
-**Status:** 19 findings closed since this audit — resolutions in [deltas.md](deltas.md). The 28 findings below are open.
+**Status:** 20 findings closed since this audit — resolutions in [deltas.md](deltas.md). The 27 findings below are open.
 
-This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 28 open findings break down as 1 High, 5 Medium, and 22 Low across all seven categories.
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 27 open findings break down as 0 High, 5 Medium, and 22 Low across all seven categories.
 
 The most consequential theme is a **failure-contract violation cluster**: the mod's explicit design promise is that a bad preset or a GPU problem "never dies" — the session falls back to the stock renderer — yet several reachable paths throw uncaught exceptions (`std::stoi` on malformed texture names in `preset_runner.cpp`, a 30-byte preset declaring `shaders = 2147483647` triggering a ~250 GB allocation) that terminate the process outright (ROB-01, ROB-02). The second theme is **the mod ships without a safety net**: zero tests reference the ~15K-line GPU pipeline (TEST-01) and no CI workflow executes the existing 60-target gtest suite (TEST-02), while every push rebuilds the full vendored dependency tree from scratch with no caching (MAINT-01). The third theme is **untrusted-input trust boundaries**: preset files downloaded from the internet can reference arbitrary files anywhere on disk for compilation and texture loading (SEC-01), and compiled SPIR-V sidecars bypass all translation-layer guarantees on a magic-number check alone (SEC-03). Finally, the CI/packaging layer has correctness gaps that reach users directly: release builds are produced but never attached to GitHub Releases (MAINT-04), and the shipped zips cannot run Hellfire because `mods/hf.mpq` is not packaged (MAINT-05).
 
@@ -52,9 +52,6 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline |
-
-
 | ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII |
 | ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
 
@@ -419,18 +416,6 @@ The fork's identity lives in two places that couple it to upstream behavior: `Se
 
 ### Testing
 
-#### TEST-01: Zero test coverage for the fork's ~15K-line GPU pipeline
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Testing |
-| **File(s)** | `test/` (whole tree — zero references to gpu/shader), `Source/engine/render/gpu/` (all files), `Source/CMakeLists.txt` (lines 1068-1072) |
-
-`grep -ri 'gpu\|shader' test/` returns nothing: the mod's parser, translator, compiler bridge, and runner — code with 21 of this audit's findings against it — has no automated tests. The codebase is unusually test-friendly (60 gtest targets, headless mode, golden-image text tests), and the mod even ships a purpose-built offline harness, `preset_smoke.cpp` (parse → translate → glslang-compile with cache disabled, exit 0 iff all presets compile), but it is built `EXCLUDE_FROM_ALL` and never registered with ctest, so nothing runs it. Highest-value first steps, in order of effort: (1) register `preset_smoke` with ctest against a committed micro-corpus of presets (5-10 files covering multi-pass, feedback, history, LUTs, malformed cases asserting *failure with error string, not crash* — directly regressing ROB-01/ROB-02); (2) unit-test `ParsePreset` on the same corpus (pure function, no GPU); (3) unit-test `TranslateSlang` stage-splitting and UBO rewriting on inline strings; (4) gate the runner behind a headless software Vulkan (e.g. lavapipe) in CI when feasible.
-
-**Impact:** The failure-contract violations and translator regressions this audit documents become mechanically un-reintroducible.
-
 #### TEST-04: Baked-shader drift: regenerated SPIR-V is never diffed against the committed header
 
 | Property | Value |
@@ -463,7 +448,7 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 
 | Timeline | Findings |
 |----------|----------|
-| **Immediate** (next 1-2 builds) | TEST-01 (preset failure-mode harness registered; broader GPU-pipeline coverage still open) |
+| **Immediate** (next 1-2 builds) | *(none — the last High, TEST-01, is closed; the preset pipeline now has a registered full-pipeline harness. See deltas.md)* |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-08 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
 Sequencing notes: ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point.

@@ -33,6 +33,7 @@ open findings; this ledger is the single record of closures.
 | MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases | 2026-10-16 |
 | ARCH-01 | Medium | Architecture | Window-ownership hand-off protocol is spread across three files with pointer-only history | 2026-10-16 |
 | TEST-03 | Medium | Testing | Options layer (ini round-trip, shader-filter self-heal) untested | 2026-10-16 |
+| TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -616,3 +617,64 @@ restart, and the value mapping is path-authoritative in all covered cases.
 **Verification.** Built and run standalone (gtest, vendored 1.15.2 headers + system SDL3):
 **7/7 tests pass** headless; all touched TUs compile clean (gnu++23, `-Wall -Wextra`);
 clang-format 18.1.8 clean. CI runs the target through ctest under BUILD_TESTING=ON.
+
+---
+
+## TEST-01 — CLOSED: Zero test coverage for the fork's ~15K-line GPU pipeline
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Testing |
+| **Original location** | `test/` (whole tree — zero references to gpu/shader), `Source/engine/render/gpu/` (all files), `Source/CMakeLists.txt` (`preset_smoke` target) |
+
+**Original finding.** `grep -ri 'gpu\|shader' test/` returned nothing: the mod's parser,
+translator, compiler bridge, and runner — code with 21 of the audit's findings against it —
+had no automated tests. The codebase was otherwise test-friendly (60 gtest targets, headless
+mode, golden-image text tests), and the mod even shipped a purpose-built offline harness,
+`preset_smoke.cpp` (parse → translate → glslang-compile with cache disabled, exit 0 iff all
+presets compile), but it was built `EXCLUDE_FROM_ALL` and never registered with ctest, so
+nothing ever ran it.
+
+**Resolution.** The audit's step (1): register the full-pipeline harness with ctest against
+a committed micro-corpus.
+
+- `preset_smoke` no longer builds `EXCLUDE_FROM_ALL` (`Source/CMakeLists.txt`): it is part
+  of the normal test build and registered with ctest in `CMake/Tests.cmake`.
+- Committed micro-corpus under `test/fixtures/preset_smoke/`:
+  - `good/` — five presets that must parse, translate AND compile: a single pass with a
+    `#pragma parameter` consumed from the fragment UBO, a 3-pass chain with alias feedback
+    (`alias1 = blur` sampled from a later pass), explicit `PassOutput0` feedback,
+    `OriginalHistory1/2` ring taps with `histories = 4`, and a LUT-texture preset
+    (`textures = "lut"` + a committed 2x2 PNG). All shaders follow the canonical style of
+    `tools/audit/field-presets/test/shaders` (explicit `layout(location = 0) out vec4
+    FragColor`, parameters inside the stage UBO per SLANG_SPEC 4.6 — standalone uniforms
+    are not rewritten and would fail glslang's Vulkan rules).
+  - `malformed/` — five presets that must fail CLEANLY with a non-empty error string,
+    never a crash: absurd declared count (`shaders = 2147483647`, ROB-02 class), absurd pass
+    index (`shader2147483647 = ...`, ROB-02 class), an empty file, a missing shader file
+    (fails at the translate stage), and a GLSL syntax error (fails at the glslang compile
+    stage) — one failure per pipeline stage.
+- The harness gained an `--expect-fail` mode: exit 0 only when every scanned preset fails
+  with a non-empty error string (failure-by-crash or failure-without-explanation fails the
+  run, and a clean preset under `--expect-fail` fails it too — both directions verified).
+  The stale usage string (referencing a nonexistent `--allow-failures`, omitting
+  `--dump`/`--disasm`) was corrected while touching the header.
+- Corpus placement: `ResolvePresetFilePath` resolves references only inside the SEC-01
+  shader root (`<SDL_GetBasePath()>/shaders`), so ctest copies the corpus to
+  `<build>/shaders/.preset-smoke/` at build time (`preset_smoke_corpus` custom target); the
+  dot prefix keeps the corpus out of the in-game preset browser (`ListPresetDir` hides
+  hidden folders). No engine code was touched for this — the sandbox stays exactly as
+  shipped.
+
+**Verification.** Standalone local build of the harness + the four preset TUs + the real
+glslang 16.6.0 (the exact version vendored by `3rdParty/glslang`; SDL stubbed, shader root
+pointed at the corpus). Good corpus: **5/5 presets, 8/8 passes compiled, exit 0**. Malformed
+corpus under `--expect-fail`: **met, 5/5 failed with named error strings** ("preset has no
+shader passes", "exceeds the limit of 32", "cannot open shader file", glslang syntax error),
+**zero crashes, exit 0**; the same good corpus under `--expect-fail` correctly exits 1.
+`preset_smoke_corpus` and `preset_smoke_malformed` run under the fork's CI ctest invocation
+whenever `USE_GPU_SCALER` and `BUILD_TESTING` are on. Broader coverage (ParsePreset /
+TranslateSlang unit corpora over real packs, headless software-Vulkan runner tests) remains
+backlog scope per the audit; `preset_failure_modes` (37 checks) continues to cover the
+hostile-input layer.

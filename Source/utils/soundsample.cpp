@@ -492,7 +492,11 @@ int SoundSample::SetChunk(ArraySharedPtr<std::uint8_t> fileData, std::size_t dwB
 #endif // DEVILUTIONX_WAV_FALLBACK
 		// Include a hex dump of the first bytes: an "unknown format" error
 		// usually means the asset bytes are not what we think they are.
-		const size_t headLen = std::min<std::size_t>(file_data_size_, 24);
+		// 56 bytes covers the canonical 44-byte RIFF/WAVE/fmt head plus the
+		// data-chunk header at offset 36: zero-length or past-EOF data sizes
+		// there are exactly what SDL3_mixer rejects on (field evidence:
+		// gendata cutscene sting, 18355 bytes, first 24 bytes canonical).
+		const size_t headLen = std::min<std::size_t>(file_data_size_, 56);
 		std::string head;
 		char byte[4];
 		for (size_t i = 0; i < headLen; ++i) {

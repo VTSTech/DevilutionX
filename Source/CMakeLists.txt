@@ -1066,8 +1066,10 @@ if(USE_GPU_SCALER)
     add_dependencies(libdevilutionx gpu_scaler_spv)
   endif()
   # Offline validation harness for the runtime preset loader (headless:
-  # parse + translate + glslang compile, no GPU device).
-  add_executable(preset_smoke EXCLUDE_FROM_ALL engine/render/gpu/preset/preset_smoke.cpp)
+  # parse + translate + glslang compile, no GPU device). TEST-01: built
+  # with the normal suite (no EXCLUDE_FROM_ALL) and registered with ctest
+  # against the committed micro-corpus in CMake/Tests.cmake.
+  add_executable(preset_smoke engine/render/gpu/preset/preset_smoke.cpp)
   target_compile_definitions(preset_smoke PRIVATE USE_GPU_SCALER)
   target_link_dependencies(preset_smoke PRIVATE libdevilutionx)
   # Runtime libretro slang presets: in-process glslang + SPIRV-Cross.
