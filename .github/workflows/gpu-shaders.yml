@@ -21,16 +21,21 @@
 #     the loader exactly as it would run on a Debian 12 box.
 # Do NOT remove the CMAKE_C_FLAGS / CMAKE_EXE_LINKER_FLAGS lines below.
 #
-# SIZE LEVER (both jobs): -ffunction-sections -fdata-sections at compile time
-# + -Wl,--gc-sections at link time. The biggest binary cost vs upstream is the
-# statically-linked new stack (SDL3+mixer/image, glslang+SPIRV runtime shader
-# compiler); per-function/data sections let the linker drop code nothing
-# references instead of linking whole monolithic objects. The vendored deps
-# inherit the global CMAKE_*_FLAGS, so they get sectioned too - that is what
-# makes the lever bite. Pure code-layout change: no ABI/behavioral difference;
-# the gates below (Windows DLL gate, Linux GLIBC/GLIBCXX gate) still verify
-# the portability contract, and both jobs smoke-test the binary as before.
-# Rollback: delete the three flag fragments from each Configure step.
+# SIZE LEVER (gc-sections) FIELD RESULT 2026-10-15: LOST on Windows.
+#   0a39b81 (pre-lever)   devilutionx.exe 15,051,264 bytes
+#   4b3071f (with flags)  devilutionx.exe 16,377,856 bytes  (+1.27 MB)
+# PE/COFF mechanism: -ffunction-sections gives every function/data its own
+# section; PE stores section NAMES in the COFF string table, and tens of
+# thousands of long C++ mangled names (glslang worst) cost MBs that `strip`
+# CANNOT remove (section headers reference them). Meanwhile PE --gc-sections
+# is far weaker than ELF (no identical-code folding; .refptr indirections
+# blunt the reachability walk), so savings never covered the overhead.
+# => Windows job: flags REVERTED below.
+# => Linux job: flags KEPT pending measurement - ELF GC is strong, so the
+#    same lever may still win there. Judge from the linux-x64 artifact size
+#    vs the pre-lever run; if it did not shrink, delete the 3 flag lines.
+# Both Package steps now print exe size + section table every run, so the
+# next size lever is evaluated from the CI log itself.
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -144,6 +149,10 @@ jobs:
 
     - name: Package
       run: |
+        # size telemetry (permanent): exe bytes + per-section breakdown land in
+        # the CI log on every build, so size levers are judged with data.
+        ls -l build/devilutionx
+        size -A build/devilutionx | head -30
         mkdir -p pkg
         cp build/devilutionx pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
@@ -213,15 +222,20 @@ jobs:
         -DDEVILUTIONX_SYSTEM_BZIP2=OFF
         -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
         -DBUILD_TESTING=OFF
-        -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -ffunction-sections -fdata-sections'
-        -DCMAKE_CXX_FLAGS='-ffunction-sections -fdata-sections'
-        -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++ -Wl,--gc-sections'
+        # Windows: size lever REVERTED (measured +1.27 MB, see header note).
+        # Keep these two lines exactly as the verified zero-DLL build had them.
+        -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
+        -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
 
     - name: Build
       run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
 
     - name: Package
       run: |
+        # size telemetry (permanent): exe bytes + per-section breakdown land in
+        # the CI log on every build, so size levers are judged with data.
+        ls -l build/devilutionx.exe
+        x86_64-w64-mingw32-size -A build/devilutionx.exe | head -30
         mkdir -p pkg
         cp build/devilutionx.exe pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
