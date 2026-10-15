@@ -15,11 +15,11 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | round-8 first-frame abort fix (post-acquire `SDL_CancelGPUCommandBuffer` → submit-skip ×6 sites, preset-run failure → `LogFailHard` session revert per the failure contract, failure trail with `SDL_GetError()` on every silent `Run()`/`EnsureTargets()` path) on top of round-7 ds-hybrid crash investigation (sample_mask fix ×2, `DEVILUTIONX_GPU_DEBUG=1` instrument, `preset_smoke` build fix, runner_repro harness findings) — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
+| repo tip | round-9 integer-scaling downscale black-screen fix (fit floor guard ×2 sites, silent dest-skip → logged + counted heartbeat trail, digest wiring) on top of round-8 first-frame abort fix (post-acquire `SDL_CancelGPUCommandBuffer` → submit-skip ×6 sites, preset-run failure → `LogFailHard` session revert per the failure contract, failure trail with `SDL_GetError()` on every silent `Run()`/`EnsureTargets()` path) on top of round-7 ds-hybrid crash investigation (sample_mask fix ×2, `DEVILUTIONX_GPU_DEBUG=1` instrument, `preset_smoke` build fix, runner_repro harness findings) — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
 | release tag | `gpu-shaders-v10` @ `46c0b1f72` — tip-most release line (tags mark releases, not rounds); bootstrap corrected the stale v9 row here (round 7) |
 | field evidence | Phase-1: 101 unique presets working, 103 loads, 0 failures across 5 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38. Proven live: F1 mipmaps ×5 chains, PassFeedback + TextGeneratePassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep history rings OriginalHistory5/6 (`anti-flicker`, `glass`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8); Linux CI configure dash fix field-confirmed round 6 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
-| next queue | ① ds-hybrid-sabr/ds-hybrid-scalefx RE-TEST on a round-8 build with `DEVILUTIONX_GPU_DEBUG=1` (§8 round 8 — round-7 re-test confirmed the sample_mask fix live on the field GPU and delivered the cancel-after-acquire signature; fixed engine-side round 8; expected outcomes: renders, or `(Unavailable)` with `ERROR: preset run failed | SDL_GetError: <reason>`) ② koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ③ low-risk remainder: handheld rest, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ④ then medium-risk clusters (§8) |
+| next queue | ① ds-hybrid-sabr/ds-hybrid-scalefx RE-TEST on a round-9 build with `DEVILUTIONX_GPU_DEBUG=1` AND Integer Scaling ON (§8 round 9 — round-8 re-test: no crash but BLACK screen with a clean log; root-caused round 9 to the Integer Scaling downscale floor-to-zero in the present fit, engine-side, chains content-verified good; expected outcome: renders fractional 1/2 and 1/3 fits into the window; any residual failure now self-names via the present-skip trail in the log — paste it.) ② koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ③ low-risk remainder: handheld rest, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ④ then medium-risk clusters (§8) |
 | backburner | SLANG_SPEC §7 gap-list tail; 26-i Linux gcc/clang build matrix; browse-highlight cosmetic |
 
 **Conventions (adopted field round 4, 2026-10-15):**
@@ -608,6 +608,62 @@ Fixes (round 8):
   `(Unavailable)` with `ERROR: preset run failed | SDL_GetError: <reason>` in the
   log — paste either. If the process still dies silently, capture the Windows
   Event Viewer faulting module.
+
+**Field round 9 (2026-10-15, ds-hybrid black screen — Integer Scaling downscale floor):**
+field evidence: round-8 build `93c6d5227` (round-8 fix live: no crash, no
+cancel assert) — `ds-hybrid-scalefx` loads clean (7 passes, 7 cache
+hits, pipelines ok) but the screen stays BLACK; game fully responsive,
+preset switching works blind; the digest reports 0 errors / 0 fallback across
+14 presets — the log is healthy while the screen is not.
+
+Diagnosis (sandbox, round 9):
+
+- **New harness capability — content readback:** `runner_repro` now
+  uploads a deterministic test pattern into the chain input and READS BACK the
+  chain output (`SDL_DownloadFromGPUTexture`) with luma statistics. The
+  round-7/8 "clean on lavapipe" only proved the absence of API errors —
+  a black-content chain would have passed that regression. Result: BOTH
+  ds-hybrid chains render real content (scalefx avgLuma 150/255, 100%
+  non-black pixels, out 2880x2160; sabr 143/255, out 1920x1440; fxaa control
+  117/255). The defect is ABOVE the runner, in the present path.
+- **The one remaining silent skip:** after round 8 the present path has
+  exactly one silent abort left — `destWidth <= 0` after the
+  chain-output fit. That fit is `outFit = min(swapW/outW, swapH/outH)` and
+  Integer Scaling floored it UNCONDITIONALLY. ds-hybrid-scalefx final =
+  5760x3240 into 1920x1080 → floor(1/3) = 0 → dest 0
+  → skip → the untouched swapchain image presents every
+  frame → black, zero log lines. ds-hybrid-sabr is the identical
+  class (3840x2160 → floor(1/2) = 0). Every other field preset ends
+  at or below the window (floor ≥ 1) — matching the field
+  report exactly (only the two ds-hybrid finals exceed the window).
+- Integer Scaling defaults OFF; the field log pattern (re-loads/reinits
+  between sessions) is consistent with it being enabled during handheld
+  preset testing. With it ON, the same floor-to-zero would black-screen ANY
+  chain whose final pass output exceeds the window (the crt-1tap-bloom class
+  included — next victims).
+
+Fixes (round 9):
+
+- **A — fit guard (×2 sites):** the game-frame fit and the
+  chain-output fit apply the integer floor ONLY when the floored scale is
+  ≥ 1 (integer scaling is an UPSCALE constraint); downscale keeps the
+  fractional fit. Behavior for every pre-round-9 working geometry is
+  byte-identical (verification table 9/9: `scripts/verify_round9_fit.py`,
+  sandbox-only).
+- **B — no more silent dest skip:** the `destWidth <= 0` path now
+  logs full dimensions (`present skip: destination rect WxH (present WxH,
+  swapchain WxH, scale S, integer on/off)`, throttled to 5 s) and feeds a
+  `dest-skipped` counter into the heartbeat line; the digest regex accepts
+  both heartbeat formats and treats `present skip:` lines as exceptions
+  (field-log exit code 2 when present).
+- **Regression:** content-readback harness green on all three probes
+  (scalefx/sabr/fxaa); `gpu_scaler.cpp` syntax gate clean; digest self-test
+  on synthetic old-format + new-format logs.
+
+Re-test plan (round 9): round-9 build, Integer Scaling ON, re-select both
+presets — expected: RENDERED (fractional 1/2 and 1/3 fits fill the
+window). Any residual failure now self-names via the present-skip trail with
+exact dimensions — paste the log.
 
 ### D3D12 — fully excised
 

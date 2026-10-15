@@ -46,7 +46,12 @@ RE_CACHE = re.compile(r"GPU scaler preset: cache hit for (\S+)")
 RE_MIPMAP = re.compile(
     r"mipmapped inputs \(F1\): pass outputs with mip chains \[([0-9, ]+)\]")
 RE_HEART = re.compile(
-    r"\] heartbeat: (\d+) frames \((\d+) skipped, (\d+) total, filter=(\d+)\)")
+    r"\] heartbeat: (\d+) frames \((\d+) skipped(?:, (\d+) dest-skipped)?,"
+    r" (\d+) total, filter=(\d+)\)")
+# Round 9: the zero-destination present skip used to be SILENT (field: black
+# screen while the digest reported zero errors). It now logs "present skip:"
+# lines - treat each as an exception so the digest surfaces it.
+RE_DEST_SKIP = re.compile(r"\] present skip: ")
 RE_REINIT = re.compile(r"\] Reinit: filter=(\d+)")
 RE_FALLBACK = re.compile(r"custom preset failed to load; Shader Filter is off")
 RE_SHUTDOWN = re.compile(r"\] Shutdown")
@@ -173,7 +178,10 @@ class Digest:
                     continue
                 m = RE_HEART.search(line)
                 if m:
-                    self.heartbeats.append((int(m.group(1)), int(m.group(2))))
+                    # (frames, skipped, dest-skipped) - old logs have no
+                    # dest-skipped field; store 0 for them.
+                    self.heartbeats.append(
+                        (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)))
                     continue
                 if RE_REINIT.search(line):
                     self.reinits += 1
@@ -194,7 +202,8 @@ class Digest:
                     if m.group(1) not in self.builds:
                         self.builds.append(m.group(1))
                     continue
-                if RE_ERRISH.search(line) and "] ok:" not in line:
+                if (RE_ERRISH.search(line) or RE_DEST_SKIP.search(line)) \
+                        and "] ok:" not in line:
                     self.exceptions.append((fname, lineno, line.strip()))
             self.close_window(win, fname, -1)
         self.sessions += self.shutdowns
@@ -213,6 +222,7 @@ class Digest:
         lo = min((h[0] for h in hb), default=0)
         hi = max((h[0] for h in hb), default=0)
         sk = max((h[1] for h in hb), default=0)
+        dsk = max((h[2] for h in hb), default=0)
         nwork = len(self.working())
         bad = len(self.order) - nwork
         out = []
@@ -227,8 +237,8 @@ class Digest:
                                            if self.agg[n]["result"] == "fallback"),
                       len([e for e in self.exceptions if e[1] != -1])))
         out.append("cache hits: %d | reinits: %d | heartbeats: %d "
-                   "(frames %d-%d/beat, max skipped %d) | PNG textures: %s"
-                   % (self.cache_hits, self.reinits, len(hb), lo, hi, sk,
+                   "(frames %d-%d/beat, max skipped %d, max dest-skipped %d) | PNG textures: %s"
+                   % (self.cache_hits, self.reinits, len(hb), lo, hi, sk, dsk,
                       sorted(self.pngs) if self.pngs else "none"))
         out.append("results: working %d | not-working %d (%s)"
                    % (nwork, bad,

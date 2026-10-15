@@ -860,10 +860,13 @@ void PresentFrame(const SDL_Surface &frame)
 
 	// Heartbeat: lets a remote log show whether the present loop is alive
 	// (UI responsive) or stalled (main thread stuck elsewhere), and counts
-	// frames skipped due to an unavailable swapchain image.
+	// frames skipped due to an unavailable swapchain image plus frames
+	// skipped by the zero-destination guard (round 9: that skip class was
+	// SILENT - the field log looked healthy while the screen stayed black).
 	static Uint32 sLastHeartbeat = 0;
 	static unsigned long sHeartbeatFrames = 0;
 	static unsigned long sSkippedFrames = 0;
+	static unsigned long sDestSkipFrames = 0;
 	static unsigned long sTotalFrames = 0;
 	++sHeartbeatFrames;
 	++sTotalFrames;
@@ -873,11 +876,12 @@ void PresentFrame(const SDL_Surface &frame)
 			sLastHeartbeat = now;
 		if (now - sLastHeartbeat >= 5000) {
 			LogFileLine(StrCat("heartbeat: ", sHeartbeatFrames, " frames (", sSkippedFrames,
-			    " skipped, ", sTotalFrames, " total, filter=",
-			    static_cast<int>(gFilter), ")"));
+			    " skipped, ", sDestSkipFrames, " dest-skipped, ", sTotalFrames,
+			    " total, filter=", static_cast<int>(gFilter), ")"));
 			sLastHeartbeat = now;
 			sHeartbeatFrames = 0;
 			sSkippedFrames = 0;
+			sDestSkipFrames = 0;
 		}
 	}
 
@@ -940,8 +944,14 @@ void PresentFrame(const SDL_Surface &frame)
 	// Fit the game frame into the window, honoring the Integer Scaling option.
 	float fitScale = std::min(static_cast<float>(swapchainWidth) / gameWidth,
 	    static_cast<float>(swapchainHeight) / gameHeight);
-	if (*GetOptions().Graphics.integerScaling)
-		fitScale = std::floor(fitScale);
+	if (*GetOptions().Graphics.integerScaling) {
+		const float floored = std::floor(fitScale);
+		// Round 9: integer scaling is an UPSCALE constraint. Flooring a
+		// DOWNSCALE ratio (< 1) collapses the scale to zero and silently
+		// blacks out every frame; keep the fractional fit instead.
+		if (floored >= 1.0F)
+			fitScale = floored;
+	}
 
 	float destScale;
 	if (isCustom) {
@@ -1040,8 +1050,20 @@ void PresentFrame(const SDL_Surface &frame)
 		// Fit the chain output into the window, honoring Integer Scaling.
 		float outFit = std::min(static_cast<float>(swapchainWidth) / static_cast<float>(outWidth),
 		    static_cast<float>(swapchainHeight) / static_cast<float>(outHeight));
-		if (*GetOptions().Graphics.integerScaling)
-			outFit = std::floor(outFit);
+		if (*GetOptions().Graphics.integerScaling) {
+			// Round 9 field fix (ds-hybrid-scalefx black screen): chains
+			// whose FINAL pass renders LARGER than the window (viewport
+			// scale 2x/3x finals: ds-hybrid-sabr 3840x2160, scalefx
+			// 5760x3240 into 1920x1080) had their fit floored from 1/2
+			// or 1/3 to ZERO, hitting the destWidth <= 0 skip below
+			// every frame - black screen, responsive game, zero log
+			// lines. The chain content itself is verified good (round-9
+			// sandbox readback: avgLuma 150/255, 100% non-black on
+			// lavapipe). Keep the fractional fit for downscales.
+			const float floored = std::floor(outFit);
+			if (floored >= 1.0F)
+				outFit = floored;
+		}
 		destScale = outFit;
 		presentTex = outTex;
 		presentWidth = outWidth;
@@ -1061,6 +1083,21 @@ void PresentFrame(const SDL_Surface &frame)
 		destHeight = static_cast<int>(swapchainHeight);
 	if (destWidth <= 0 || destHeight <= 0) {
 		// Window smaller than the scaled image can occupy; skip.
+		// Round 9: this skip used to be SILENT and it masked the integer
+		// scaling floor-to-zero above (field: black screen while the log
+		// reported zero errors). Count it for the heartbeat and log the
+		// full dimensions the first time each episode occurs, so the next
+		// silent-black class names itself in the field log.
+		++sDestSkipFrames;
+		static Uint32 sLastDestSkipLog = 0;
+		const Uint32 nowTickDest = SDL_GetTicks();
+		if (sLastDestSkipLog == 0 || nowTickDest - sLastDestSkipLog >= 5000) {
+			LogFileLine(StrCat("present skip: destination rect ", destWidth, "x", destHeight,
+			    " (present ", presentWidth, "x", presentHeight, ", swapchain ",
+			    swapchainWidth, "x", swapchainHeight, ", scale ", std::to_string(destScale),
+			    ", integer ", *GetOptions().Graphics.integerScaling ? "on" : "off", ")"));
+			sLastDestSkipLog = nowTickDest;
+		}
 		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
