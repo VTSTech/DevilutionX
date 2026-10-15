@@ -29,6 +29,7 @@ set(tests
   math_test
   missiles_test
   multi_logging_test
+  options_test
   pack_test
   player_test
   quests_test
@@ -173,6 +174,21 @@ target_link_dependencies(format_int_test PRIVATE libdevilutionx_format_int langu
 target_link_dependencies(ini_test PRIVATE libdevilutionx_ini app_fatal_for_testing)
 target_link_dependencies(mod_identity_test PRIVATE libdevilutionx_mod_identity app_fatal_for_testing)
 target_include_directories(mod_identity_test PRIVATE "${PROJECT_SOURCE_DIR}/3rdParty/PicoSHA2")
+# TEST-03: the fork's shader-filter options layer (stale-value self-heal,
+# custom-index mapping, ini round-trip) and the ROB-09 corrupt-ini recovery,
+# headless. The options machinery links standalone via libdevilutionx_options;
+# SDL is needed only for SDL_SetBasePath/SDL_Init (no GPU, no window).
+target_link_dependencies(options_test
+  PRIVATE
+  DevilutionX::SDL
+  libdevilutionx_options
+  libdevilutionx_paths
+  libdevilutionx_assets
+  tl
+  unordered_dense::unordered_dense
+  app_fatal_for_testing
+  language_for_testing
+)
 target_link_dependencies(light_render_benchmark PRIVATE libdevilutionx_light_render DevilutionX::SDL libdevilutionx_surface libdevilutionx_paths app_fatal_for_testing)
 target_link_dependencies(palette_blending_test PRIVATE libdevilutionx_palette_blending DevilutionX::SDL libdevilutionx_strings GTest::gmock app_fatal_for_testing)
 target_link_dependencies(palette_blending_benchmark
@@ -284,7 +300,7 @@ endif()
 # libdevilutionx_so, but these standalone tests / benchmarks link
 # libdevilutionx_options without the full engine - give them the two TUs
 # directly so the suite links under BUILD_TESTING=ON again.
-foreach(_standalone_with_options data_file_test text_render_integration_test clx_render_benchmark dun_render_benchmark)
+foreach(_standalone_with_options data_file_test text_render_integration_test clx_render_benchmark dun_render_benchmark options_test)
   if(TARGET ${_standalone_with_options})
     target_sources(${_standalone_with_options} PRIVATE
       Source/engine/render/gpu/preset/preset_parser.cpp

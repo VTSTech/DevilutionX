@@ -62,6 +62,24 @@ void DeriveViewportSize(Uint32 swapchainWidth, Uint32 swapchainHeight, int gameW
 		    std::floor(static_cast<float>(swapchainHeight) * gameAspect + 0.5F)));
 }
 
+/** @brief ROB-05: clamps one resolved pass-target dimension to [1, 16384].
+ *
+ * Pass scale factors are unclamped preset floats (scale0 = 1e30 parses fine)
+ * and the float-to-Uint32 cast of an out-of-range value is undefined behavior
+ * that in practice yields garbage FBO sizes. 16384 sits below every real
+ * device maximum (Vulkan guarantees only 4096, desktop GPUs report 16384+)
+ * while remaining generous for legitimate libretro chains. NaN falls to 1
+ * (`!(value >= 1.0F)` is true for NaN). */
+float ClampPassTargetDim(float value)
+{
+	constexpr float kMaxPassTargetDim = 16384.0F;
+	if (!(value >= 1.0F))
+		return 1.0F;
+	if (value > kMaxPassTargetDim)
+		return kMaxPassTargetDim;
+	return value;
+}
+
 /** @brief Context for a failed IMG_Load: resolved path, file size, and
  *         an explicit hint when the file is a git-lfs pointer instead of
  *         image data (shader packs host their LUT PNGs in git-lfs, so
@@ -339,7 +357,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		// landed (ae938cfb1), so the spec-4.2 override silently did nothing.
 		def.pragmaFormat = pass->translation.pragmaFormat;
 		PassSpirv spirv;
-		if (!CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error)) {
+		preset::SpirvSource spirvSource = preset::SpirvSource::Compiled;
+		if (!preset::CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error, &spirvSource)) {
 			error = StrCat("compiling '", def.shaderPath, "' (pass ", i, "): ", error);
 			return false;
 		}
@@ -383,10 +402,43 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			return shader;
 		};
 		pass->vertexShader = createShader(/*vertex=*/true);
-		if (pass->vertexShader == nullptr)
-			return false;
-		pass->fragmentShader = createShader(/*vertex=*/false);
-		if (pass->fragmentShader == nullptr)
+		if (pass->vertexShader != nullptr)
+			pass->fragmentShader = createShader(/*vertex=*/false);
+
+		// ROB-03 self-heal: a cache-hit blob that the GPU driver rejects is
+		// poisoned — the old read path accepted any magic-number-valid file
+		// forever, so a torn/corrupt blob failed SDL_CreateGPUShader on every
+		// session until the user manually wiped shaders/cache/. Treat the
+		// rejection as a cache miss: delete the blobs and recompile from
+		// source once (cache is refreshed by that compile).
+		if ((pass->vertexShader == nullptr || pass->fragmentShader == nullptr)
+		    && spirvSource == preset::SpirvSource::Cache) {
+			LogWarn("GPU scaler preset (pass {}): GPU rejected the cached SPIR-V; deleting the cache blobs and recompiling ({})",
+			    i, error);
+			preset::DeleteCachedSpv(pass->translation, slangPath, ShaderCacheDir());
+			PassSpirv recompiled;
+			std::string recompileError;
+			if (preset::CompilePass(pass->translation, slangPath, ShaderCacheDir(), recompiled, recompileError,
+			        /*outSource=*/nullptr, /*allowCache=*/false)) {
+				spirv = std::move(recompiled);
+				// Retry creation from the freshly compiled bytecode: any
+				// shader built from the poisoned blob must be released first.
+				if (pass->vertexShader != nullptr) {
+					SDL_ReleaseGPUShader(device_, pass->vertexShader);
+					pass->vertexShader = nullptr;
+				}
+				if (pass->fragmentShader != nullptr) {
+					SDL_ReleaseGPUShader(device_, pass->fragmentShader);
+					pass->fragmentShader = nullptr;
+				}
+				pass->vertexShader = createShader(/*vertex=*/true);
+				if (pass->vertexShader != nullptr)
+					pass->fragmentShader = createShader(/*vertex=*/false);
+			} else {
+				error = StrCat("recompiling '", def.shaderPath, "' (pass ", i, ") after cache self-heal: ", recompileError);
+			}
+		}
+		if (pass->vertexShader == nullptr || pass->fragmentShader == nullptr)
 			return false;
 
 		passStorage.push_back(std::move(pass));
@@ -673,6 +725,7 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 	// viewport-scaled final passes land exactly on the presented game area.
 	DeriveViewportSize(swapchainWidth, swapchainHeight, gameWidth, gameHeight,
 	    targetViewportWidth_, targetViewportHeight_);
+	size_t passIndex = 0;
 	for (PassRuntime *pass : passes_) {
 		auto resolve = [](const ScaleRule &rule, float inputSize, float viewportSize) -> float {
 			switch (rule.type) {
@@ -686,10 +739,24 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		const float viewportH = static_cast<float>(targetViewportHeight_);
 		const float outW = resolve(pass->def.scaleX, prevW, viewportW);
 		const float outH = resolve(pass->def.scaleY, prevH, viewportH);
-		pass->outputWidth = static_cast<Uint32>(std::max(1.0F, std::floor(outW + 0.5F)));
-		pass->outputHeight = static_cast<Uint32>(std::max(1.0F, std::floor(outH + 0.5F)));
+		// ROB-05: pass scale factors are unclamped preset floats (scale0 = 1e30
+		// or absolute scale 1e9 parse fine), and the float-to-Uint32 cast of an
+		// out-of-range value below is undefined behavior that in practice
+		// produced garbage FBO sizes feeding SDL_CreateGPUTexture (driver
+		// errors or enormous allocations). Clamp every resolved dimension to
+		// [1, 16384] — a ceiling below every real device cap, generous for
+		// legitimate libretro chains — and say so in the log.
+		const float clampedW = ClampPassTargetDim(outW);
+		const float clampedH = ClampPassTargetDim(outH);
+		if (clampedW != outW || clampedH != outH) {
+			LogWarn("GPU scaler preset (pass {}): resolved target size {}x{} clamped to {}x{}",
+			    passIndex, outW, outH, clampedW, clampedH);
+		}
+		pass->outputWidth = static_cast<Uint32>(std::max(1.0F, std::floor(clampedW + 0.5F)));
+		pass->outputHeight = static_cast<Uint32>(std::max(1.0F, std::floor(clampedH + 0.5F)));
 		prevW = static_cast<float>(pass->outputWidth);
 		prevH = static_cast<float>(pass->outputHeight);
+		passIndex++;
 	}
 	// Field diagnostics: resolved pass output sizes (logs once per size change).
 	std::string targets;

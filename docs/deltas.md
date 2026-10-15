@@ -25,6 +25,14 @@ open findings; this ledger is the single record of closures.
 | SEC-04 | Low | Security | Log injection: untrusted preset paths/names written raw to gpu-scaler.log | 2026-10-15 |
 | MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire | 2026-10-15 |
 | MAINT-07 | Low | Maintainability | Magic number 9 / dead enum values / unused include in gpu_scaler.cpp | 2026-10-15 |
+| ROB-03 | Medium | Robustness | Torn cache write permanently poisons a shader cache entry, no recompile fallback | 2026-10-16 |
+| ROB-04 | Medium | Robustness | Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades | 2026-10-16 |
+| ROB-05 | Medium | Robustness | Unclamped scale factors cause float→Uint32 UB and garbage FBO sizes | 2026-10-16 |
+| ROB-06 | Medium | Robustness | Data race on gpu-scaler.log between SDL log-capture threads and present thread | 2026-10-16 |
+| ROB-09 | Medium | Robustness | Corrupt `diablo.ini` hard-fails startup with no recovery path | 2026-10-16 |
+| MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases | 2026-10-16 |
+| ARCH-01 | Medium | Architecture | Window-ownership hand-off protocol is spread across three files with pointer-only history | 2026-10-16 |
+| TEST-03 | Medium | Testing | Options layer (ini round-trip, shader-filter self-heal) untested | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -378,3 +386,233 @@ documented MSVC path) with the flagship `USE_SDL3=ON` aborted during manifest in
 **Verification.** `vcpkg.json` re-parsed as valid JSON; feature name matches the exact string
 `VcPkgManifestFeatures.cmake` appends. End-to-end vcpkg configure is exercised on MSVC path
 usage (not covered by this fork's CI).
+---
+
+## ROB-03 — CLOSED: Torn cache write permanently poisons a shader cache entry, no recompile fallback
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/slang_compile.cpp` (`WriteFileBytes`, cache read path), `Source/engine/render/gpu/preset/preset_runner.cpp` (`SDL_CreateGPUShader` failure path) |
+
+**Original finding.** The SPIR-V cache blob was written directly to its final path
+(`create_directories` + `ofstream(trunc)`) — no temp file + rename, no fsync. A crash,
+disk-full condition, or two concurrently compiling processes could leave a partial file.
+The read path accepted anything passing `SpvLooksValid` (magic + alignment only), so a torn
+file whose first bytes were intact became a permanent cache "hit" that failed at
+`SDL_CreateGPUShader` on every load, with no fallback to recompilation — the preset failed
+every session until the user manually deleted `shaders/cache/`.
+
+**Resolution.**
+- `WriteFileBytes` now writes to a process-unique temp file (`<path>.<pid>.tmp`) and moves it
+  into place with `std::filesystem::rename` (atomic on POSIX and Windows same-volume; the
+  target is removed first so Windows rename-overwrite behaves like POSIX). A failed rename
+  cleans up the temp file.
+- `CompilePass` gained a `SpirvSource *outSource` out-param (`Compiled` / `Cache` / `Sidecar`)
+  and an `allowCache` switch; a new `DeleteCachedSpv` removes a pass's cache blobs.
+- `Runner::Load` now tracks the SPIR-V source: when `SDL_CreateGPUShader` rejects a CACHE
+  hit, the blobs are deleted and the pass is recompiled once with `allowCache=false` (the
+  fresh compile re-populates the cache); any shader already built from the poisoned blob is
+  released before the retry. GPU-side rejections of fresh compiles or sidecars still fail
+  the preset through the normal failure contract.
+
+**Verification.** All touched TUs compile clean (gnu++23, `-Wall -Wextra`, Release);
+clang-format 18.1.8 clean. The self-heal path is load-time-only (no GPU in CI), exercised by
+the cache-hit rejection branch conditions; full behavioral validation of shader creation
+remains a headless-lavapipe follow-up (TEST-01).
+
+---
+
+## ROB-04 — CLOSED: Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/slang_compile.cpp` (`CachePathFor`) |
+
+**Original finding.** The content-addressed cache hashed only the final translated GLSL. A
+FetchContent-pinned glslang bump (currently 16.6.0) changes SPIR-V codegen for identical
+input GLSL, but the cache survives binary updates as user data — every user's
+`shaders/cache/` kept serving the old SPIR-V indefinitely.
+
+**Resolution.** A `kSpirvCacheVersion` constant (bumped on any SPIR-V-output-affecting
+change) and the glslang version string (`GLSLANG_VERSION_MAJOR.MINOR.PATCH` from the pinned
+toolchain headers) are now mixed into the hashed payload, and the cache file name carries
+the format version (`slang-<stem>-v<version>-<hash24>.spv`) so stale entries stay
+name-prunable (feeds PERF-05 later). The stale claim in the header comment ("any change to
+translation invalidates") was corrected: translator-visible changes change the hash, and
+toolchain changes now change it too.
+
+**Verification.** Compile-clean + clang-format clean as above. Cache keys are load-time pure
+functions; the salt is observable in the cache file names.
+
+---
+
+## ROB-05 — CLOSED: Unclamped scale factors cause float→Uint32 UB and garbage FBO sizes
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (`Runner::EnsureTargets` scale resolution) |
+
+**Original finding.** Pass scale factors were parsed as floats with no magnitude clamp
+(`scale0 = 1e30` accepted), then resolved sizes went through
+`static_cast<Uint32>(std::max(1.0F, std::floor(out + 0.5F)))`. Casting an out-of-range
+float to `Uint32` is undefined behavior; in practice it yielded garbage target sizes feeding
+`SDL_CreateGPUTexture` — driver errors or enormous allocations from a typo'd or hostile
+preset.
+
+**Resolution.** Every resolved pass-target dimension is clamped through
+`ClampPassTargetDim` to `[1, 16384]` before the cast (16384 sits below every real device
+maximum; NaN falls to 1), and a clamp is announced with a `LogWarn` naming the pass and the
+requested vs clamped size. The clamped values feed the `prevW/prevH` chain, so a huge
+intermediate can no longer propagate through subsequent Source-scaled passes either.
+
+**Verification.** Compile-clean + clang-format clean as above. Hostile-scale parsing itself
+was already covered by the `preset_failure_modes` corpus; the clamp is exercised at target
+resolution time.
+
+---
+
+## ROB-06 — CLOSED: Data race on gpu-scaler.log between SDL log-capture threads and present thread
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`LogFileLine`, `SdlLogCapture`, `RotateLog`, `LogFile`) |
+
+**Original finding.** SDL log capture routes every `SDL_Log` into gpu-scaler.log, and SDL3
+GPU/audio/validation messages can originate on SDL-internal threads. The capture handler
+mutated `gLogFile`/`gLogBytes` and could trigger `RotateLog` (fclose/fopen) entirely
+unsynchronized with the main-thread `LogFileLine` writes — worst case use-after-close of the
+`FILE*` or a double rotation, exactly when users need the log most (an SDL-internal error
+storm).
+
+**Resolution.** All log-file mutation is now guarded by a `std::mutex` (`gLogMutex`). The two
+entry points that can run off the main thread (`LogFileLine`, `SdlLogCapture`) take the lock
+around the get-file-then-write sequence; the internals (`LogFile`, `LogFileForWrite`,
+`RotateLog`, `LogClose`, `LogOpenAppended`) document the lock requirement and are only called
+under it. The chained previous SDL log function is invoked BEFORE taking the lock so foreign
+handler code can never observe or recurse into it; SEC-04 sanitization stays outside the
+lock (pure string work).
+
+**Verification.** Compile-clean + clang-format clean as above. The only cross-thread surface
+in the mod is now the documented, mutex-ordered pair of entry points.
+
+---
+
+## ROB-09 — CLOSED: Corrupt `diablo.ini` hard-fails startup with no recovery path
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/options.cpp` (`LoadIni`) |
+
+**Original finding.** `LoadIni` returned `std::expected` and on parse failure the caller
+immediately `app_fatal`ed — a modal dialog and exit for a corrupted config file, while the
+mod's own philosophy elsewhere is self-healing (stale shader-filter values sanitize to Off;
+GPU-path failures degrade to the stock renderer).
+
+**Resolution.** On parse failure the corrupt file is preserved as
+`diablo.ini.corrupt-<YYYYMMDD-HHMMSS>` (several generations can coexist), the failure is
+logged with both the parse error and the preservation path, and startup continues with a
+default `Ini` (the same parse of an empty buffer a fresh install already used). The fatal
+path remains only when the corrupt copy cannot be renamed aside — overwriting the only copy
+of the user's config would lose data. The next `SaveIni` writes a clean file.
+
+**Verification.** `test/options_test.cpp` (new `options_test` ctest target): a corrupt ini
+(`[Graphics` unclosed section) no longer aborts, is preserved with intact content, is moved
+aside, and the following save/load cycle writes and reads a clean file. 7/7 checks pass
+headless (see TEST-03).
+
+---
+
+## MAINT-04 — CLOSED: Release builds never attach to GitHub Releases
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **Original location** | `.github/workflows/gpu-shaders.yml` (both jobs) |
+
+**Original finding.** The workflow triggered on `release: published` but no step uploaded
+the built artifacts to that release — the zips lived only as workflow artifacts with 90-day
+retention, so a missed manual step meant the release page showed notes with no binaries.
+
+**Resolution.** Each job gained an `Attach build(s) to the GitHub Release` step
+(`softprops/action-gh-release@v2`, conditioned on `github.event_name == 'release'`) uploading
+the same zips already staged for artifacts (Linux package + SPIR-V blobs; Windows package),
+and both jobs declare `permissions: contents: write` for the default `GITHUB_TOKEN`.
+
+**Verification.** YAML parses; step order asserted per job (Package → Upload artifacts →
+Attach to release); the step is skipped for push/dispatch runs.
+
+---
+
+## ARCH-01 — CLOSED: Window-ownership hand-off protocol is spread across three files with pointer-only history
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Architecture |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`gLastClaimedWindow`, `WindowHasSwapchainHistory`), `Source/utils/display.cpp`, `Source/engine/dx.cpp` |
+
+**Original finding.** The SDL window alternates ownership between SDL_Renderer and SDL_GPU
+(a hard DXGI requirement on Windows), and the protocol implementing this was distributed
+across three files with the history tracked via `gLastClaimedWindow`, a raw pointer kept
+after Shutdown and compared by address only — vulnerable to an ABA false-positive if a
+destroyed window's address was recycled, and unable to distinguish "this window had a
+swapchain" from "some window with this address did".
+
+**Resolution.** The protocol is now consolidated and documented in one place
+(`gpu_scaler.cpp`): the history is explicit state keyed by the SDL window ID
+(`gLastClaimedWindowId`) — SDL never reuses a window ID within a process, so a destroyed
+window's recorded ID can never match a new window at the recycled address (the ABA hazard
+disappears by construction). The claim sites record the ID; `WindowHasSwapchainHistory`
+compares IDs; Shutdown deliberately retains it (the window keeps its DXGI swapchain
+history). The ledger comment names all three participants' responsibilities
+(gpu_scaler records/answers, display.cpp recreates on hand-off, dx.cpp funnels failures).
+
+**Verification.** Compile-clean + clang-format clean; the ID-keyed query is exercised by the
+display.cpp hand-off paths on every presentation-path switch.
+
+---
+
+## TEST-03 — CLOSED: Options layer (ini round-trip, shader-filter self-heal) untested
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Testing |
+| **Original location** | `Source/options.cpp` (shader-filter option layer), `test/` |
+
+**Original finding.** The options machinery the fork extends was logic-rich and
+ini-corrupting-if-wrong, yet untested: the stale-builtin self-heal, the custom-index-to-path
+mapping, the folder-browser navigation encoding, and the save/load round-trip. The existing
+`ini_test` covered only the low-level `utils/ini` parser.
+
+**Resolution.** New standalone gtest target `options_test` (`test/options_test.cpp`,
+registered in `CMake/Tests.cmake` under `standalone_tests`, linking `libdevilutionx_options`
++ the two preset TUs + `libdevilutionx_assets`, mirroring the `dun_render_benchmark`
+pattern). Headless, no GPU/window: the config dir is staged per-process under a temp root
+(`paths::SetConfigPath`), the shader root is staged idempotently under the build dir
+(`SDL_GetBasePath()` + `shaders`). Covered: stale builtin values 1..99 sanitize to Off;
+custom index 100+N maps to the stored preset path; a missing stored preset self-heals to Off
+and clears the path; save/load round-trip preserves both keys; ROB-09 corrupt-ini recovery.
+
+**Additional fix discovered by the new tests (startup restore).** `GraphicsOptions::
+GetEntries()` listed `&shaderFilter` before `&shaderFilterPreset`, so at load time
+`OptionEntryShaderFilter::LoadFromIni` ran `RescanCustomEntries()` while the persisted preset
+path was still empty — every restart self-healed a saved custom preset to Off, and the
+preset only re-activated when the user later opened the Graphics menu. The (invisible)
+preset-path entry now loads before the filter entry; a saved custom preset survives a
+restart, and the value mapping is path-authoritative in all covered cases.
+
+**Verification.** Built and run standalone (gtest, vendored 1.15.2 headers + system SDL3):
+**7/7 tests pass** headless; all touched TUs compile clean (gnu++23, `-Wall -Wextra`);
+clang-format 18.1.8 clean. CI runs the target through ctest under BUILD_TESTING=ON.

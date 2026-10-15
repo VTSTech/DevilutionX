@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <expected>
 #include <functional>
@@ -144,6 +145,22 @@ std::string GetIniPath()
 	return path;
 }
 
+/** @brief ROB-09: timestamp suffix for a preserved corrupt ini file,
+ * e.g. "20261016-124530" - several corrupt generations can coexist. */
+std::string CorruptIniStamp()
+{
+	const std::time_t now = std::time(nullptr);
+	std::tm tmBuf {};
+#if defined(_WIN32)
+	localtime_s(&tmBuf, &now);
+#else
+	localtime_r(&now, &tmBuf);
+#endif
+	char stamp[32] {};
+	std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmBuf);
+	return stamp;
+}
+
 void LoadIni()
 {
 	std::vector<char> buffer;
@@ -163,7 +180,29 @@ void LoadIni()
 		std::fclose(file);
 	}
 	std::expected<Ini, std::string> result = Ini::parse(std::string_view(buffer.data(), buffer.size()));
-	if (!result.has_value()) app_fatal(result.error());
+	if (!result.has_value()) {
+		// ROB-09: a corrupt ini (crash mid-write, disk issue, bad editor) used to
+		// app_fatal here - a modal dialog and exit for a config file, while the
+		// mod's own philosophy elsewhere is self-healing (stale shader-filter
+		// values sanitize to Off, GPU-path failures degrade to the stock
+		// renderer). Preserve the corrupt file for debugging, start with
+		// defaults, and let the next SaveIni write a clean file. Only a failed
+		// preservation (the corrupt copy could not be renamed aside) keeps the
+		// fatal path: overwriting the only copy of the user's config would lose
+		// data.
+		const std::string corruptPath = path + ".corrupt-" + CorruptIniStamp();
+		if (std::rename(path.c_str(), corruptPath.c_str()) != 0) {
+			app_fatal(StrCat("Failed to parse the config file and failed to preserve it: ", result.error()));
+		}
+		LogError(LogCategory::System,
+		    "Failed to parse {}: \"{}\". The corrupt file was preserved as {}; continuing with default settings.",
+		    path, result.error(), corruptPath);
+		// A fresh install (no file at all) already parses an empty buffer into a
+		// valid default Ini - reuse that for the recovery path.
+		result = Ini::parse(std::string_view());
+		if (!result.has_value())
+			app_fatal(result.error());
+	}
 	ini.emplace(std::move(result).value());
 }
 
@@ -1082,8 +1121,14 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
                 &scaleQuality,
                 &integerScaling,
 #ifdef USE_GPU_SCALER
-                &shaderFilter,
+                // The preset path entry must load BEFORE the filter value:
+                // OptionEntryShaderFilter::LoadFromIni resolves the active
+                // preset (RescanCustomEntries) from this path. With the old
+                // order the path was still empty at that point, so a saved
+                // custom preset was silently reset to Off on every start and
+                // only re-activated when the user opened the Graphics menu.
                 &shaderFilterPreset,
+                &shaderFilter,
 #endif
 #endif
                 &frameRateControl,

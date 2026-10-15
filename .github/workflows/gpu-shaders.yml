@@ -57,6 +57,10 @@ jobs:
   linux:
     name: Linux x86_64 (SDL3 + GPU shader scaler, glibc 2.36 floor)
     runs-on: ubuntu-24.04
+    # MAINT-04: attaching the built zips to the published GitHub Release needs
+    # contents:write on the default GITHUB_TOKEN.
+    permissions:
+      contents: write
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
@@ -222,9 +226,23 @@ jobs:
         name: devilutionx-gpu-shaders-spirv-blobs
         path: devilutionx-gpu-shaders-spirv-blobs.zip
 
+    # MAINT-04: release builds must land on the release page, not only in
+    # 90-day workflow artifacts. Attaches the same zips staged above to the
+    # GitHub Release that triggered the run; skipped for push/dispatch runs.
+    - name: Attach builds to the GitHub Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          devilutionx-gpu-shaders-linux-x64.zip
+          devilutionx-gpu-shaders-spirv-blobs.zip
+
   windows:
     name: Windows x64 (MinGW cross, SDL3, fully static — launches without extra DLLs)
     runs-on: ubuntu-24.04
+    # MAINT-04: see the Linux job — release uploads need contents:write.
+    permissions:
+      contents: write
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
@@ -311,3 +329,10 @@ jobs:
       with:
         name: devilutionx-gpu-shaders-windows-x64
         path: devilutionx-gpu-shaders-windows-x64.zip
+
+    # MAINT-04: attach the Windows zip to the release that triggered the run.
+    - name: Attach build to the GitHub Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: devilutionx-gpu-shaders-windows-x64.zip

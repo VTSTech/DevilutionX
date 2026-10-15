@@ -10,6 +10,12 @@
 #include <fstream>
 #include <mutex>
 
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/Public/ShaderLang.h>
@@ -87,16 +93,53 @@ bool ReadFileBytes(const std::string &path, std::vector<uint8_t> &out)
 	return true;
 }
 
+/** @brief Per-process suffix for cache temp files, so two concurrently
+ * compiling processes never share a temp blob (a shared name could let one
+ * process rename away the other's half-written file, ROB-03). */
+std::string ProcessIdSuffix()
+{
+#if defined(_WIN32)
+	return StrCat(".", static_cast<long>(_getpid()), ".tmp");
+#else
+	return StrCat(".", static_cast<long>(getpid()), ".tmp");
+#endif
+}
+
+// ROB-03: the cache blob is written to a process-unique temp file first and
+// then renamed into place. std::filesystem::rename is atomic on POSIX and on
+// Windows (same volume), so a crash, disk-full condition, or concurrent
+// compile can no longer leave a half-written file at the final path — the
+// previous write-in-place could produce a torn blob whose intact first bytes
+// then passed SpvLooksValid forever (a permanent poisoned cache entry).
 bool WriteFileBytes(const std::string &path, const std::vector<uint8_t> &data)
 {
 	std::error_code ec;
 	const std::filesystem::path parent = std::filesystem::path(path).parent_path();
 	std::filesystem::create_directories(parent, ec);
-	std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-	if (!stream)
+	const std::filesystem::path tmp = std::filesystem::path(path).string() + ProcessIdSuffix();
+	{
+		std::ofstream stream(tmp, std::ios::binary | std::ios::trunc);
+		if (!stream)
+			return false;
+		stream.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
+		stream.flush();
+		if (!stream.good()) {
+			std::filesystem::remove(tmp, ec);
+			return false;
+		}
+	}
+	// Windows rename refuses to overwrite an existing target; POSIX replaces
+	// it. Removing first makes both behave identically (a failed remove of a
+	// nonexistent target is harmless; a reader holding the old blob open is
+	// unaffected — it reads the previous generation).
+	std::filesystem::remove(path, ec);
+	std::filesystem::rename(tmp, path, ec);
+	if (ec) {
+		std::error_code removeEc;
+		std::filesystem::remove(tmp, removeEc);
 		return false;
-	stream.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
-	return stream.good();
+	}
+	return true;
 }
 
 bool SpvLooksValid(const std::vector<uint8_t> &data)
@@ -108,6 +151,28 @@ bool SpvLooksValid(const std::vector<uint8_t> &data)
 
 } // namespace
 
+namespace {
+
+// ROB-04: cache format version. Bump whenever the compile pipeline can change
+// the SPIR-V output for identical input GLSL: a glslang upgrade (the
+// FetchContent-pinned 3rdParty/glslang tarball), a target env change in
+// CompileStageToSpv, or a cache layout change. It is mixed into the hashed
+// payload AND spelled out in the file name, so stale blobs are never served
+// and remain name-prunable later (see PERF-05).
+constexpr int kSpirvCacheVersion = 2;
+
+/** @brief The pinned glslang version, mixed into the cache key (ROB-04). */
+std::string GlslangVersionSalt()
+{
+#if defined(GLSLANG_VERSION_MAJOR)
+	return StrCat(GLSLANG_VERSION_MAJOR, ".", GLSLANG_VERSION_MINOR, ".", GLSLANG_VERSION_PATCH);
+#else
+	return "unknown";
+#endif
+}
+
+} // namespace
+
 void CachePathFor(const SlangTranslation &translation, const std::string &slangPath, const std::string &cacheDir,
     std::string &vertexPath, std::string &fragmentPath)
 {
@@ -115,13 +180,21 @@ void CachePathFor(const SlangTranslation &translation, const std::string &slangP
 	fragmentPath.clear();
 	if (cacheDir.empty())
 		return;
-	// Content-addressed key: any change to the .slang source, its includes or
-	// the translator's output changes the hash, so stale SPIR-V is never
-	// served. The source path is mixed in only for readable cache names.
+	// Content-addressed key: any change to the .slang source, its includes
+	// or the translator's output changes the hash, so stale SPIR-V is never
+	// served from translator-visible changes. ROB-04: the toolchain is NOT
+	// translator-visible, so the cache format version and the glslang
+	// version are mixed into the payload too — a glslang bump recompiles
+	// every pass instead of silently serving old codegen indefinitely (the
+	// cache survives binary updates as user data). The version is also in
+	// the file name so stale entries stay prunable by name.
+	const std::string payload = StrCat("devilutionx-gpu-preset-spirv\x1fv", kSpirvCacheVersion,
+	    "\x1fglslang-", GlslangVersionSalt(), "\x1f", translation.vertex.glsl, "\x1f", translation.fragment.glsl);
 	std::string hash;
-	picosha2::hash256_hex_string(translation.vertex.glsl + std::string("\x1f", 1) + translation.fragment.glsl, hash);
+	picosha2::hash256_hex_string(payload, hash);
 	const std::string stem = std::filesystem::path(slangPath).stem().string();
-	const std::string base = StrCat(cacheDir, "/slang-", stem.empty() ? "pass" : stem, "-", hash.substr(0, 24));
+	const std::string base = StrCat(cacheDir, "/slang-", stem.empty() ? "pass" : stem, "-v", kSpirvCacheVersion, "-",
+	    hash.substr(0, 24));
 	vertexPath = base + ".vert.spv";
 	fragmentPath = base + ".frag.spv";
 }
@@ -134,10 +207,12 @@ void SidecarSpvPathsFor(const std::string &slangPath, std::string &vertexPath, s
 }
 
 bool CompilePass(const SlangTranslation &translation, const std::string &slangPath, const std::string &cacheDir,
-    PassSpirv &out, std::string &error)
+    PassSpirv &out, std::string &error, SpirvSource *outSource, bool allowCache)
 {
 	out.vertex.clear();
 	out.fragment.clear();
+	if (outSource != nullptr)
+		*outSource = SpirvSource::Compiled;
 
 	if (!translation.vertex.present || !translation.fragment.present) {
 		error = "slang: pass is missing a required stage";
@@ -150,15 +225,19 @@ bool CompilePass(const SlangTranslation &translation, const std::string &slangPa
 	if (ReadFileBytes(sidecarVert, out.vertex) && SpvLooksValid(out.vertex) && ReadFileBytes(sidecarFrag, out.fragment)
 	    && SpvLooksValid(out.fragment)) {
 		Log("GPU scaler preset: using precompiled SPIR-V sidecars for {}", slangPath);
+		if (outSource != nullptr)
+			*outSource = SpirvSource::Sidecar;
 		return true;
 	}
 
-	// 2. Disk cache keyed by a hash of the translated sources.
+	// 2. Disk cache keyed by a hash of the translated sources + toolchain salt.
 	std::string cacheVert, cacheFrag;
 	CachePathFor(translation, slangPath, cacheDir, cacheVert, cacheFrag);
-	if (!cacheVert.empty() && ReadFileBytes(cacheVert, out.vertex) && SpvLooksValid(out.vertex)
+	if (allowCache && !cacheVert.empty() && ReadFileBytes(cacheVert, out.vertex) && SpvLooksValid(out.vertex)
 	    && ReadFileBytes(cacheFrag, out.fragment) && SpvLooksValid(out.fragment)) {
 		Log("GPU scaler preset: cache hit for {}", slangPath);
+		if (outSource != nullptr)
+			*outSource = SpirvSource::Cache;
 		return true;
 	}
 
@@ -168,12 +247,23 @@ bool CompilePass(const SlangTranslation &translation, const std::string &slangPa
 	if (!CompileStageToSpv(EShLangFragment, translation.fragment.glsl, out.fragment, error))
 		return false;
 
-	// 4. Store in the cache (best-effort).
-	if (!cacheVert.empty()) {
+	// 4. Store in the cache (best-effort; skipped on the ROB-03 no-cache retry).
+	if (allowCache && !cacheVert.empty()) {
 		if (!WriteFileBytes(cacheVert, out.vertex) || !WriteFileBytes(cacheFrag, out.fragment))
 			Log("GPU scaler preset: could not write SPIR-V cache files for {}", slangPath);
 	}
 	return true;
+}
+
+void DeleteCachedSpv(const SlangTranslation &translation, const std::string &slangPath, const std::string &cacheDir)
+{
+	std::string vertexPath, fragmentPath;
+	CachePathFor(translation, slangPath, cacheDir, vertexPath, fragmentPath);
+	std::error_code ec;
+	if (!vertexPath.empty())
+		std::filesystem::remove(vertexPath, ec);
+	if (!fragmentPath.empty())
+		std::filesystem::remove(fragmentPath, ec);
 }
 
 } // namespace preset

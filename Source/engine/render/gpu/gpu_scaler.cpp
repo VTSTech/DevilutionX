@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -84,12 +85,36 @@ bool gLoggedFailure = false;
 // Set when the scaler hits an unrecoverable error. Session-sticky: the game
 // reverts to the regular renderer instead of retrying a broken GPU path.
 bool gFailed = false;
-// The last window successfully claimed by the GPU device. Deliberately kept
-// after Shutdown(): on Windows the HWND keeps its DXGI flip-model swapchain
-// history, so display code must recreate the window before handing it back
-// to the regular SDL_Renderer. Only ever compared by pointer, never
-// dereferenced (the window may already be destroyed).
-SDL_Window *gLastClaimedWindow = nullptr;
+// ARCH-01: the window-presentation hand-off protocol, in one place.
+//
+// On Windows, DXGI permits only one flip-model swapchain per HWND, so the SDL
+// window alternates ownership between SDL_Renderer (D3D11/GL) and the SDL_GPU
+// device (Vulkan/D3D12). A window presented to by EITHER path keeps that
+// swapchain history even after its owner releases it, and the next owner of
+// the OTHER kind fails with "Access is denied" (0x80070005) until the window
+// is destroyed and recreated (display.cpp RecreateMainRenderWindow).
+//
+// Protocol (three participants):
+//   - gpu_scaler.cpp (here): records the ID of every window it successfully
+//     claims (SDL_ClaimWindowForGPUDevice) and answers
+//     WindowHasSwapchainHistory() for display.cpp. The ID is deliberately
+//     NOT cleared on Shutdown(): the (possibly still alive) window keeps its
+//     DXGI swapchain history.
+//   - display.cpp: before handing the window across paths, recreates it when
+//     WindowHasSwapchainHistory() is true (scaler -> renderer direction) or
+//     when the renderer owned it (renderer -> scaler direction).
+//   - dx.cpp: the failure funnel that routes any scaler error back to the
+//     stock renderer for the session.
+//
+// The history is tracked as explicit state keyed by the SDL window ID, not
+// by the SDL_Window pointer: SDL never reuses a window ID within a process,
+// so a destroyed window's recorded ID can never match a NEW window that
+// happened to be allocated at the recycled address (the ABA false-positive
+// the previous pointer-only approach allowed — it forced an unnecessary
+// window recreation and could not distinguish "this window had a swapchain"
+// from "some window at this address did"). The recorded ID is only ever
+// compared, never dereferenced (the window may already be destroyed).
+Uint32 gLastClaimedWindowId = 0;
 // Format the current blit pipeline was built for (swapchain format can change).
 SDL_GPUTextureFormat gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
 
@@ -104,6 +129,15 @@ FILE *gLogFile = nullptr;
 // Bytes currently in the log file, kept in step with the writes below so
 // that the cap check does not have to stat the file on every line.
 long gLogBytes = 0;
+
+// ROB-06: every mutation of gLogFile / gLogBytes (open, rotate, write) must
+// hold this mutex. SDL log capture routes SDL's own messages here, and those
+// can originate on SDL-internal threads (GPU, audio, validation), so the
+// capture callback races the main-thread LogFileLine writes. Without the
+// mutex the worst case was use-after-close of the FILE* or a double rotation
+// — exactly when users need the log most (an SDL-internal error storm).
+// Cheap at this call rate; the file is only touched for diagnostics.
+std::mutex gLogMutex;
 
 void InstallSdlLogCapture();
 
@@ -136,6 +170,9 @@ void RotateLogFile(const std::string &path)
 	if (std::rename(path.c_str(), oldPath.c_str()) != 0)
 		std::remove(path.c_str());
 }
+
+// --- log-file internals (LogFileClose / LogOpenAppended / RotateLog / LogFile /
+// LogFileForWrite): the caller must hold gLogMutex. ---
 
 void LogClose()
 {
@@ -213,11 +250,14 @@ FILE *LogFileForWrite(size_t incomingBytes)
 
 void LogFileLine(std::string_view line)
 {
+	// SEC-04: log text includes untrusted strings (preset paths, pragma
+	// descriptions, glslang info logs). Control bytes would let a hostile
+	// preset forge log lines or inject terminal escapes. Sanitized outside
+	// the lock (pure string work), then written under the lock so the
+	// rotation state cannot change between the cap check and the write.
+	const std::string safe = SanitizeLogLine(line);
+	const std::lock_guard<std::mutex> lock(gLogMutex);
 	if (FILE *file = LogFileForWrite(line.size() + 16); file != nullptr) {
-		// SEC-04: log text includes untrusted strings (preset paths, pragma
-		// descriptions, glslang info logs). Control bytes would let a hostile
-		// preset forge log lines or inject terminal escapes.
-		const std::string safe = SanitizeLogLine(line);
 		std::fprintf(file, "[%10u ms] %.*s\n", static_cast<unsigned>(SDL_GetTicks()), static_cast<int>(safe.size()), safe.data());
 		std::fflush(file);
 	}
@@ -268,9 +308,15 @@ void *gPrevSdlLogUserdata = nullptr;
 
 void SDLCALL SdlLogCapture(void *userdata, int category, SDL_LogPriority priority, const char *message)
 {
+	// Chain to the previous output function BEFORE taking gLogMutex: the
+	// previous handler is arbitrary user code and must never observe (or
+	// recurse into) our log lock, and SDL-internal messages can originate
+	// on SDL's own threads (ROB-06) — the write below is what needs the
+	// mutual exclusion against the main-thread LogFileLine writers.
 	if (gPrevSdlLogFunction != nullptr)
 		gPrevSdlLogFunction(gPrevSdlLogUserdata, category, priority, message);
 	const size_t messageLen = message != nullptr ? std::strlen(message) : 0;
+	const std::lock_guard<std::mutex> lock(gLogMutex);
 	if (FILE *file = LogFileForWrite(messageLen + 16); file != nullptr) {
 		std::fprintf(file, "[       SDL] %s\n", message != nullptr ? message : "");
 		std::fflush(file);
@@ -682,7 +728,7 @@ bool HasFailed()
 
 bool WindowHasSwapchainHistory(SDL_Window *window)
 {
-	return window != nullptr && gLastClaimedWindow == window;
+	return window != nullptr && gLastClaimedWindowId != 0 && SDL_GetWindowID(window) == gLastClaimedWindowId;
 }
 
 // Creates the GPU device and selects the shader format for its backend.
@@ -772,7 +818,7 @@ bool Reinit(SDL_Window *window)
 			Shutdown();
 			return false;
 		}
-		gLastClaimedWindow = gWindow;
+		gLastClaimedWindowId = SDL_GetWindowID(gWindow);
 		const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
 		if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
 		        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
@@ -811,7 +857,7 @@ bool Reinit(SDL_Window *window)
 			if (CreateDevice(/*name=*/"vulkan")) {
 				gWindow = window;
 				if (SDL_ClaimWindowForGPUDevice(gDevice, gWindow)) {
-					gLastClaimedWindow = gWindow;
+					gLastClaimedWindowId = SDL_GetWindowID(gWindow);
 					const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
 					if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
 					        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
@@ -859,8 +905,9 @@ void Shutdown()
 	gShaderFormat = SDL_GPU_SHADERFORMAT_INVALID;
 	gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
 	gFilter = ShaderFilter::None;
-	// gLastClaimedWindow is intentionally NOT cleared: the (possibly still
-	// alive) window keeps its DXGI swapchain history on Windows.
+	// gLastClaimedWindowId is intentionally NOT cleared: the (possibly still
+	// alive) window keeps its DXGI swapchain history on Windows. Window IDs
+	// are never reused, so the stale ID cannot match a future window.
 }
 
 void PresentFrame(const SDL_Surface &frame)
