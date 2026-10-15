@@ -1,0 +1,727 @@
+# Improvement & Enhancement Audit
+
+**DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
+
+**Repository:** https://github.com/VTSTech/DevilutionX
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-15
+**Audit commit:** `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
+47 Findings | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST
+
+---
+
+## Table of Contents
+
+- [Executive Summary](#executive-summary)
+- [Findings Summary](#findings-summary)
+- [Detailed Findings](#detailed-findings)
+  - [Security](#security)
+  - [Robustness](#robustness)
+  - [Maintainability](#maintainability)
+  - [Performance](#performance)
+  - [New Features](#new-features)
+  - [Architecture](#architecture)
+  - [Testing](#testing)
+- [Priority Matrix](#priority-matrix)
+- [Architecture Strengths](#architecture-strengths)
+
+---
+
+## Executive Summary
+
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 47 findings break down as 5 High, 17 Medium, and 25 Low across all seven categories.
+
+The most consequential theme is a **failure-contract violation cluster**: the mod's explicit design promise is that a bad preset or a GPU problem "never dies" — the session falls back to the stock renderer — yet several reachable paths throw uncaught exceptions (`std::stoi` on malformed texture names in `preset_runner.cpp`, a 30-byte preset declaring `shaders = 2147483647` triggering a ~250 GB allocation) that terminate the process outright (ROB-01, ROB-02). The second theme is **the mod ships without a safety net**: zero tests reference the ~15K-line GPU pipeline (TEST-01) and no CI workflow executes the existing 60-target gtest suite (TEST-02), while every push rebuilds the full vendored dependency tree from scratch with no caching (MAINT-01). The third theme is **untrusted-input trust boundaries**: preset files downloaded from the internet can reference arbitrary files anywhere on disk for compilation and texture loading (SEC-01), and compiled SPIR-V sidecars bypass all translation-layer guarantees on a magic-number check alone (SEC-03). Finally, the CI/packaging layer has correctness gaps that reach users directly: release builds are produced but never attached to GitHub Releases (MAINT-04), and the shipped zips cannot run Hellfire because `mods/hf.mpq` is not packaged (MAINT-05).
+
+Cross-cutting observations: the codebase is consistently defensive in *lifecycle* handling (resource ordering, format-aware pipeline rebuilds, rotating diagnostics log) but inconsistently defensive in *input* handling — the same `std::stoi` exception class was already fixed once in `FillBlockBytes` and documented as a SLANG_SPEC gap, proving the trigger class is reachable from real-world presets, yet four more instances remain. The preset pipeline's disk cache has no toolchain-version salt, so a future glslang bump will silently serve stale SPIR-V (ROB-04). None of the High findings require code beyond a few dozen lines to fix; the two process-termination bugs are each a bounded try/catch or clamp away from closure.
+
+---
+
+## Findings Summary
+
+| Prefix | Category |
+|--------|----------|
+| SEC | Security |
+| ROB | Robustness |
+| MAINT | Maintainability |
+| PERF | Performance |
+| FEAT | New Feature |
+| ARCH | Architecture |
+| TEST | Testing |
+
+| ID | Severity | Category | Title |
+|----|----------|----------|-------|
+| ROB-01 | **High** | Robustness | Uncaught `std::stoi` on texture binding names terminates the process mid-frame |
+| ROB-02 | **High** | Robustness | `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort |
+| MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching |
+| TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline |
+| TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite |
+| SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs |
+| ROB-03 | Medium | Robustness | Torn cache write permanently poisons a shader cache entry, no recompile fallback |
+| ROB-04 | Medium | Robustness | Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades |
+| ROB-05 | Medium | Robustness | Unclamped scale factors cause float→Uint32 UB and garbage FBO sizes |
+| ROB-06 | Medium | Robustness | Data race on gpu-scaler.log between SDL log-capture threads and present thread |
+| ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII |
+| ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
+| ROB-09 | Medium | Robustness | Corrupt `diablo.ini` hard-fails startup with no recovery path |
+| MAINT-02 | Medium | Maintainability | ~10K lines of dead built-in shader/LUT payload still compiled and embedded |
+| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run |
+| MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases |
+| MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire |
+| MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature |
+| FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets |
+| FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message |
+| FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log |
+| ARCH-01 | Medium | Architecture | Window-ownership hand-off protocol is spread across three files with pointer-only history |
+| TEST-03 | Medium | Testing | Options layer (ini round-trip, shader-filter self-heal) untested |
+| SEC-02 | Low | Security | `ResolvePresetPath` joins ini-stored paths without containment |
+| SEC-03 | Low | Security | Sidecar `.spv` files accepted on magic+size check alone |
+| SEC-04 | Low | Security | Log injection: untrusted preset paths/names written raw to gpu-scaler.log |
+| ROB-10 | Low | Robustness | `Runner::Run` failure-contract mismatch: header says transient, caller hard-fails |
+| ROB-11 | Low | Robustness | LUT upload size computed in Uint32; no dimension cap on preset LUTs |
+| ROB-12 | Low | Robustness | Preset parser accepts six image extensions the PNG-only build cannot decode |
+| ROB-13 | Low | Robustness | Known Integer Scaling crash remains (deliberately unfixed, documented) |
+| MAINT-07 | Low | Maintainability | Magic number 9 / dead enum values / unused include in gpu_scaler.cpp |
+| MAINT-08 | Low | Maintainability | Trim/lowercase/case-compare utilities triplicated across preset TUs |
+| MAINT-09 | Low | Maintainability | Comment/code mismatches: `#reference` merge order and silent UBO validation |
+| MAINT-10 | Low | Maintainability | Diagnostics log written next to the executable — fails silently in protected dirs |
+| MAINT-11 | Low | Maintainability | Stale packaging metadata: DEB SDL2 deps, Brewfile, vcpkg version, docs/building.md |
+| MAINT-12 | Low | Maintainability | God-files at engine core: diablo.cpp 3553 lines, scrollrt.cpp 1933 lines |
+| MAINT-13 | Low | Maintainability | Broken symlink blobs in repo break tooling and cross-compile helpers |
+| MAINT-14 | Low | Maintainability | Misleading legacy name: `nthread_has_500ms_passed` no longer means 500 ms |
+| PERF-01 | Low | Performance | Per-frame transfer buffer create/map/unmap round-trip |
+| PERF-02 | Low | Performance | Per-pass, per-frame heap allocations and repeated string parsing in Runner::Run |
+| PERF-03 | Low | Performance | Dead work in the present path: unused fitScale and unread uniform member |
+| PERF-04 | Low | Performance | Whole-surface re-upload each present despite dirty-rect blits |
+| PERF-05 | Low | Performance | Shader cache grows unbounded; `.slang` sources re-read 3–4× per load |
+| FEAT-04 | Low | New Feature | In-game `#pragma parameter` tuning UI (params are parsed but locked at defaults) |
+| ARCH-02 | Low | Architecture | Fork branding and asset-integrity hard aborts are entangled with upstream init |
+| TEST-04 | Low | Testing | Baked-shader drift: regenerated SPIR-V is never diffed against the committed header |
+| TEST-05 | Low | Testing | Fixture-dependent tests silently skip when MPQ assets are absent |
+
+Severity levels:
+- **High** — Affects correctness, security, or data integrity. Fix soon.
+- Medium — Impacts maintainability, reliability, or UX. Address in planned work.
+- Low — Nice-to-have improvement. Address opportunistically.
+
+---
+## Detailed Findings
+
+### Security
+
+#### SEC-01: Preset references escape the shaders root — arbitrary file read via preset packs
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Security |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp`, `Source/engine/render/gpu/preset/slang_translate.cpp` |
+
+The preset loader resolves every path reference without a containment check against the shaders root. `ResolvePresetFilePath` (`preset_parser.cpp:743-793`) passes absolute paths through outright, and walks up to six ancestor directories for relative ones with no check that the final resolved path stays under `ShaderRootDir()`; `../../`-style relative escapes therefore succeed. `slang_translate.cpp:151-153` likewise accepts absolute `#include` targets inside `.slang` sources. The practical consequence: a preset pack downloaded from the internet can direct the engine to open, parse, and compile `.slang` sources and load LUT textures (via `IMG_Load`) from anywhere the user account can read — for example `C:\Users\...\credentials` fed back as a "texture" — erasing the "shaders folder sandbox" the README implies. This is not memory-unsafe and not remote, but it converts an untrusted content folder into an arbitrary-file-read primitive. Recommended fix: after resolution, compute `std::filesystem::weakly_canonical` and reject any path whose normalized form does not start with the canonical shader root (allow-list exceptions for explicit user-sidecar files only), and log-and-refuse absolute paths in presets by default.
+
+**Impact:** Closing this restores a real trust boundary so untrusted shader packs can only read what they ship.
+
+#### SEC-02: `ResolvePresetPath` joins ini-stored paths without containment
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Security |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 732-741), `Source/engine/render/gpu/gpu_scaler.cpp` (lines 528-530) |
+
+`ResolvePresetPath` joins the `shaderFilterPreset` value stored in `diablo.ini` onto the shader root with `operator/` and only checks `exists()` — a hand-edited value like `../../tools/evil.slangp` resolves outside the root and its compiled output runs as GPU program text. Exploitation requires local write access to the ini, which already implies equivalent privilege, so this is informational rather than a true privilege boundary; it is filed separately from SEC-01 because the trust model differs (config file vs downloaded content pack). The fix is the same containment check with `lexically_normal()` plus a root-prefix assertion, applied at the ini-loading boundary where the code already sanitizes stale builtin values (`options.cpp:430-444`).
+
+**Impact:** One shared containment helper closes both entry points and makes the sandbox auditable.
+
+#### SEC-03: Sidecar `.spv` files accepted on magic+size check alone
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Security |
+| **File(s)** | `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 102-107, 147-154), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 332-352) |
+
+The sidecar fast path — `<shader>.vert.spv`/`.frag.spv` next to a `.slang` — always wins over translation and cache, and its only validation is `SpvLooksValid`: size ≥ 20 bytes, size divisible by 4, and the SPIR-V magic `0x07230203` (`slang_compile.cpp:102-107`). A shipped or planted sidecar therefore bypasses every translation-layer structural guarantee (stage splitting, binding dedup, UBO validation) and hands arbitrary SPIR-V straight to the GPU driver. SPIR-V is designed to be validated by drivers, and modern runtimes sandbox it, but the fast path means an attacker-controlled preset pack ships pre-compiled GPU code with no reviewable source. Recommended mitigation: when a sidecar is used, log it prominently; optionally require sidecars to be opt-in via an ini key, or verify the module's entry-point/execution-model bytes match the expected stage before use.
+
+**Impact:** Users can see when they are loading precompiled GPU code instead of translated source, and packs lose the ability to smuggle opaque binaries past inspection.
+
+#### SEC-04: Log injection: untrusted preset paths/names written raw to gpu-scaler.log
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Security |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 208-214), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 302-303, 498-516) |
+
+`LogFileLine` writes messages with raw `fprintf`, and the log's content includes file names, `#pragma` descriptions, glslang info-log text, and warning strings that originate in the untrusted shaders folder. A preset whose file name or pragma description contains `\n` can forge log lines (corrupting the field-diagnosis workflow this log exists to support), and terminal-escape sequences or `%`-heavy content can cause noise or misformatting when the log is viewed or pasted. The log is size-capped (200 KB with one-generation rotation, `gpu_scaler.cpp:95-173`), so there is no growth vector. Fix: sanitize control characters (strip bytes < 0x20 except nothing — i.e., replace all with `?`) in `LogFileLine`, and keep using argument-passing rather than format-string composition (which the current code already does correctly).
+
+**Impact:** gpu-scaler.log remains a trustworthy forensic record even when loaded content is hostile.
+
+---
+
+### Robustness
+
+#### ROB-01: Uncaught `std::stoi` on texture binding names terminates the process mid-frame
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 1228, 1240, 1246, 1267, 438-439, 465), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 571, 231-235) |
+
+`Runner::Run` resolves per-pass texture bindings by name using `std::stoi(name.substr(N))` after only a prefix check (`rfind(prefix, 0) == 0`) for `OriginalHistory`, `PassOutput`, `PassFeedback`, and `User` prefixes. A preset whose alias or texture is named exactly `"OriginalHistory"`, `"PassOutput"`, `"PassFeedback"`, or `"User"` — or whose suffix is non-numeric (e.g. `PassOutputx`) — makes `std::stoi` throw `std::invalid_argument`; a very long numeric suffix throws `std::out_of_range`. There is no try/catch anywhere on the call path from `PresentFrame`, so the exception propagates out of the frame loop and calls `std::terminate`, killing the game. The same unchecked pattern exists in `Load` (`preset_runner.cpp:438-439, 465`) and in `BuiltinTextureIndex` (`slang_translate.cpp:571`), and `std::stof` at `slang_translate.cpp:231-235` accepts matches like `"."` or `"-"` alone from `#pragma parameter` lines. Critically, this exact class was already fixed once — the `PassFeedback#Size` bug documented in SLANG_SPEC.md gap #4 and the comment at `preset_runner.cpp:1013-1021` — proving real presets trigger it. This directly violates the mod's failure contract ("any preset load/run failure → session fallback, game never dies"). Fix: replace bare `stoi` with the codebase's own `utils/parse_int.hpp` helpers (or wrap in try/catch returning `std::optional<int>`) and fall back to the source-texture binding when a name doesn't resolve, consistent with the existing null-texture guard at `preset_runner.cpp:1293-1303`.
+
+**Impact:** A single malformed (or merely unusually named) preset goes from guaranteed process crash to a logged load failure with the stock renderer intact.
+
+#### ROB-02: `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 424, 535-536, 582-583) |
+
+The parser reads `shaders = N` into `shaderCount` and resizes `preset.passes` accordingly (`preset_parser.cpp:424`, `:535-536`, and `:582-583` for `shaderN` keys), with no upper clamp. A 30-byte preset file containing `shaders = 2147483647` makes `std::vector<PassDef>::resize(2^31-1)` attempt an allocation on the order of 250 GB — either throwing `std::bad_alloc`/`std::length_error` uncaught (→ `std::terminate`, same violation as ROB-01) or thrashing the system into OOM under overcommit before dying. Individual `shaderN = path` keys with huge indices are already safe (`SplitPassKey` catches `stoi` failures and ignores the key), which makes the unclamped count path an inconsistency rather than a design choice. `histories` is clamped 1..8 (`:432`), showing the codebase's own convention for this. Fix: clamp `shaderCount` to a sane ceiling (RetroArch effectively caps far lower; 32 is generous), and resize lazily per `shaderN` key seen instead of by declared count.
+
+**Impact:** The cheapest possible denial-of-service against the game — a tiny malformed preset file — fails politely instead of terminating the process.
+
+#### ROB-03: Torn cache write permanently poisons a shader cache entry, no recompile fallback
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 90-100, 156-163, 171-175), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 346-352) |
+
+`WriteFileBytes` writes the SPIR-V cache blob directly to its final path (`create_directories` + `ofstream(trunc)`) — no temp file + rename, no lock, no fsync. A crash, disk-full condition, or two concurrently compiling processes can leave a partial file. The read path accepts anything passing `SpvLooksValid` (magic + alignment only), so a torn file whose first bytes are intact becomes a permanent cache "hit" that fails at `SDL_CreateGPUShader` (`preset_runner.cpp:346-352`) on every load — and since cache reads never fall back to recompilation on downstream failure, the preset fails every session until the user manually deletes `shaders/cache/` (exactly the scenario the shipped `clear_shader_cache.cmd/.sh` scripts exist for). Fix: write to `<path>.tmp` then `std::filesystem::rename` (atomic on POSIX and Windows same-volume), and treat a GPU-side shader creation failure on a cache hit as a cache miss: delete the blob and retry the compile path once.
+
+**Impact:** Shader cache self-heals instead of requiring users to learn about and run the cache-clear helper script.
+
+#### ROB-04: Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 118-126) |
+
+The content-addressed cache hashes only the final translated GLSL (`vertex + "\x1f" + fragment`, `slang_compile.cpp:121-122`). That is the right primary key — it automatically captures include changes, binding rewrites, and chain position — but it does not include the glslang version, the SPIR-V target version, or any cache-format salt. When the FetchContent-pinned glslang (`3rdParty/glslang`, currently 16.6.0) is bumped and its codegen changes for identical input GLSL, every user's `shaders/cache/` keeps serving the old SPIR-V indefinitely, since the cache survives binary updates as user data. The header comment at `:118-120` ("any change to translation invalidates") is true only for translator-visible changes, which is precisely what a compiler upgrade is not. Fix: mix a `kCacheVersion` constant plus the glslang version string into the hashed payload — one line in the key construction, and optionally prune cache files whose names don't carry the current version.
+
+**Impact:** Compiler upgrades take effect for all users instead of silently doing nothing until each user manually clears their cache.
+
+#### ROB-05: Unclamped scale factors cause float→Uint32 UB and garbage FBO sizes
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 641-655, 679-688) |
+
+Pass scale factors are parsed as floats with no magnitude clamp (`scale0 = 1e30` is accepted, and `scale_type0 = absolute` with a huge value likewise), then resolved sizes go through `static_cast<Uint32>(std::max(1.0F, std::floor(out + 0.5)))`. Casting an out-of-range float to `Uint32` is undefined behavior; in practice it yields garbage target sizes that then feed `SDL_CreateGPUTexture` at `:679-688`, producing driver errors or enormous allocations. A typo'd preset (`scale100 = 1000000`) or hostile one can request gigapixel FBOs with no ceiling. The target-sizing code already handles aspect-corrected viewport math carefully (`preset_runner.cpp:46-60, 631-658`), so a clamp fits naturally at the same site. Fix: clamp each resolved dimension to `[1, min(deviceLimit, 16384)]` (SDL reports `SDL_PROP_GPU_DEVICE_CREATE_...` max texture dimensions) and log when a preset's scale was clamped.
+
+**Impact:** Malformed or extreme presets degrade to a clamped, logged load instead of UB, driver errors, or memory exhaustion.
+
+#### ROB-06: Data race on gpu-scaler.log between SDL log-capture threads and present thread
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 259-276, 208-214, 161-173) |
+
+`InstallSdlLogCapture` (`:259-276`) routes every `SDL_Log` call into gpu-scaler.log, and SDL3 GPU/audio/validation messages can originate on SDL-internal threads. The capture handler mutates `gLogFile`/`gLogBytes` and can trigger `RotateLog` (`:161-173`, which `fclose`s and re-`fopen`s), entirely unsynchronized with the main-thread `LogFileLine` writes (`:208-214`) that occur every frame/heartbeat. The worst case is use-after-close of the `FILE*` or a double rotation — not just interleaved text — though the window is small and the failure mode is a logging crash, which the failure contract then converts into a session fallback. All other scaler state is single-threaded, making this the only cross-thread surface in the mod. Fix: guard all log-file mutation with a `std::mutex` (cheap at this call rate) or marshal captured SDL messages onto the main thread via a lock-free queue drained by `PresentFrame`'s heartbeat.
+
+**Impact:** Logging remains crash-free under SDL-internal-thread errors, which is exactly when users need the log most.
+
+#### ROB-07: `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 175-193, 282-362, 346, 409-423, 477-485, 798-883, 1335-1379) |
+
+`PassRuntime` and `LutRuntime` hold raw `SDL_GPUShader*`/`SDL_GPUGraphicsPipeline*`/`SDL_GPUTexture*` members with no destructor, relying on `Runner::Unload` (`:1335-1379`) seeing them via `passes_`. During `Load`, per-pass shaders and pipelines are created before ownership transfer into `passes_` (`:490-492`), and `LoadLut` creates the LUT texture before its transfer buffer and command buffer succeed (`:831-859`) — so any mid-load failure (shader N fails, pipeline N fails, LUT transfer fails) leaves already-created GPU resources unreachable when the caller's `unique_ptr` destroys the runtimes. Today the blast radius is bounded because every `Load` failure path ends in a full `Shutdown()` + device destruction (`gpu_scaler.cpp:781-791, 815-817`), which frees everything; but the header's own contract ("Unload is safe to call anytime") is silently false mid-load, and any future reuse of `Runner` — hot reload, preset retry (see FEAT-01) — turns this into a real leak. Fix: give `PassRuntime`/`LutRuntime` RAII destructors that release owned SDL_GPU objects when the device pointer is set, or route mid-load failures through `Unload()` before returning the error.
+
+**Impact:** The runner becomes genuinely reusable for retry/hot-reload features without leaking GPU memory on partial failures.
+
+#### ROB-08: Mid-session vsync changes never reach the GPU swapchain
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 766-772, 805-809), `Source/options.cpp` (lines 1035-1055), `Source/utils/display.cpp` (lines 162-166, 887-890) |
+
+`SDL_SetGPUSwapchainParameters` — the only way to apply a new present mode to a live swapchain — is called solely inside `Reinit`'s window-change branch and the Vulkan-retry path. The `FrameRateControl` option (`Vertical Sync`) carries `RecreateUI` but has no change callback (callbacks are registered only for resolution/fullscreen/shaderFilter at `display.cpp:162-166`), so toggling vsync while the scaler is active changes nothing until restart or filter change. The SDL_Renderer path does honor the change on every `ReinitializeRenderer` (`display.cpp:887-890`), so behavior diverges between paths for the same toggle. Fix: register a change callback for the frame-rate control option that calls `SDL_SetGPUSwapchainParameters` with the current vsync setting when `IsActive()`, mirroring the shaderFilter callback pattern.
+
+**Impact:** The Graphics menu behaves identically on both render paths, eliminating a "setting did nothing" support class.
+
+#### ROB-09: Corrupt `diablo.ini` hard-fails startup with no recovery path
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **File(s)** | `Source/options.cpp` (lines 147-168) |
+
+`LoadIni` returns `std::expected` and, on parse failure, the caller immediately `app_fatal`s — a modal dialog and exit for a corrupted config file. This is inconsistent with the mod's own self-healing philosophy elsewhere (stale shader-filter values are sanitized to Off at `options.cpp:433-444`; the GPU path degrades to the stock renderer on failure). A user whose ini was corrupted by a crash mid-write, disk issue, or bad editor loses their entire session start until they manually locate and delete the file. Fix: on parse failure, rename the corrupt ini to `diablo.ini.corrupt-<timestamp>`, log the substitution, start with defaults, and let the next `SaveIni` write a clean file — keeping the fatal path only if the rename itself fails.
+
+**Impact:** A corrupt config becomes a recoverable inconvenience with a preserved copy for debugging instead of a hard startup block.
+
+#### ROB-10: `Runner::Run` failure-contract mismatch: header says transient, caller hard-fails
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.hpp` (lines 66-67), `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1040-1049) |
+
+The `Runner::Run` header documents a `false` return as "frame must be skipped (transient condition)", but `PresentFrame` treats *any* Run failure as a session-fatal hard error (`LogFailHard` → `gFailed` sticky). A transient failure of `SDL_BeginGPURenderPass` (`preset_runner.cpp:1191-1197`) — plausible during resize storms or driver hiccups — therefore permanently kills the GPU path for the session, when the documented intent was to skip one frame. The plumbing for the soft path already exists (`SubmitSkipAfterAcquire`, `gpu_scaler.cpp:247-251`). Fix: classify Run failures — out-of-memory/pipeline-level errors stay hard, transient render-pass/acquire errors return a distinct soft-failure signal that skips the frame and only escalates after N consecutive occurrences.
+
+**Impact:** Transient driver hiccups cost one skipped frame instead of silently downgrading the user to the software path for the rest of the session.
+
+#### ROB-11: LUT upload size computed in Uint32; no dimension cap on preset LUTs
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 840-855, 798-883) |
+
+`transferInfo.size = lut.width * lut.height * 4` is computed in `Uint32` arithmetic while the subsequent `memcpy` length is `size_t`; a surface whose byte size reaches 2^32 would wrap the transfer-buffer size against an un-wrapped memcpy length — a potential heap overflow. It is currently unreachable because SDL3_image caps decoded surfaces below 2 GiB, but the code relies on that external cap with no assertion of its own. Separately, there is no dimension cap: a legitimate-but-absurd 23000×23000 PNG LUT allocates ~2 GiB of RAM plus ~2 GiB of VRAM from a preset, with no guardrail. Fix: compute the byte size in `size_t`, assert `size <= UINT32_MAX` before assignment, and reject LUTs larger than a documented ceiling (e.g. 4096×4096, generous for every real libretro LUT) with a parse-time warning listing the file.
+
+**Impact:** Preset LUTs can neither trigger arithmetic wrap nor pressure memory beyond a documented, logged limit.
+
+#### ROB-12: Preset parser accepts six image extensions the PNG-only build cannot decode
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (line 124), `3rdParty/SDL3_image/CMakeLists.txt` (lines 22-39), `docs/SLANG_SPEC.md` (§3.5) |
+
+`LooksLikeImagePath` accepts `.png, .jpg, .jpeg, .bmp, .tga, .dds, .webp` for implicit texture references, but the vendored SDL3_image is deliberately built PNG-only (all other codecs disabled, stb backend off, to keep the binary lean and avoid `LOAD_PNG_DYNAMIC` dlopen issues). Presets referencing any of the six non-PNG extensions pass parsing and fail later at `IMG_Load` with a generic error, and SLANG_SPEC.md §3.5 ("Any SDL_image-decodable file") overstates the actual capability. Fix: restrict `LooksLikeImagePath` to `.png` (plus `.jpg` if support is ever added), emit a specific parse-time warning naming the unsupported extension, and correct the spec text.
+
+**Impact:** Users get an actionable "this preset needs JPEG, which this build doesn't support" message instead of a cryptic load failure.
+
+#### ROB-13: Known Integer Scaling crash remains (deliberately unfixed, documented)
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Robustness |
+| **File(s)** | `Source/utils/display.cpp` (`CalculatePreferredWindowSize`), `Source/engine/render/gpu/gpu_scaler.cpp` (`PresentFrame` zero-size-fit path), `docs/diablo-handoff.md` §8 |
+
+Combining the game's own Integer Scaling option with a desktop resolution that is not a whole-number multiple crashes: the integer factor truncates to 0 → divide-by-zero in `CalculatePreferredWindowSize`, and `PresentFrame` has a latent zero-size-fit path honoring the same option. VTSTech explicitly ruled this out of scope on 2026-10-14, and the failure signature is documented for support triage (GPU_SHADERS.md §Troubleshooting) with an abandoned fix diff snapshotted in the mod packaging notes. It is filed here solely so the audit record is complete and so the deliberate-unfixed status is visible next to the other robustness items; if anyone touches window-size math for another reason, the fix is small and should ride along.
+
+**Impact:** Documented as known; closure is opportunistic whenever display.cpp is next modified.
+
+---
+### Maintainability
+
+#### MAINT-01: CI rebuilds entire vendored dep tree on every push to every branch, no caching
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Maintainability |
+| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 41-49), `CMakeLists.txt` (lines 323-327) |
+
+The fork's only real CI declares `push` with **no branch or path filter** — every push to every branch, including README and docs edits, runs both heavy jobs (Linux gcc:14 container build and Windows MinGW cross-build). Neither job configures any `actions/cache` step or ccache, despite the build system auto-detecting ccache (`CMakeLists.txt:323-327`) — so every run re-downloads and recompiles SDL3, SDL3_image with libpng/zlib (git-clone-with-submodules), glslang, SPIRV-Cross, libzt, libsodium, bzip2, and the rest of the FetchContent tree from scratch. This wastes 20-40+ minutes of runner time per trivial commit, discourages small iterative pushes, and makes branch-based testing slow. Concurrency cancel-in-progress (`:47-49`) partially mitigates but doesn't fix the per-run cost. Fix: add `branches: [master]` plus `paths` filtering, and cache `~/.ccache` keyed on the compiler plus a lockfile-ish hash — ccache alone typically cuts repeat builds by 70-90%.
+
+**Impact:** Fast feedback for the actual shader/engine work being iterated on, at a fraction of the runner cost.
+
+#### MAINT-02: ~10K lines of dead built-in shader/LUT payload still compiled and embedded
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **File(s)** | `Source/engine/render/gpu/gpu_luts.hpp`, `Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp` (lines 101-5538), `Source/engine/render/gpu/gpu_shaders_msl.hpp` (lines 39-417), `Source/engine/render/gpu/shaders/vulkan/hqx_*.frag`, `scalefx_pass*.frag`, `CMakeLists.txt` (lines 145-153) |
+
+The built-in HQ2x/ScaleFX filters were removed from the option (`options.cpp:433-436`; the enum now has only `None`, and `gpu_scaler.cpp:962-964` documents the removal), but their payloads still ship: `gpu_luts.hpp` (3,820 lines of HQ2x/HQ3x/HQ4x LUT data) is referenced by nothing anywhere in the build; the prebuilt SPV header embeds ~5.4K lines of dead `kHqxIndex`/`kHqxBlend`/`kSfxPass0-4` SPIR-V (only `kVertex` and `kBlit` are live); the MSL header carries the same dead set; and the `gpu_scaler_spv` CMake target still compiles the 7 dead `.frag` sources into the generated header on every build that has glslangValidator. All of it is faithful work worth keeping in git history, but it costs compile time, binary size, and — worst — reader confusion, since the audit trail shows new contributors assuming the built-in path is live. Fix: delete the dead sources from the SPV generation list, delete `gpu_luts.hpp` (the handoff doc already marks it "safe to delete"), and trim the two embedded headers to `kVertex`/`kBlit`.
+
+**Impact:** Binary shrinks, builds get faster, and the render path reads as what it is: preset-only.
+
+#### MAINT-03: Four broken upstream workflows ship active; cleanup script never run
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **File(s)** | `.github/workflows/clang-format-check.yml` (line 25), `clang-tidy-check.yml` (line 21), `translations.yml` (line 25), `cache-cleanup.yml` (line 12), `cleanup-fork-workflows.sh` / `.ps1` (repo root) |
+
+Four leftover upstream workflows pin `actions/checkout@v7`, a version that does not exist, so every triggered run fails instantly at checkout — red X's on every push for format checks, translation validation, and tidy that never actually run. The fork author anticipated exactly this: `cleanup-fork-workflows.sh`/`.ps1` at the repo root delete every workflow except `gpu-shaders.yml` — but the scripts were never executed. Additional noise: `clang-tidy-check.yml` configures an SDL2 apt stack that doesn't match the mod's SDL3 configuration, and dependabot keeps bumping the dead workflows. Fix: run the shipped cleanup script (or delete the four files), and decide deliberately whether clang-format checks should run on the fork (they'd need an updated action version).
+
+**Impact:** Green CI badge means something again; contributors stop ignoring red X's that carry no signal.
+
+#### MAINT-04: Release builds never attach to GitHub Releases
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 44-45, 181-191, 252-256) |
+
+The workflow triggers on `release: published`, but no step uploads the built artifacts to that release — the zips live only as workflow artifacts with 90-day retention, requiring the maintainer to manually download and re-attach them. Users hitting the README's "latest release" link rely on that manual step having happened; a missed step means the release page shows notes with no binaries while the actual builds silently expire. The fix is mechanical: in each job, add a `softprops/action-gh-release` (or `gh release upload`) step conditioned on `github.event_name == 'release'`, uploading the same zips already staged for artifacts.
+
+**Impact:** Every published release automatically carries its Windows and Linux builds, removing a manual distribution step that can silently fail.
+
+#### MAINT-05: Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 158, 241), `CMake/Mods.cmake` (line 59), `CMakeLists.txt` (lines 714-716) |
+
+The CI package steps copy `build/devilutionx.mpq` plus the shader helper scripts into the zips, but not `build/mods/hf.mpq` — which the build system does produce when `smpq` is available (as it is on the CI Linux job, which installs it). CPack-based packaging installs `mods/hf.mpq` (`CMakeLists.txt:714-716`), but the fork's hand-rolled zips bypass CPack, so every shipped build is Diablo-only even though the Hellfire mod asset tree (`mods/hf/`) is fully present in the repo. Users who own Hellfire get a silent "expansion doesn't work" experience. Fix: add `mkdir -p mods && cp build/mods/hf.mpq mods/` (guarded on file existence) to both job's package steps, next to the existing `devilutionx.mpq` copy.
+
+**Impact:** Shipped zips support the full game out of the box, matching what CPack-based installs deliver.
+
+#### MAINT-06: vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **File(s)** | `CMake/VcPkgManifestFeatures.cmake` (lines 4-5), `vcpkg.json` (lines 17-56) |
+
+`VcPkgManifestFeatures.cmake` appends feature name `"sdl3"` to the manifest features list when `USE_SDL3=ON`, but `vcpkg.json` defines only `sdl1`, `sdl2`, `encryption`, `translations`, and `tests` — no `sdl3` feature exists. Any vcpkg-based configure (the documented MSVC/Visual Studio path via `CMakeSettings.json`) with `USE_SDL3=ON` aborts during manifest install, blocking the flagship feature on the primary Windows-from-source toolchain. The fix is a two-line addition to `vcpkg.json`: `"sdl3": { "description": "SDL3 backend with GPU scaler support", "dependencies": [ "sdl3", { "name": "sdl3-image" } ] }`. While there, `version-string: 1.6.0` diverges from `VERSION` = `1.6.0-dev` (cosmetic).
+
+**Impact:** MSVC contributors can build the actual mod instead of hitting an opaque manifest error.
+
+#### MAINT-07: Magic number 9 / dead enum values / unused include in gpu_scaler.cpp
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 15, 47-61, 506-508, 1127-1136) |
+
+`SDL_GPUShader *gFragmentShaders[9]` is sized for the removed filter set while the `Program` enum and `kFragmentPrograms[]` only ever use index 1; `FilterDisplayName`'s switch carries a lone `case None: break;` fallthrough; `<csetjmp>` is included but never used. None of this is wrong — it's residue from the built-in-filter removal that invites future off-by-one mistakes when someone resizes the enum. Fix: shrink the array to the live program count behind a `kMaxFragmentPrograms` constant, drop the unused include, and flatten the switch.
+
+**Impact:** The scaler's program table reads honestly, preventing a class of silent indexing bugs.
+
+#### MAINT-08: Trim/lowercase/case-compare utilities triplicated across preset TUs
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 80-96), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 24-33), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 31-40, 267-270) |
+
+Three near-identical `Trim`/lowercase/`CaseInsensitiveEqual` implementations live in the four preset translation units, plus lowercase-loop variants at each call site. This drift class is not hypothetical: the F9 case-asymmetry binding bug documented in the SLANG_SPEC audit came from exactly this duplication. Fix: hoist one implementation into a shared `preset_string_utils.hpp` next to `preset_types.hpp` and delete the rest.
+
+**Impact:** One place to fix the next case-sensitivity bug instead of four.
+
+#### MAINT-09: Comment/code mismatches: `#reference` merge order and silent UBO validation
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 344-348 vs 357-365), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 931-934, 973-981), `docs/SLANG_SPEC.md` (§4.6) |
+
+Two documentation/code divergences will mislead the next preset-pipeline contributor. First, the `#reference` merge comment says "the first chain providing passes wins", but the code overwrites `preset.passes` per parent — the **last** chain wins (already tracked as SLANG_SPEC gap #13; the comment remains unfixed). Second, `ValidateBlockMembers`' doc says unknown UBO members are "collected as warnings", but the warning push is commented out with a maintainer note ("bloats the log very fast - VTSTech"), so unknown members now fail silently to zero — contradicting SLANG_SPEC §4.6's promise of a load-time warning. Fix: correct the comment to "last chain wins" (or implement first-wins), and replace the disabled per-item warning with a single aggregated count logged once per preset ("N unknown UBO members coerced to 0").
+
+**Impact:** The normative spec and the code agree again, and silent-coercion behavior is at least observable.
+
+#### MAINT-10: Diagnostics log written next to the executable — fails silently in protected dirs
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 104-109, 175-194) |
+
+`LogFilePath` is `SDL_GetBasePath() + "gpu-scaler.log"`. For the portable-zip deployments this fork targets that is exactly right, but when the executable lives in `Program Files` or another protected location, the open fails once and logging silently disables forever (the one-shot `initialized` flag in `LogFile`). Users lose the diagnostics exactly when running from an installed location. Fix: on first open failure, fall back to the platform user-config dir (the same location `diablo.ini` already uses via `GetIniPath`) and note the effective log path in the OSD or stdout once.
+
+**Impact:** Diagnostics work everywhere, and the fallback location is discoverable when support asks for the log.
+
+#### MAINT-11: Stale packaging metadata: DEB SDL2 deps, Brewfile, vcpkg version, docs/building.md
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `CMakeLists.txt` (lines 810-814), `Brewfile` (lines 1-7), `vcpkg.json` (line 4), `docs/building.md` |
+
+Four small staleness points cluster around "metadata predates the mod": CPack DEB `Depends` hardcodes `libsdl2-2.0-0, libsdl2-image-2.0-0` (wrong for any SDL3 package); the Brewfile lacks `sdl3` and `glslang-tools`, so macOS builders silently vendor SDL3 and use the prebuilt SPV header without knowing why; `vcpkg.json`'s `version-string` says `1.6.0` vs `VERSION` `1.6.0-dev`; and `docs/building.md` remains upstream-generic with SDL2 apt lines and no `USE_SDL3`/`USE_GPU_SCALER` section (the mod's build docs live in README + GPU_SHADERS.md instead). None blocks a current CI build; all four will confuse the next person building outside the CI matrix. Fix: 20 minutes of metadata alignment, and add a short "SDL3/GPU scaler build" section to building.md pointing at README's quick start.
+
+**Impact:** Out-of-matrix builds (macOS, MSVC, DEB) work on the first try instead of after archaeology.
+
+#### MAINT-12: God-files at engine core: diablo.cpp 3553 lines, scrollrt.cpp 1933 lines
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/diablo.cpp`, `Source/engine/render/scrollrt.cpp`, `Source/engine/dx.cpp` |
+
+The upstream-inherited core concentrates init, loop, level-load transitions, and message handling in `diablo.cpp` (3,553 lines) and frame composition in `scrollrt.cpp` (1,933 lines), while `dx.cpp` interleaves three render-path generations (SDL1/2/3 + GPU scaler) behind ifdefs. This is upstream's architecture and the fork correctly *added* clean modules (`gpu/`, `preset/`) rather than deepening the entanglement — the present path integration is, however, a new entanglement point: the GPU branch, SDL_Renderer branch, and window-surface branch all live in `RenderPresent` with cross-file state (`ScalerWanted`, `HeadlessMode`, backbuffer state). Any split should be upstream-first; the fork-local improvement is simply to keep the scaler's present integration isolated in `dx.cpp:312-325` (it currently is — preserve that boundary).
+
+**Impact:** The fork's integration footprint stays reviewable and upstream merges remain feasible.
+
+#### MAINT-13: Broken symlink blobs in repo break tooling and cross-compile helpers
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `CMake/platforms/aarch64-linux-gnu-pkg-config`, `CMake/platforms/i386-linux-gnu-pkg-config`, `Packaging/windows/mingw-prep64.sh` |
+
+Three git blobs are mode 120000 (symlink) whose stored content is the *entire script text* rather than a target path — a historical corruption — so any Linux checkout materializes dangling symlinks. Consequences observed during this audit: `rg`/file-scanning tools error out traversing the tree, and the aarch64/i386 cross pkg-config wrappers and the mingw-prep helper are unusable. The core x64 build is unaffected. Fix: replace each with a real file (the content is recoverable from git object metadata or upstream history at the commit where the blob was created).
+
+**Impact:** Repo scans stop erroring and the cross-compile helper scripts actually exist after checkout.
+
+#### MAINT-14: Misleading legacy name: `nthread_has_500ms_passed` no longer means 500 ms
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **File(s)** | `Source/nthread.cpp` (lines 214-244) |
+
+The fixed-timestep gate function is named `nthread_has_500ms_passed` but its threshold is `gnTickDelay` (20-50 ms, default 50), making the name a fossil of an earlier design. Anyone auditing timing behavior (e.g. checking that the GPU scaler's non-blocking acquire doesn't stall ticks) must read the body to learn what the name asserts. Fix: rename to `nthread_should_run_game_tick` (upstream-coordinated if possible), or at minimum add a one-line comment at the declaration stating the actual threshold source.
+
+**Impact:** Timing-critical review starts from a truthful name.
+
+---
+
+### Performance
+
+#### PERF-01: Per-frame transfer buffer create/map/unmap round-trip
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Performance |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 974-1022) |
+
+`PresentFrame` creates a fresh `SDL_GPUTransferBuffer`, maps it, memcpys the frame, unmaps, and destroys it — every single frame. The code comments explain this is deliberate: reusing a buffer the previous frame's copy pass might still be reading would be a hazard. That reasoning is sound for a single buffer but not for a small ring: a 2-3 entry ring of long-lived transfer buffers (one per in-flight frame) removes the per-frame create/destroy round-trip while preserving the never-overwrite-an-in-flight-buffer guarantee. At 640×480×4 ≈ 1.2 MB per upload the cost is small but nonzero; it also adds allocation churn to driver telemetry. Fix when profiling shows transfer-buffer creation in the frame budget, or as a low-risk first GPU-path change for a new contributor.
+
+**Impact:** One less driver-level allocation/free pair per rendered frame, with a bounded, testable change.
+
+#### PERF-02: Per-pass, per-frame heap allocations and repeated string parsing in Runner::Run
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Performance |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 1086, 1202-1207, 1217, 1228-1267) |
+
+Every frame, for every pass, `Runner::Run` heap-allocates a `std::vector<SDL_GPUTextureSamplerBinding>` (`:1217`), a `std::vector<uint8_t>` for each pushed uniform block (`:1086`), copies `UniformBlockRuntime` values (`:1202-1207`), and re-parses texture binding names with repeated `std::stoi`/`substr` (`:1228-1267`) — work whose results are identical between frames and change only on preset load or resize. None of this currently registers against the frame budget at Diablo resolutions, but it is pure waste in the hottest loop of the mod. Fix: precompute a per-pass binding table and std140 byte blobs in `Load`/`EnsureTargets`, storing them in `PassRuntime`; `Run` then only flips double buffers and binds. This also removes the per-frame `stoi` exposure surface that ROB-01 documents.
+
+**Impact:** The frame loop becomes allocation-free and string-free, and ROB-01's crash surface shrinks to load time only.
+
+#### PERF-03: Dead work in the present path: unused fitScale and unread uniform member
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Performance |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 945-954, 1112), `Source/engine/render/gpu/shaders/vulkan/blit.frag` (lines 11-13) |
+
+`fitScale` is computed every frame but consumed only by the removed non-custom branch (`:962-967` — dead since the built-in filters were deleted), and `uniforms.params[0] = 0.0F` feeds a `uParams` member that `blit.frag` declares but never reads. Trivial cost, real reader cost: both suggest live builtin-fit logic that no longer exists. Fix: delete both (and the shader member), keeping the comment at `:962-964` that documents why the branch is gone.
+
+**Impact:** The present path contains only live work, and the blit shader's uniform layout matches what the code actually sends.
+
+#### PERF-04: Whole-surface re-upload each present despite dirty-rect blits
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Performance |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 974-1022), `Source/engine/dx.cpp` (lines 159-210) |
+
+The CPU-side blit into `RendererTextureSurface` is dirty-rect incremental (`dx.cpp:193-200`), but `PresentFrame` always uploads the full `gameW×gameH×4` frame to the GPU. At Diablo's internal resolutions (640×480 / 960×540) the whole upload is ~1-2 MB and cheap; this finding is informational and becomes actionable only if the scaler is ever used at high internal resolutions or on bandwidth-constrained devices (the handheld platforms the upstream tree targets). If it ever matters, the fix is a dirty-rect upload path using `SDL_QueueGPUCommandBuffer`-friendly staged copies per rect — a nontrivial change that should be profiled first.
+
+**Impact:** Documented ceiling: the GPU path's upload cost is O(frame), not O(dirty), and that's acceptable at target resolutions.
+
+#### PERF-05: Shader cache grows unbounded; `.slang` sources re-read 3-4× per load
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Performance |
+| **File(s)** | `Source/engine/render/gpu/preset/slang_compile.cpp` (lines 171-175), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 237-255), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 114-122, 1137-1143) |
+
+Two cold-path inefficiencies compound on preset load. First, the cache never prunes: every distinct translated source leaves a `.vert.spv`/`.frag.spv` pair in `shaders/cache/` forever, so large shader packs that get updated accumulate dead blobs indefinitely (and ROB-04's version-salt fix would accelerate this without pruning). Second, each `.slang` is read from disk 3-4 times per load (pragma pre-scan, include resolution, fingerprint re-read). For single-preset loads this is milliseconds; for 20+ pass packs on cold cache it is noticeable. Fix: prune cache entries older than N days or not matching the current version salt at startup (best-effort, behind a log line), and read each `.slang` once into a string view passed through the three stages.
+
+**Impact:** Cache directories stay proportional to installed presets, and multi-pass pack loading is single-read.
+
+---
+### New Features
+
+#### FEAT-01: Preset failure retry / hot reload of failed presets
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 520-566, 781-791), `Source/engine/render/gpu/preset/preset_runner.cpp` (`Runner::Load` failure paths) |
+
+Today a preset that fails to load disables the shader filter for the entire session (`:781-791`); the user must reopen the folder browser and re-select to retry. This is most painful during exactly the workflow this mod's own docs recommend — iterating on a preset pack, where a syntax error means restarting the selection flow (or, for cache-related failures like ROB-03, potentially restarting the game after clearing the cache). The friction point is visible in the code structure: `EnsurePresetRunner` already rebuilds "only when resolved path changes" (`:520-566`), so a retry path exists but is gated behind path identity. A minimal version — re-attempt `EnsurePresetRunner` when the user selects the same preset again (compare stored path + file mtime) — requires no new UI. The natural extension, watching `shaders/` for changes and hot-reloading the active preset, is where RAII cleanup (ROB-07) becomes a prerequisite.
+
+**Impact:** Shader pack development and cache-recovery workflows stop requiring menu navigation or restarts.
+
+#### FEAT-02: Resolve the Metal strategy: wire the MSL path or fail fast with a clear message
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 682-729, 719-720), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 228-231), `Source/engine/render/gpu/gpu_shaders_msl.hpp`, `docs/diablo-handoff.md` §4 |
+
+The device layer accepts Metal on macOS (`CreateDevice` sets both SPIR-V and MSL shader format props, `:719-720`), and the repo embeds 437 lines of hand-ported MSL for the shared Vertex/Blit programs — but `Runner::Load` hard-rejects every non-Vulkan backend ("runtime shader presets are not supported on the metal backend", `:228-231`). Net effect: on macOS, every shader filter choice deterministically fails into the generic "custom preset failed to load" path (`:786-790`), which neither explains the platform limitation nor offers a toggle. The handoff doc separately claims SDL transpiles SPIR-V to MSL at runtime and marks the whole area "untested" — the doc and code disagree, and the code is authoritative. Two coherent resolutions: (a) remove Metal acceptance at `CreateDevice` until validated, surfacing "GPU shader mod requires Vulkan; Metal is not yet supported" at device-selection time, or (b) actually validate the Metal path (SDL's Metal backend does accept SPIR-V via transpilation in some configurations) and update the doc to match. Either is an afternoon; the current state is the only genuinely confusing one.
+
+**Impact:** macOS users get an honest, specific message instead of a misleading generic preset failure.
+
+#### FEAT-03: Surface preset errors in-game instead of only in gpu-scaler.log
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 1151-1192, 533-558), `Source/engine/render/gpu/preset/preset_parser.cpp` (error-string plumbing) |
+
+When a preset fails to load, the entire user-visible symptom is that the Shader Filter silently shows `Off` (or the previous state) — every diagnostic detail goes to gpu-scaler.log next to the executable, which most users will never find. The building blocks for in-game feedback already exist: the OSD path (`DrawFilterOsd`/`ShowFilterOsd`, `:1151-1192`) already renders status text into the 8-bit frame, the failure contract already carries a descriptive `std::string` error from every failure site (`EnsurePresetRunner` logs it at `:533-558`), and the preset display name already flows to the OSD. Fix: extend the OSD to a two-line state — active filter name, and when the last load failed, the first line of its error (e.g. `Shader: (failed) cannot open shader file: …`) with the full text in the log. The `(Unavailable)` convention documented in the README already establishes the pattern; this completes it for load failures.
+
+**Impact:** Users self-diagnose the top failure causes (missing shader files, wrong LFS pull) without filing support requests.
+
+#### FEAT-04: In-game `#pragma parameter` tuning UI (params are parsed but locked at defaults)
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | New Feature |
+| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (parameter parsing), `Source/engine/render/gpu/preset/preset_runner.cpp` (`FillBlockBytes` uniform fill), `docs/diablo-handoff.md` §4 |
+
+The pipeline fully parses libretro `#pragma parameter` declarations and feeds them into the std140 uniform blocks at their default values — by explicit design decision ("`#pragma` params at defaults", handoff §4). But the parsed data model already carries names, min/max/step, and the uniform plumbing is live every frame, so an in-game tuning surface (a submenu off the shader browser listing the active preset's parameters, values persisted per-preset into `diablo.ini`) would complete the RetroArch parity story with no new GPU work. This is the single highest-leverage quality-of-life feature for shader users: libretro packs rely on parameter tweaks (e.g. CRT mask strength, curvature amount), and today the only way to change them is editing the preset file. Scope it as a follow-up to the options-browser work that already handles dynamic lists (the folder-browser navigation at `options.cpp:577-626` demonstrates the machinery).
+
+**Impact:** Users tune shaders from the game instead of editing files, matching the RetroArch experience the mod imports.
+
+---
+
+### Architecture
+
+#### ARCH-01: Window-ownership hand-off protocol is spread across three files with pointer-only history
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Architecture |
+| **File(s)** | `Source/utils/display.cpp` (lines 638-649, 772-807, 828-872), `Source/engine/render/gpu/gpu_scaler.cpp` (lines 81-86, 673-676, 731-820), `Source/engine/dx.cpp` (lines 294-373) |
+
+The mod's deepest structural constraint is that the SDL window alternates ownership between SDL_Renderer (D3D11/GL) and SDL_GPU (Vulkan) — a hard requirement on Windows, where DXGI allows one flip-model swapchain per HWND. The protocol implementing this is correct today but is distributed with no single owner: `display.cpp` creates windows without a renderer, recreates them when swapchain history exists (`:869-872`), and reinitializes renderers; `gpu_scaler.cpp` claims/releases the window and tracks history via `gLastClaimedWindow`, a pointer deliberately never cleared (`:81-86`) and compared by address only (`WindowHasSwapchainHistory`, `:673-676`) — which is vulnerable to an ABA false-positive if a destroyed window's address is recycled, and which cannot distinguish "this window had a swapchain" from "some window with this address did". The failure contract and fallback funnel (`dx.cpp:315-321`) add a third participant. A future third presentation path, or a refactor of any participant, can silently break the hand-off in ways that only manifest on Windows. Fix: consolidate the protocol into one place — e.g. a small `WindowClaim` struct in `display.cpp` owning the has-swapchain-history flag as *state* (set on claim, cleared on release) rather than inferred pointer identity, with `gpu_scaler` calling into it.
+
+**Impact:** The riskiest invariant in the mod becomes locally reasoned instead of distributed, and the ABA hazard disappears by construction.
+
+#### ARCH-02: Fork branding and asset-integrity hard aborts are entangled with upstream init
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Architecture |
+| **File(s)** | `Source/diablo.cpp` (lines 905-907, 1219-1226, 1228-1242), `Source/mods/mod_identity.{h,cpp}` |
+
+The fork's identity lives in two places that couple it to upstream behavior: `SetApplicationVersions` hardcodes `"github.com/VTSTech/DevilutionX "` into `gszProductName` (`:1219-1226`), and the multiplayer asset-integrity gate `app_fatal`s mid-game loop when modified lua/tsv/sol assets are detected (`:905-907`), with `CheckArchivesUpToDate` similarly hard-failing on stale MPQs at startup (`:1228-1242`). These are reasonable choices individually — mod identity must be distinguishable for MP compatibility, and asset integrity protects the MP ecosystem (the `mods/mod_identity.cpp` SHA-256 manifest system is the fork-aware part) — but they are spread through upstream init code as edits rather than as a fork-identity module, which makes upstream merges harder and makes the hard-abort policy invisible to contributors reading `mods/`. Fix: gather the fork's identity/version/MP-policy code into `Source/mods/` (where `mod_identity` already lives) behind small functions the upstream files call, so the delta is enumerable.
+
+**Impact:** Fork-vs-upstream diffs stay reviewable and the MP abort policy has a single, documented home.
+
+---
+
+### Testing
+
+#### TEST-01: Zero test coverage for the fork's ~15K-line GPU pipeline
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Testing |
+| **File(s)** | `test/` (whole tree — zero references to gpu/shader), `Source/engine/render/gpu/` (all files), `Source/CMakeLists.txt` (lines 1068-1072) |
+
+`grep -ri 'gpu\|shader' test/` returns nothing: the mod's parser, translator, compiler bridge, and runner — code with 21 of this audit's findings against it — has no automated tests. The codebase is unusually test-friendly (60 gtest targets, headless mode, golden-image text tests), and the mod even ships a purpose-built offline harness, `preset_smoke.cpp` (parse → translate → glslang-compile with cache disabled, exit 0 iff all presets compile), but it is built `EXCLUDE_FROM_ALL` and never registered with ctest, so nothing runs it. Highest-value first steps, in order of effort: (1) register `preset_smoke` with ctest against a committed micro-corpus of presets (5-10 files covering multi-pass, feedback, history, LUTs, malformed cases asserting *failure with error string, not crash* — directly regressing ROB-01/ROB-02); (2) unit-test `ParsePreset` on the same corpus (pure function, no GPU); (3) unit-test `TranslateSlang` stage-splitting and UBO rewriting on inline strings; (4) gate the runner behind a headless software Vulkan (e.g. lavapipe) in CI when feasible.
+
+**Impact:** The failure-contract violations and translator regressions this audit documents become mechanically un-reintroducible.
+
+#### TEST-02: No CI workflow ever runs the existing test suite
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Testing |
+| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 113, 224), `.github/workflows/clang-tidy-check.yml`, `codecov.yml` (root) |
+
+Both gpu-shaders.yml jobs pass `-DBUILD_TESTING=OFF` explicitly; the clang-tidy workflow configures a build only to produce `compile_commands.json` and never executes ctest; and `codecov.yml` is configured with project target 0%, `patch: no`, and comments disabled — coverage reporting is fully dormant. Net effect: the entire existing gtest suite (dungeon generation, savegame codec, UI state, the deterministic timedemo full-state regression) runs only when a contributor remembers to run it locally. Any regression in *upstream* code the fork carries — or in the options/render integration the fork touches — ships unnoticed. Fix: add a lightweight `tests.yml` workflow (ubuntu-24.04, vendored deps, `BUILD_TESTING=ON`, `ctest --output-on-failure`), reusing the linux job's container pattern from gpu-shaders.yml; enable codecov upload with the existing ignore patterns.
+
+**Impact:** The project's strongest existing quality asset — its deterministic demo-based regression harness — starts working automatically on every push.
+
+#### TEST-03: Options layer (ini round-trip, shader-filter self-heal) untested
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Testing |
+| **File(s)** | `Source/options.cpp` (lines 394-626), `test/ini_test.cpp` (only the raw parser is tested) |
+
+The options machinery the fork extends is logic-rich and ini-corrupting-if-wrong, yet untested: `OptionEntryShaderFilter`'s stale-builtin self-heal (`:430-444`), the deferred-rescan deadlock avoidance (`:437-443`), folder-browser navigation value encoding (`:577-626`, negative reserved values -1/-2 base), and the commit-preset-path-before-value-change ordering (`:612-618`). The existing `ini_test` covers only the low-level `utils/ini` parser, not the `OptionEntryBase` layer. These are pure, headless-testable functions — no GPU, no window — making them ideal gtest targets. Cover: stale values 1-99 sanitize to Off; custom index 100+N maps to the stored preset path; navigation entries survive list rebuilds; a save/load round-trip preserves both ini keys.
+
+**Impact:** The settings surface the mod actually modified gets pinned before further feature work (FEAT-04) builds on it.
+
+#### TEST-04: Baked-shader drift: regenerated SPIR-V is never diffed against the committed header
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Testing |
+| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 174-179), `CMakeLists.txt` (lines 134-170), `Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp` |
+
+The build uses `glslangValidator` to regenerate the SPV header when available and falls back to the committed `gpu_shader_spv_prebuilt.hpp` otherwise — a good resilience design — but CI only *recompiles* the GLSL corpus as a sanity check (`:174-179`) without diffing the output against the committed header. If the GLSL sources are edited and the prebuilt header is not regenerated (the exact workflow the fallback invites on machines without glslang), a stale binary ships silently and the drift is invisible until a shader behaves differently between build environments. Fix: one CI step — regenerate the header with `gen_spv_header.cmake`, `git diff --exit-code` against the committed file, and fail with "run the SPV regeneration, commit the header".
+
+**Impact:** The two shader-provisioning paths can never disagree without CI saying exactly how to fix it.
+
+#### TEST-05: Fixture-dependent tests silently skip when MPQ assets are absent
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Testing |
+| **File(s)** | `test/main.cpp` (lines 40-84), `test/timedemo_test.cpp` (lines 50-53) |
+
+The most valuable regression test in the repo — the headless timedemo that replays a recorded demo and hero-compares the result — plus several benchmarks `GTEST_SKIP` when the game's MPQ assets are absent. That is the right call for a fresh checkout, but it means an environment misconfiguration (or a future CI job that forgets the asset step) silently reports green with the suite hollowed out. The custom skip-summary listener (`test/main.cpp:14-77`) already prints skip counts; what's missing is enforcement. Fix: add a `--fail-on-skip` style flag (or env var) used by CI that converts skips into failures, so a CI test job that lost its fixtures fails loudly instead of passing empty.
+
+**Impact:** CI test results are trustworthy — green means the regression net was actually cast.
+
+---
+
+## Priority Matrix
+
+The project versions as `1.6.0-dev` without its own release cadence, so relative timelines are used.
+
+| Timeline | Findings |
+|----------|----------|
+| **Immediate** (next 1-2 builds) | ROB-01 (stoi crash), ROB-02 (allocation DoS), TEST-02 (run ctest in CI), MAINT-01 (CI caching + trigger filter), TEST-01 (register preset_smoke + parser tests) |
+| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), MAINT-02 (delete dead shader payload), MAINT-03 (run cleanup-fork-workflows), MAINT-04 (release upload step), MAINT-05 (package hf.mpq), MAINT-06 (vcpkg sdl3 feature), ARCH-01 (window claim protocol), TEST-03 (options tests) |
+| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-04, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-07 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
+
+Sequencing notes: TEST-01/TEST-02 belong in the immediate window despite being testing items — the ROB-01/ROB-02 fixes are one-line guards whose regressions only stay fixed if *something* runs; adding the preset failure-mode tests alongside the crash fixes is the cheapest possible verification. ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point. MAINT-02 (dead payload removal) should land before any future touch of the shader headers, so the diff doesn't re-review dead code.
+
+---
+
+## Architecture Strengths
+
+These patterns are working well and should be preserved during any refactoring:
+
+1. **A disciplined failure contract with correct SDL3-GPU state-machine handling.** The acquire/cancel/skip matrix in `PresentFrame` is exactly right — command buffers are cancelled only *before* swapchain acquire (`gpu_scaler.cpp:922`), and empty-submit-after-acquire is implemented with the API-contract rationale documented at the call site (`:239-251`). The session-sticky `gFailed` flag downgrades to the stock renderer instead of retrying a broken GPU every frame (`:78-80`, `dx.cpp:315-321`). This is the pattern the audit's ROB findings ask to extend, not replace.
+
+2. **The stock render path is untouched, making the mod strictly additive.** All rendering still targets the 8-bit `PalSurface`; the GPU scaler receives an already-converted RGBA frame and owns only the present step (`dx.cpp:312-325`). Palette animation, fades, and every upstream rendering feature work identically with the scaler active — and any scaler failure returns the user to a renderer that never changed. This layered design is why the mod can ship at all without forking gameplay behavior.
+
+3. **Field-hardened observability built into the render path.** The rotating, size-capped gpu-scaler.log with session headers, SDL log chaining, per-5s heartbeat counting silently-skipped frames, `DEVILUTIONX_GPU_DEBUG` validation mode, load-phase probes in `interfac.cpp`, FNV-1a content fingerprints per translated pass, and git-lfs pointer detection in LUT failures (`slang_translate.cpp:1136-1144`, `preset_runner.cpp:67-89`) — every "round N" comment in the code corresponds to a real field failure that can no longer repeat silently. Most projects add this telemetry only after their second crisis; this one bakes it in.
+
+4. **The preset runner honors libretro semantics in depth, with per-decision commentary.** Scale-rule target sizing with aspect-corrected viewports, feedback double-buffering with correct pre-flip reads, a seeded history ring so early `OriginalHistory#` taps never read undefined GPU memory, a reasoned MVP orientation law for even/odd pass chains (`preset_runner.cpp:924-947`), and a self-critical normative spec (`SLANG_SPEC.md` §7 tracks ~20 gaps with fix commits). Two static-audit-discovered wrongness bugs (history ring, bare scale) were fixed with regression tests and documented in `docs/audit/`.
+
+5. **Fully reproducible vendored dependencies with zero submodule risk.** `.gitmodules` is empty by design; every `3rdParty/*` entry is a thin wrapper pinning a tarball+SHA256 or exact GIT_TAG, with system-first resolution via the consistent `DEVILUTIONX_SYSTEM_*` convention. The zlib/libpng dual-provisioning between SDL_image paths is worked around with documented CMake care (`CMake/Dependencies.cmake:8-22, 170-205`). Nothing about the dependency tree is left to chance.
+
+6. **Distribution-grade CI gates encoded as executable lessons.** gpu-shaders.yml fails the build if a Windows binary imports a runtime DLL, if a Linux binary exceeds its glibc-2.36 floor, or if `--version` doesn't embed the commit hash (`:124-148, 244-249`) — three real field failure modes converted into automated gates, alongside per-run binary size telemetry. The portability gates in particular are the kind of institutional knowledge that usually lives only in a maintainer's head.
