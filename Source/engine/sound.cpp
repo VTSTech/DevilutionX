@@ -78,6 +78,14 @@ std::expected<void, std::string> LoadAudioFile(const char *path, bool stream, So
 		return std::unexpected(StrCat("Audio file not found\n", path, "\n", SDL_GetError(), "\n" __FILE__ ":", __LINE__));
 	}
 
+	// Asset context for load-failure diagnostics: SoundSample::SetChunk's
+	// failure log must be able to name the file and the archive it came from.
+#ifndef UNPACKED_MPQS
+	const std::string_view archivePath = ref.archive != nullptr ? ref.archive->path() : std::string_view {};
+#else
+	const std::string_view archivePath {};
+#endif
+
 #ifdef STREAM_ALL_AUDIO_MIN_FILE_SIZE
 #if STREAM_ALL_AUDIO_MIN_FILE_SIZE == 0
 	stream = true;
@@ -106,9 +114,13 @@ std::expected<void, std::string> LoadAudioFile(const char *path, bool stream, So
 		if (!handle.read(waveFile.get(), size)) {
 			return std::unexpected(StrCat("Failed to read file\n", foundPath, ": ", SDL_GetError(), __FILE__ ":", __LINE__));
 		}
-		const int error = result.SetChunk(waveFile, size, isMp3);
+		const int error = result.SetChunk(waveFile, size, isMp3, foundPath, archivePath);
 		if (error != 0) {
-			return std::unexpected(SDL_GetError());
+			std::string archiveInfo;
+			if (!archivePath.empty()) {
+				archiveInfo = StrCat(" (", archivePath, ")");
+			}
+			return std::unexpected(StrCat("Failed to decode audio file\n", foundPath, archiveInfo, "\n", SDL_GetError(), "\n" __FILE__ ":", __LINE__));
 		}
 	}
 	return {};
