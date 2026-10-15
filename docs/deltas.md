@@ -18,7 +18,7 @@ open findings; this ledger is the single record of closures.
 | ROB-02 | **High** | Robustness | `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort | 2026-10-15 |
 | MAINT-02 | Medium | Maintainability | ~10K lines of dead built-in shader/LUT payload still compiled and embedded | 2026-10-15 |
 | MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching | 2026-10-15 |
-| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run | 2026-10-15 |
+| ~~MAINT-03~~ | Medium | Maintainability | ~~Four broken upstream workflows ship active~~ — **REOPENED round 7** (see section below) | revoked 2026-10-16 |
 | TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite | 2026-10-15 |
 | MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature | 2026-10-15 |
 | SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs | 2026-10-15 |
@@ -183,7 +183,16 @@ itself is observable in the first pushed run (setup-ccache log lines + job durat
 
 ---
 
-## MAINT-03 — CLOSED: Four broken upstream workflows ship active; cleanup script never run
+## MAINT-03 — REOPENED (round 7, 2026-10-16): Four broken upstream workflows ship active; cleanup script never run
+
+> **REOPENED (codebase-audit round 7).** The resolution below claimed `clang-tidy-check.yml`,
+> `translations.yml`, and `cache-cleanup.yml` were deleted, with verification "exactly
+> `clang-format-check.yml` and `gpu-shaders.yml` remain". That record does not match the
+> shipped history: the three files were re-added by `8ebe60f39 combined to master`
+> (2026-10-12) and never removed — they exist at every commit of the audit-fix lineage,
+> still pinning `actions/checkout@v7`. The closure below is revoked; the finding is back in
+> [audit.md](audit.md) as MAINT-03 (Medium). What did land and holds: the
+> `clang-format-check.yml` fix, the cleanup-script removal, and dependabot curation.
 
 | Property | Value |
 |----------|-------|

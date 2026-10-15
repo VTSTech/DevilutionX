@@ -1,6 +1,6 @@
 # Codebase Intelligence Brief: DevilutionX (VTSTech GPU Shader Mod)
 
-> Generated: 2026-10-15 | Auditor: Super Z (GLM) | Commit: `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` (squashed fork history; `VERSION` = `1.6.0-dev`) — refreshed after codebase-audit rounds 1–6 (tip `b60356e1a`); items fixed by the audit are marked ✅ with their finding IDs, open items cross-reference the ledger in `docs/audit.md`
+> Generated: 2026-10-16 (codebase-audit round 7) | Auditor: Super Z (GLM) | Commit: `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (squashed fork history; `VERSION` = `1.6.0-dev`; code byte-identical to audit tip `b60356e1a` — the only newer commit is docs-only) — refreshed after audit rounds 1–7; 19 closures live in `docs/deltas.md` (MAINT-03 reopened round 7), open ledger (53 findings: **2 High / 17 Medium / 34 Low**) in `docs/audit.md`
 
 ---
 
@@ -61,7 +61,7 @@ docs/                   → handoff/GPU_SHADERS/SLANG_SPEC/audit CSVs; android-p
 | `Source/engine/render/gpu/preset/slang_translate.cpp` (1207 ln) | `.slang` → GLSL translation: includes, stage split, UBO/push-block rewrites, dense bindings | The most intricate logic; cache keys hash its **output**, so changes here invalidate the entire shader cache |
 | `Source/engine/render/gpu/preset/slang_compile.cpp` | glslang runtime (FetchContent singleton) → SPIR-V, sidecar `.spv` fast path, SHA-256 disk cache | Cache key = SHA-256 of translated GLSL; sidecar `.spv` always wins; the key is version-salted with the glslang/toolchain version and cache writes are atomic with self-healing recompile on GPU rejection (ROB-03/ROB-04 closed ✅) |
 | `Source/engine/dx.cpp` | 3-way present: GPU scaler → SDL_Renderer → window surface; backbuffer + dirty-rect blits | `RenderPresent()` (`:294`) is where the scaler takes over (`:312-325`) and where fallback happens (`:315-321`) |
-| `Source/utils/display.cpp` | Window/renderer creation & recreation, `ReinitializeRenderer()` | Mediates window ownership hand-off between SDL_Renderer and SDL_GPU (DXGI one-swapchain-per-HWND constraint) |
+| `Source/utils/display.cpp` | Window/renderer creation & recreation, `ReinitializeRenderer()` | Mediates window ownership hand-off between SDL_Renderer and SDL_GPU (DXGI one-swapchain-per-HWND constraint). Round 7 High ROB-14 lives here: the `scalerWanted` branch destroys the SDL_Renderer without nulling renderer-owned textures — fix before touching anything nearby |
 | `Source/options.cpp` | Self-registering options system; `OptionEntryShaderFilter` (`:420-626`) | Shader Filter ini persistence, folder-browser navigation via negative values, stale-value self-heal, documented magic-static deadlock trap (`:437-443`) |
 | `Source/diablo.cpp` (3553 ln) | `DiabloMain` init chain, `RunGameLoop` (`:867`), `GameLogic`, fixed 50 ms ticks | Order of `DiabloMain` steps is load-bearing (options before archives, etc.); demo-mode intercepts the clock here |
 | `Source/engine/render/scrollrt.cpp` (1933 ln) | `DrawAndBlit()` (`:1835`) frame compositor; draws OSD via `gpu_scaler::DrawFilterOsd` (`:1910`) | Everything renders into the 8-bit `PalSurface`; palette→RGBA conversion happens CPU-side in `dx.cpp:159-186` **before** the GPU ever sees the frame |
@@ -149,6 +149,10 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 - **HeadlessMode is a bare global** — every new render-path branch must check it or unit tests crash/open windows (`test/main.cpp:84` sets it globally).
 - **MP asset-integrity hard abort** — release builds `app_fatal` mid-game when MP is used with modified lua/tsv/sol assets (`diablo.cpp:905-907`).
 - **Cache poisoning** — ✅ FIXED (ROB-03, `d5ca0c055`): SPIR-V cache blobs are written to a process-unique temp file and atomically renamed, and a GPU-rejected cache hit self-heals by deleting the blobs and recompiling once with the cache disabled.
+- **Round-7 High: renderer-destroy texture UAF (ROB-14)** — the `scalerWanted` branch in `ReinitializeRenderer` (display.cpp:836) destroys the SDL_Renderer while the global `texture` (dx.cpp:49) and virtual-gamepad textures still reference it; SDL3's `SDL_DestroyRenderer` destroys child textures, and the next `ReinitializeTexture()` destroys them again. `dx_cleanup`'s ordering (`texture = nullptr` *before* `SDL_DestroyRenderer`, dx.cpp:147-154) is the invariant to mirror. Fires on the ordinary "select a preset with upscale on" flow.
+- **Round-7 High: post-flip output read (ROB-15)** — `Runner::Run` returns `last->outputTex[last->curBuffer]` *after* the double-buffer flip (preset_runner.cpp:1441-1450), so a double-buffered final pass presents the previous frame's image (undefined on first frame/after resize). Capture the pre-flip target before the flip loop.
+- **Unchecked SDL_GPU transfer calls (ROB-16/17)** — `SDL_MapGPUTransferBuffer`, `SDL_BeginGPUCopyPass`, and `SDL_UploadToGPUTexture` results are unchecked in `PresentFrame` (gpu_scaler.cpp:1056-1078): map failure memcpys to NULL; ignored upload errors present a stale frame with a healthy heartbeat. Any new present-path code must route failures through `LogFailHard`/`SubmitSkipAfterAcquire` like its neighbors.
+- **`FillBlockBytes` Size-branch order (ROB-23)** — the `<TextureName>Size` branch is checked before the parameter lookup and writes are type-unaware, so `*Size`-suffixed parameters get zeros and int-typed members get float bits. Reorder before adding new uniform semantics.
 - **Broken symlinks in repo** — `CMake/platforms/*-pkg-config` and `Packaging/windows/mingw-prep64.sh` are dangling symlinks; they break rg/file-tooling scans (harmless to the core build).
 
 ---
@@ -180,7 +184,7 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 - ~~vcpkg + SDL3 broken~~ ✅ MAINT-06 closed: `sdl3` feature (sdl3 + sdl3-image) defined in `vcpkg.json`.
 - Shader cache: pruning still absent; PNG-only LUT decode vs 6 accepted extensions in `LooksLikeImagePath` (ROB-12, open). Version salt, atomic writes, and self-heal are done (ROB-03/ROB-04 ✅).
 - Per `SLANG_SPEC.md` §8: ~20 spec gaps tracked (clamp_to_border, history cap 8, `#pragma alias`, `feedback_pass` parsed-unused, …).
-- **Open audit backlog**: 5 Medium (ROB-07 preset-runtime RAII — prerequisite of FEAT-01; ROB-08 mid-session vsync; FEAT-01 retry/hot-reload; FEAT-02 Metal strategy; FEAT-03 in-game preset errors) + 22 Low — full ledger in `docs/audit.md`, closures in `docs/deltas.md`.
+- **Open audit backlog (post round 7)**: **2 High** (ROB-14 renderer-destroy UAF, ROB-15 post-flip output read) **+ 17 Medium** (incl. MAINT-03 **reopened** round 7 — the three "deleted" CI workflows still ship `checkout@v7`; plus ROB-16..23, PERF-06, TEST-06, MAINT-15, ROB-07, ROB-08, FEAT-01..03) **+ 34 Low** — full ledger in `docs/audit.md`, closures in `docs/deltas.md`.
 
 ---
 
