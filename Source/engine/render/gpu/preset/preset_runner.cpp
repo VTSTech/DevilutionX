@@ -392,7 +392,11 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
 		info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 		info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-		info.multisample_state.sample_mask = 0xFFFFFFFF;
+		// SDL 3.5: multisample_state.sample_mask is "reserved, must be 0"
+		// (SDL_gpu.c release-asserts and rejects the pipeline otherwise on
+		// debug-mode devices; llvmpipe rejects it outright). With sample_count
+		// 1 the default mask already covers every sample; the old 0xFFFFFFFF
+		// form predates the contract change.
 		info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 		info.depth_stencil_state.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
 		info.depth_stencil_state.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;

@@ -15,11 +15,11 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | round-6 code + tooling (gpu-scaler.log session header carries the exe version; Linux CI embeds + gates the commit — dash-safe `shell: bash` configure, user-confirmed passing; OSD text is `Shader:`) on top of round-5 records + Debian-12 confirmation — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
-| release tag | `gpu-shaders-v9` @ `b0ba28d5f` — tip-most release line (tags mark releases, not rounds) |
+| repo tip | round-7 ds-hybrid crash investigation (SDL 3.5 `sample_mask` pipeline-state fix ×2 sites, `DEVILUTIONX_GPU_DEBUG=1` debug-device instrument, `preset_smoke` build fix, runner_repro harness findings) on top of round-6 code + tooling — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
+| release tag | `gpu-shaders-v10` @ `46c0b1f72` — tip-most release line (tags mark releases, not rounds); bootstrap corrected the stale v9 row here (round 7) |
 | field evidence | Phase-1: 101 unique presets working, 103 loads, 0 failures across 5 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38. Proven live: F1 mipmaps ×5 chains, PassFeedback + TextGeneratePassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep history rings OriginalHistory5/6 (`anti-flicker`, `glass`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8); Linux CI configure dash fix field-confirmed round 6 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
-| next queue | ① koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ② low-risk remainder: handheld 17, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ③ then medium-risk clusters (§8) |
+| next queue | ① ds-hybrid-sabr/ds-hybrid-scalefx RE-TEST on a round-7 build with `DEVILUTIONX_GPU_DEBUG=1` (§8 round 7 — crash rows in the ledger; chain verified clean on lavapipe, fault is driver-interactive) ② koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ③ low-risk remainder: handheld rest, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ④ then medium-risk clusters (§8) |
 | backburner | SLANG_SPEC §7 gap-list tail; 26-i Linux gcc/clang build matrix; browse-highlight cosmetic |
 
 **Conventions (adopted field round 4, 2026-10-15):**
@@ -521,6 +521,40 @@ image); the Windows-side pin was removed (no-op under pwsh — the VM's git-log
 fallback always worked). User-confirmed on the live CI: configure passes and
 the build compiles. A workflow-shell validator (each step's script run through
 its effective shell + bashism scan) now guards this failure class pre-push.
+
+**Field round 7 (2026-10-15, ds-hybrid crash investigation — sandbox round, no field log):**
+field evidence: handheld/ sweep digest (33 unique, 0 exceptions, 3/3 shutdowns)
+plus a separate crash report: both `handheld/ds-hybrid-*.slangp` presets kill the
+process silently on the first rendered frame (log shows `ok: preset loaded` +
+`pass targets` then death — a native-level failure-contract violation, no error
+line, no fallback). Investigation findings:
+
+- **Load path verified clean offline:** `preset_smoke` (build-fixed this round —
+  `ResolvePresetFilePath` was unqualified since a refactor) parses, translates and
+  compiles all 3 (sabr) / 7 (scalefx) passes to SPIR-V with zero warnings.
+- **Runtime verified clean on a conformant reference:** a headless harness
+  (`runner_repro`, sandbox-only — pinned SDL + glslang + the real
+  `Runner::Load/Run`) drove both chains on lavapipe **with the Khronos
+  validation layer**: pipelines create, the viewport-scaled intermediate lands
+  (`0=960x720`), frames submit + idle, clean exit, **zero VUID violations**.
+  The fault is driver-interactive on the field GPU, not chain logic.
+- **Root-cause class fixed: stale SDL multisample contract.** The pinned SDL 3.5
+  (`570f7229`) made `multisample_state.sample_mask` reserved-must-be-0 and the
+  whole pipeline validation block is gated on device debug mode. Both the preset
+  runner (`preset_runner.cpp`) and the game's own blit pipeline
+  (`gpu_scaler.cpp`) still initialized `sample_mask = 0xFFFFFFFF` — the release
+  field build skips validation so today's drivers tolerated it, but ANY
+  debug-mode device (llvmpipe verified) rejects EVERY pipeline outright, preset
+  or built-in. Fixed to 0 at both sites (identical rasterization for
+  `sample_count 1`).
+- **Field instrument added: `DEVILUTIONX_GPU_DEBUG=1`** env-gated debug device in
+  `CreateDevice` — SDL's validation block + Khronos layer request turn silent
+  driver faults into logged SDL errors + the graceful scaler fallback. This is
+  the tool that names the ds-hybrid fault on the field machine.
+- **Ledger:** 2 crash rows appended (tiered 96→98 rows; `vulkan-coverage` CSV
+  carries the round-7 notes). Re-test plan: round-7 build +
+  `DEVILUTIONX_GPU_DEBUG=1`, re-select both presets, digest first; if the
+  process still dies, capture the Windows Event Viewer faulting module.
 
 ### D3D12 — fully excised
 

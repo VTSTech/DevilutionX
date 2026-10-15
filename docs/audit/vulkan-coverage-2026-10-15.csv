@@ -100,3 +100,5 @@ misc/tonemapping.slangp,working,ok,segment 4: 1 pass
 misc/white_point.slangp,working,ok,segment 4: 1 pass
 misc/yiq-hue-adjustment.slangp,working,ok,segment 4: 1 pass
 misc/simple_color_controls.slangp,working,ok,"segment 4: 1 pass - Tier 1b misc row cleared"
+handheld/ds-hybrid-sabr.slangp,crash,"silent first-frame abort","round 7 investigation: load path clean (preset_smoke offline ok: parse/translate/SPIR-V), full 3-pass chain renders clean on lavapipe with Khronos validation layers via the new runner_repro harness; crash is driver-interactive on the field GPU; sample_mask=0xFFFFFFFF pipeline-state violation fixed (SDL 3.5: reserved, must be 0 — llvmpipe rejects the pipeline outright); DEVILUTIONX_GPU_DEBUG=1 instrument added for the re-test"
+handheld/ds-hybrid-scalefx.slangp,crash,"silent first-frame abort","round 7 investigation: same class as ds-hybrid-sabr; 7-pass chain incl. float FBOs + viewport-scaled pass 0 + cross-pass aliases renders clean on lavapipe with validation layers; same re-test plan"

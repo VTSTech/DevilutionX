@@ -395,7 +395,10 @@ SDL_GPUGraphicsPipeline *CreatePipeline(Program fragmentProgram, SDL_GPUTextureF
 	info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
 	info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 	info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-	info.multisample_state.sample_mask = 0xFFFFFFFF;
+	// SDL 3.5: sample_mask is reserved and must stay 0 (SDL_gpu.c
+	// release-asserts and rejects the pipeline otherwise when the device
+	// was created with debug mode). With sample_count 1 the default mask
+	// already covers every sample; the old 0xFFFFFFFF form is stale.
 	info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 	info.depth_stencil_state.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
 	info.depth_stencil_state.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
@@ -671,7 +674,19 @@ static bool CreateDevice(const char *name)
 		LogFileLine(StrCat("backend override from DEVILUTIONX_GPU_BACKEND: ", backendOverride));
 
 	SDL_PropertiesID props = SDL_CreateProperties();
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
+	// DEVILUTIONX_GPU_DEBUG=1 creates the device in SDL debug mode: SDL's
+	// own validation block activates (release asserts on pipeline/texture
+	// state) and the Vulkan backend requests the Khronos validation layer
+	// when it is installed. A state the release path would pass through
+	// silently (or that a driver could die on) then surfaces as a logged
+	// SDL error and the scaler's graceful fallback instead of a process
+	// abort. Field instrument for silent first-frame crashes (ds-hybrid
+	// round): run with DEVILUTIONX_GPU_DEBUG=1, reproduce, read the log.
+	const char *debugEnv = SDL_getenv("DEVILUTIONX_GPU_DEBUG");
+	const bool debugDevice = debugEnv != nullptr && *debugEnv == '1';
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debugDevice);
+	if (debugDevice)
+		LogFileLine("GPU debug mode enabled via DEVILUTIONX_GPU_DEBUG=1");
 	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
 	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
 	// Ask SDL to log the adapter name and driver version; the log capture
