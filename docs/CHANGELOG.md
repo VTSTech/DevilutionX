@@ -12,6 +12,121 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-98357ff (2026-10-15 7:01:14 PM)
+
+Round 7 of the audit re-walked the entire mod with fresh eyes - scaler/present
+lifecycle, parser/translator, runner/compiler, tests/CI - and produced 25 new
+findings (2 High, 11 Medium, 12 Low) plus a reopened MAINT-03. The Priority
+Matrix's entire Immediate row shipped as one low-risk patch the same day,
+closing both High findings and the unchecked-SDL-return cluster behind them;
+the vendored-SDL3 build break (SDL >= 3.2 made `SDL_UploadToGPUTexture` return
+`void`) and the CI clang-format gate were fixed on top of it. The WAV-fallback
+diagnostics learned to name the failing asset and the MPQ archive it came
+from. The ledger stands at 44 open findings (0 High / 14 Medium / 30 Low);
+`deltas.md` remains the single record of closures.
+
+### Added
+
+#### Audio
+
+- `DEVILUTIONX_WAV_FALLBACK` CMake option: builds the `SDL_LoadWAV_IO`
+  fallback path that recovers the WAV files SDL3_mixer 3.2.0's stricter chunk
+  scanner rejects (zero-length or past-EOF data-chunk sizes in the tail).
+
+#### Testing
+
+- `preset_smoke` is registered with ctest against a committed good + malformed
+  corpus (multi-pass/feedback/history/LUT presets; malformed presets must fail
+  with a named error string, never a crash) - the round-5 fix that closed the
+  audit's last High finding. It landed inside this release window and carries
+  its own full entry above (`1.6.0-dev-a67a4c0`).
+
+#### Packaging
+
+- `Packaging/windows/clear_gpu-scaler.log.cmd`: one-click reset of
+  `gpu-scaler.log` next to the game executable for Windows field reports.
+
+### Changed
+
+#### Audit ledger
+
+- `audit.md` refreshed by the round-7 sweep (+25 findings, MAINT-03 reopened),
+  then re-scoped to the open set only (44 findings: 0 High / 14 Medium /
+  30 Low) after the quick-fix batch; `deltas.md` gained the closure records
+  for everything shipped in this window.
+
+### Removed
+
+- `.github/workflows/cache-cleanup.yml`, `.github/workflows/`
+  `clang-tidy-check.yml`, `.github/workflows/translations.yml` - the MAINT-03
+  zombie workflows, still pinned to the nonexistent `actions/checkout@v7`,
+  actually deleted from the tree this time and verified with `git ls-tree`.
+- `.github/workflows/wav-fallback-test.yml` - the Windows-only A/B workflow
+  built to capture the fallback mismatch, retired once the diagnostics it
+  drove had landed (added and removed inside this release window).
+
+### Fixed
+
+#### GPU scaler (round-7 quick-fix batch)
+
+- **ROB-14 (High)**: activating the shader filter no longer destroys the
+  SDL_Renderer while the global display `texture` still references it - the
+  stale handle is dropped first, mirroring `dx_cleanup`, so toggling the
+  filter can no longer hand a freed texture to the next
+  `ReinitializeTexture()` (the virtual-gamepad half of the finding remains
+  open as ROB-22 by design).
+- **ROB-15 (High)**: `Runner::Run` captures the present target BEFORE the
+  double-buffer flip - feedback-driven final passes no longer present a
+  permanently one-frame-stale image plus one undefined frame after every
+  load/resize.
+- **ROB-16**: a failed `SDL_MapGPUTransferBuffer` (device loss, allocation
+  failure) now costs one skipped frame like every neighboring stage instead
+  of memcpying to NULL outside the failure contract.
+- **ROB-17**: `SDL_BeginGPUCopyPass` is null-checked (fail visibly + empty
+  submit instead of blitting stale contents with a clean log). The
+  upload-result half was reverted in an r7.6 fixup: vendored SDL3 (master,
+  post-3.4.0) follows the SDL >= 3.2 API where command-encoded copy calls
+  return `void` - per-call failure reporting was removed upstream, the bool
+  capture broke the CI build, and the checked
+  `SDL_SubmitGPUCommandBuffer` is the failure net.
+- **ROB-24**: a failed Vulkan-retry window claim now nulls `gWindow`, so the
+  `Shutdown()` path cannot release a window this device never claimed.
+- **ROB-25**: an unexpected (non-custom) filter value is now counted and
+  throttled-logged as a present-path skip instead of presenting a permanent
+  silent black screen with a healthy heartbeat.
+
+#### Audio / WAV fallback
+
+- Load-failure diagnostics name the asset: `SoundSample::SetChunk` carries the
+  asset path and - for MPQ-sourced assets - the archive path (exposed via
+  `mpq_reader`'s new `path()`), so a rejection logs
+  `Failed to decode audio file / <path> (<archive>) / <SDL_GetError>` instead
+  of a bare SDL error, alongside the 56-byte head hex dump from the previous
+  round.
+
+#### Parser
+
+- MAINT-09: the `#reference` merge comment now states the real semantics
+  (the LAST parent chain providing passes wins; textures/parameters
+  accumulate).
+- MAINT-19 (partial): texture validation names the actual problem (empty-name
+  vs missing-path) instead of sending field debugging the wrong way, and the
+  dead 4-argument `ParsePreset` declaration is gone. The bare `shaderpath`
+  behavior decision remains open with the maintainer.
+
+#### CI / build hygiene
+
+- The CI build break with vendored SDL3 master (`void value not ignored`,
+  `SDL_UploadToGPUTexture` bool capture) is fixed - see ROB-17.
+- The `clang-format check` workflow is green for the first time against the
+  mod: `gpu_scaler.cpp` had shipped with a whole-file indentation regression
+  from the previous batch's tooling (whitespace-only, compiled fine); the
+  canonical `Source/.clang-format` formatting is restored and the file's diff
+  collapses back to the surgical change set, and 12 pre-existing violations in
+  `soundsample.cpp` are fixed. Both files are token-identical to their
+  pre-format state (verified by whitespace-stripped byte diff); all 698
+  C/C++ files under the CI's check-paths now pass.
+
 ## 1.6.0-dev-a67a4c0 (2026-10-15 3:20:26 PM)
 
 Codebase audit fixes, round 5 — TEST-01 closes the audit's last High
