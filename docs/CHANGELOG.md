@@ -11,6 +11,91 @@ dated with an America/Toronto timestamp. Upstream (diasurgical) release
 history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
+
+## 1.6.0-dev-a67a4c0 (2026-10-15 3:20:26 PM)
+
+Codebase audit fixes, round 5 — TEST-01 closes the audit's last High
+finding: the fork's ~15K-line GPU pipeline now has a registered,
+CI-executed, full-pipeline test. The offline `preset_smoke` harness (parse →
+translate → in-process glslang compile, no GPU device) builds with the normal
+test suite instead of sitting behind `EXCLUDE_FROM_ALL` where nothing ever
+ran it, and executes against a committed micro-corpus covering the features
+real preset packs use — multi-pass chains with alias feedback, `PassOutput`
+feedback, history-ring taps, LUT textures — plus a malformed corpus that
+asserts the failure contract at every pipeline stage: absurd declared
+counts, absurd pass indexes, empty files, missing shader files, and GLSL
+syntax errors must all fail with a named error string, never a crash (the
+ROB-01/ROB-02 classes, now regression-locked mechanically). Field
+diagnostics also widen the WAV load-failure hex dump from 24 to 56 bytes:
+every rejection captured so far (the gendata cutscene sting, 18355 bytes)
+showed a perfectly canonical 24-byte head, because the malformation
+SDL3_mixer chokes on — zero-length or past-EOF data-chunk sizes — sits at
+offset 36, which only a 56-byte dump reveals. 20 of the original 47 findings
+are now closed; `audit.md` carries only the open set (27 findings: 0 High,
+5 Medium, 22 Low) and `deltas.md` remains the single record of closures.
+
+### Added
+
+#### Testing
+
+- `preset_smoke` is built with the normal test suite (`EXCLUDE_FROM_ALL`
+  dropped in `Source/CMakeLists.txt`) and registered with ctest in
+  `CMake/Tests.cmake` whenever `USE_GPU_SCALER` and `BUILD_TESTING` are on:
+  - `preset_smoke_corpus` runs the committed good corpus
+    (`test/fixtures/preset_smoke/good`) — 5 presets, 8 shader passes that
+    must parse, translate, and glslang-compile: single pass with a
+    `#pragma parameter` consumed from the fragment UBO, 3-pass chain with
+    `alias1 = blur` sampled from a later pass, explicit `PassOutput0`
+    feedback, `OriginalHistory1/2` taps with `histories = 4`, and a LUT
+    preset with a committed 2x2 PNG. All shaders follow the canonical
+    `tools/audit/field-presets` style (explicit `layout(location = 0) out
+    vec4 FragColor`, parameters inside the stage UBO per SLANG_SPEC 4.6).
+  - `preset_smoke_malformed` runs the malformed corpus with the harness's
+    new `--expect-fail` mode — 5 presets, one per pipeline stage, that must
+    fail cleanly with a non-empty error string: `shaders = 2147483647`
+    (ROB-02 class), `shader2147483647` (ROB-02 class), an empty file, a
+    missing shader file (translate stage), and a GLSL syntax error (glslang
+    compile stage). Failure-by-crash or failure-without-explanation fails
+    the test, and a clean corpus under `--expect-fail` fails it too.
+- The corpus is copied to `<build>/shaders/.preset-smoke/` at build time
+  because `ResolvePresetFilePath` resolves references only inside the SEC-01
+  shader root (`<SDL_GetBasePath()>/shaders`); the dot prefix keeps the
+  corpus out of the in-game preset browser. The sandbox itself is untouched.
+- `preset_smoke` usage string corrected while touching the harness (it
+  advertised a nonexistent `--allow-failures` and omitted `--dump`/`--disasm`).
+
+### Fixed
+
+#### Diagnostics / audio
+
+- `SoundSample::SetChunk`'s load-failure hex dump widened 24 → 56 bytes
+  (`DEVILUTIONX_WAV_FALLBACK`-independent, still logged by every build):
+  56 bytes covers the canonical 44-byte RIFF/WAVE/fmt head plus the
+  data-chunk header at offset 36, where the zero-length / past-EOF data
+  sizes that SDL3_mixer 3.2.0 rejects actually live.
+
+### Documentation
+
+- `audit.md`: TEST-01 removed from the open set (now 27 open: 0 High,
+  5 Medium, 22 Low; 20 of 47 closed); priority-matrix Immediate row emptied
+  with a pointer to the closure.
+- `deltas.md`: full TEST-01 closure entry (resolution, corpus layout
+  rationale, verification evidence).
+
+### Verification
+
+- Standalone local build of the harness + the four preset TUs + the real
+  glslang 16.6.0 (the exact version vendored by `3rdParty/glslang`; SDL
+  stubbed, shader root pointed at the corpus): good corpus **5/5 presets,
+  8/8 passes compiled, exit 0**; malformed corpus under `--expect-fail`
+  **met, 5/5 failed with named error strings, zero crashes, exit 0**; the
+  good corpus under `--expect-fail` correctly exits 1.
+- `soundsample.cpp` compiles clean in both `DEVILUTIONX_WAV_FALLBACK=ON`
+  and `=OFF` configurations (gnu++23, `-Wall -Wextra`; only the
+  pre-existing `sdl_wrap.h`/`options.h` `-Wextra` noise, identical in both).
+- `preset_smoke.cpp` clang-format 18.1.8 clean.
+
+
 ## 1.6.0-dev-d5ca0c0 (2026-10-15 1:46:21 PM)
 
 Codebase audit fixes, round 4 — the entire "next sprint" batch from the audit:
