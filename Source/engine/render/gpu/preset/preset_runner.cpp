@@ -688,8 +688,17 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		pass->outputTex[0] = SDL_CreateGPUTexture(device_, &info);
 		if (pass->doubleBuffered)
 			pass->outputTex[1] = SDL_CreateGPUTexture(device_, &info);
-		if (pass->outputTex[0] == nullptr || (pass->doubleBuffered && pass->outputTex[1] == nullptr))
+		if (pass->outputTex[0] == nullptr || (pass->doubleBuffered && pass->outputTex[1] == nullptr)) {
+			// Failure trail: the silent first-frame abort class - without
+			// this line the caller's hard failure carries no reason
+			// (round-8 field evidence).
+			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+			    "GPU scaler preset: pass %u target texture creation failed (%ux%u, format %u, double-buffered %s): %s",
+			    static_cast<unsigned>(pi), pass->outputWidth, pass->outputHeight,
+			    static_cast<unsigned>(pass->targetFormat),
+			    pass->doubleBuffered ? "yes" : "no", SDL_GetError());
 			return false;
+		}
 		if (nextPassWantsMips) {
 			if (!mipChainPasses.empty())
 				mipChainPasses += ',';
@@ -713,8 +722,12 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		info.num_levels = MipLevelsFor(info.width, info.height);
 		info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 		mipSourceTex_ = SDL_CreateGPUTexture(device_, &info);
-		if (mipSourceTex_ == nullptr)
+		if (mipSourceTex_ == nullptr) {
+			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+			    "GPU scaler preset: chain-input mip copy creation failed (%ux%u): %s",
+			    info.width, info.height, SDL_GetError());
 			return false;
+		}
 	}
 
 	// Field diagnostics: which inputs actually carry mip chains (logs once
@@ -741,8 +754,12 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 			info.num_levels = 1;
 			info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 			tex = SDL_CreateGPUTexture(device_, &info);
-			if (tex == nullptr)
+			if (tex == nullptr) {
+				SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+				    "GPU scaler preset: history ring texture creation failed (%ux%u): %s",
+				    info.width, info.height, SDL_GetError());
 				return false;
+			}
 		}
 		historySlot_ = 0;
 	}
@@ -1080,8 +1097,11 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 {
 	if (!IsLoaded() || passes_.empty())
 		return false;
-	if (!EnsureSamplers())
+	if (!EnsureSamplers()) {
+		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+		    "GPU scaler preset: sampler creation failed: %s", SDL_GetError());
 		return false;
+	}
 	if (!EnsureTargets(gameWidth, gameHeight, swapchainWidth, swapchainHeight))
 		return false;
 
@@ -1169,8 +1189,12 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		colorInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 		colorInfo.store_op = SDL_GPU_STOREOP_STORE;
 		SDL_GPURenderPass *renderPass = SDL_BeginGPURenderPass(cmd, &colorInfo, 1, nullptr);
-		if (renderPass == nullptr)
+		if (renderPass == nullptr) {
+			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+			    "GPU scaler preset: render pass begin failed in pass %u (%ux%u): %s",
+			    static_cast<unsigned>(i), pass->outputWidth, pass->outputHeight, SDL_GetError());
 			return false;
+		}
 		SDL_BindGPUGraphicsPipeline(renderPass, pass->pipeline);
 
 		// Push uniform blocks (std140 bytes computed from the reflected layout).

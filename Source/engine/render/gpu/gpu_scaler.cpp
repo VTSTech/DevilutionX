@@ -236,6 +236,20 @@ void LogFailHard(std::string_view what)
 	LogFileLine("GPU scaler disabled for this session (hard failure)");
 }
 
+// A frame aborted after the swapchain texture was already acquired for
+// this command buffer: SDL forbids cancelling it in that state (debug
+// mode asserts "Cannot cancel command buffer after a swapchain texture
+// has been acquired!", release leaves the acquired image unpresented
+// and can wedge the swapchain). Submit the empty command buffer instead:
+// the skip presents the frame's swapchain image untouched and the game
+// either retries next frame or has already hard-failed into the stock
+// renderer.
+void SubmitSkipAfterAcquire(SDL_GPUCommandBuffer *cmd)
+{
+	if (!SDL_SubmitGPUCommandBuffer(cmd))
+		LogFail("swapchain-skip submit failed");
+}
+
 // SDL's own log output (adapter info, validation errors, device removal,
 // backend initialization) is invisible for a GUI-subsystem application on
 // Windows. Chain it into the diagnostic file as well.
@@ -918,7 +932,8 @@ void PresentFrame(const SDL_Surface &frame)
 	// The swapchain format can change (window resize, fullscreen switch).
 	// Rebuild the blit pipeline for the current format when needed.
 	if (!EnsureBlitPipeline(SDL_GetGPUSwapchainTextureFormat(gDevice, gWindow))) {
-		SDL_CancelGPUCommandBuffer(cmd);
+		LogFailHard("blit pipeline creation failed for current swapchain format");
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 
@@ -937,12 +952,13 @@ void PresentFrame(const SDL_Surface &frame)
 	} else {
 		// Builtin HQ2x/ScaleFX filters were removed; only runtime
 		// presets render here.
-		SDL_CancelGPUCommandBuffer(cmd);
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 
 	if (!EnsureFrameResources(gameWidth, gameHeight)) {
-		SDL_CancelGPUCommandBuffer(cmd);
+		// EnsureFrameResources already logged + hard-failed the session.
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 	// Upload the frame through a fresh transfer buffer created per frame.
@@ -956,7 +972,7 @@ void PresentFrame(const SDL_Surface &frame)
 	SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(gDevice, &transferInfo);
 	if (transfer == nullptr) {
 		LogFailHard("frame transfer buffer creation failed");
-		SDL_CancelGPUCommandBuffer(cmd);
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 	struct TransferBufferReleaser {
@@ -1013,7 +1029,12 @@ void PresentFrame(const SDL_Surface &frame)
 		Uint32 outHeight = 0;
 		if (!gPresetRunner.Run(cmd, gGameTex, gameWidth, gameHeight, swapchainWidth, swapchainHeight,
 		        frameDeltaUs, &outTex, &outWidth, &outHeight)) {
-			SDL_CancelGPUCommandBuffer(cmd);
+			// Run failure = hard failure per the failure contract: the runner
+			// logged the reason (target creation, render pass, samplers);
+			// tear the scaler down and revert to the regular renderer for the
+			// session instead of retrying every frame.
+			LogFailHard("preset run failed");
+			SubmitSkipAfterAcquire(cmd);
 			return;
 		}
 		// Fit the chain output into the window, honoring Integer Scaling.
@@ -1040,7 +1061,7 @@ void PresentFrame(const SDL_Surface &frame)
 		destHeight = static_cast<int>(swapchainHeight);
 	if (destWidth <= 0 || destHeight <= 0) {
 		// Window smaller than the scaled image can occupy; skip.
-		SDL_CancelGPUCommandBuffer(cmd);
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 	SDL_GPUViewport viewport {};
@@ -1053,7 +1074,8 @@ void PresentFrame(const SDL_Surface &frame)
 	SDL_GPUTextureSamplerBinding blitBindings[1] = { { presentTex, gLinearSampler } };
 	uniforms.params[0] = 0.0F;
 	if (!RenderPass(cmd, swapchainTexture, swapchainWidth, swapchainHeight, gBlitPipeline, uniforms, blitBindings, 1, &viewport)) {
-		SDL_CancelGPUCommandBuffer(cmd);
+		// RenderPass already logged + hard-failed the session.
+		SubmitSkipAfterAcquire(cmd);
 		return;
 	}
 

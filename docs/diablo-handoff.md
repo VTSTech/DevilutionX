@@ -15,11 +15,11 @@
 
 | Item | State (update in place) |
 |---|---|
-| repo tip | round-7 ds-hybrid crash investigation (SDL 3.5 `sample_mask` pipeline-state fix ×2 sites, `DEVILUTIONX_GPU_DEBUG=1` debug-device instrument, `preset_smoke` build fix, runner_repro harness findings) on top of round-6 code + tooling — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
+| repo tip | round-8 first-frame abort fix (post-acquire `SDL_CancelGPUCommandBuffer` → submit-skip ×6 sites, preset-run failure → `LogFailHard` session revert per the failure contract, failure trail with `SDL_GetError()` on every silent `Run()`/`EnsureTargets()` path) on top of round-7 ds-hybrid crash investigation (sample_mask fix ×2, `DEVILUTIONX_GPU_DEBUG=1` instrument, `preset_smoke` build fix, runner_repro harness findings) — tip via `git log --grep='gpu scaler'` (bootstrap reports the exact delta; docs-only drift is benign) |
 | release tag | `gpu-shaders-v10` @ `46c0b1f72` — tip-most release line (tags mark releases, not rounds); bootstrap corrected the stale v9 row here (round 7) |
 | field evidence | Phase-1: 101 unique presets working, 103 loads, 0 failures across 5 logs. Closed: `denoisers/` 7/7, `blurs/` 15/17 (slots 110/113 browser-skipped), `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38. Proven live: F1 mipmaps ×5 chains, PassFeedback + TextGeneratePassFeedback, cross-preset + full-chain disk-cache hits, PNG LUTs, 24-pass chain, nnedi3 macro-alias fix (round 3), float-framebuffer (`gtu-v050-deinterlaced`), deep history rings OriginalHistory5/6 (`anti-flicker`, `glass`). Portability: `gcc:14-bookworm` CI build runs on the Debian 12 VM — Vulkan backend + preset loads confirmed 2026-10-15 (§8); Linux CI configure dash fix field-confirmed round 6 (§8) |
 | ledger rule | per-preset results live ONLY in `docs/audit/shader-test-list-2026-10-15.csv` (+ round `vulkan-coverage-*.csv` deliverable); handoff prose records firsts/anomalies only |
-| next queue | ① ds-hybrid-sabr/ds-hybrid-scalefx RE-TEST on a round-7 build with `DEVILUTIONX_GPU_DEBUG=1` (§8 round 7 — crash rows in the ledger; chain verified clean on lavapipe, fault is driver-interactive) ② koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ③ low-risk remainder: handheld rest, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ④ then medium-risk clusters (§8) |
+| next queue | ① ds-hybrid-sabr/ds-hybrid-scalefx RE-TEST on a round-8 build with `DEVILUTIONX_GPU_DEBUG=1` (§8 round 8 — round-7 re-test confirmed the sample_mask fix live on the field GPU and delivered the cancel-after-acquire signature; fixed engine-side round 8; expected outcomes: renders, or `(Unavailable)` with `ERROR: preset run failed | SDL_GetError: <reason>`) ② koko-ambi/koko-aio/koko-aio-ng (include-fix re-test, `c1ee40544` — still unexercised) ③ low-risk remainder: handheld rest, presets 14, crt 9, reshade rest 42, blurs slots 110/113 ④ then medium-risk clusters (§8) |
 | backburner | SLANG_SPEC §7 gap-list tail; 26-i Linux gcc/clang build matrix; browse-highlight cosmetic |
 
 **Conventions (adopted field round 4, 2026-10-15):**
@@ -555,6 +555,59 @@ line, no fallback). Investigation findings:
   carries the round-7 notes). Re-test plan: round-7 build +
   `DEVILUTIONX_GPU_DEBUG=1`, re-select both presets, digest first; if the
   process still dies, capture the Windows Event Viewer faulting module.
+
+**Field round 8 (2026-10-15, ds-hybrid re-test + cancel-after-acquire fix):**
+field evidence: round-7 build `0dec42566` with `DEVILUTIONX_GPU_DEBUG=1` — `fxaa`
+baseline clean (1013 frames), then `ds-hybrid-scalefx` **load clean** (7 passes,
+6 disk-cache hits, pipelines created — the round-7 `sample_mask` fix is
+CONFIRMED LIVE on the field GPU) and death at the first rendered frame with a
+named signature instead of silence:
+
+```
+Assertion failure at SDL_CancelGPUCommandBuffer_REAL (SDL_gpu.c:3481):
+  '!"Cannot cancel command buffer after a swapchain texture has been acquired!"'
+```
+
+Root cause (engine-side):
+
+- The present path aborted frames by calling `SDL_CancelGPUCommandBuffer` AFTER a
+  real swapchain acquire. In the pinned SDL 3.5 (`570f7229`) cancel is only legal
+  when no swapchain texture was acquired (the flag is set only when a real texture
+  pointer is returned — the null-texture skip cancel is legal and did not assert
+  in the field: 1 skipped frame during the fxaa baseline, no assert).
+- The trigger: `Runner::Run()` failed silently on the first preset frame — every
+  failure path in `EnsureTargets` (pass-target texture creation) and the pass loop
+  (`SDL_BeginRenderPass`) returned `false` with NO log line, so the failure
+  contract had no trail; the caller then performed the illegal cancel. The field
+  log ends at the `pass targets` line — the target-creation loop is the failing
+  step (passes 5-6 at 5760x3240 RGBA16F on this preset; the exact driver rejection
+  reason arrives with the new trail).
+
+Fixes (round 8):
+
+- **A — swapchain contract:** all 6 post-acquire abort sites in the present path
+  submit the empty command buffer (`SubmitSkipAfterAcquire`) instead of
+  cancelling; blit-pipeline and preset-run failures additionally route through
+  `LogFailHard`. The null-texture skip keeps its legal cancel.
+- **B — failure trail:** every silent `Run()`/`EnsureTargets()` failure path logs
+  pass index, size, format and `SDL_GetError()` before returning.
+- **C — contract enforcement:** a preset-run failure is a hard failure
+  (`LogFailHard("preset run failed")`) → scaler teardown → stock renderer for the
+  session, per the §4 failure contract (no per-frame retry loops).
+- **Regression:** both ds-hybrid chains re-verified clean on lavapipe via
+  `runner_repro` rebuilt against the patched runner (sabr → 1920x1440 out, scalefx
+  → 2880x2160 out, clean exit). A forced oversize-target failure reproduces the
+  exact field signature (log ends at `pass targets`) and surfaced a separate
+  SDL-side defect: at extreme target sizes (`0=100000x100000`) the pinned SDL 3.5
+  aborts with `free(): double free detected` INSIDE `SDL_CreateGPUTexture`'s
+  failure path before the runner trail can log — sandbox-only finding, record for
+  the SDL pin upgrade; real-GPU rejections (like the field's) return cleanly to
+  the caller where the new trail fires.
+- **Re-test plan (round 8):** new build, `DEVILUTIONX_GPU_DEBUG=1`, re-select both
+  presets, digest first. Expected: renders, OR the overlay flips to
+  `(Unavailable)` with `ERROR: preset run failed | SDL_GetError: <reason>` in the
+  log — paste either. If the process still dies silently, capture the Windows
+  Event Viewer faulting module.
 
 ### D3D12 — fully excised
 
