@@ -103,7 +103,7 @@ jobs:
         #   from source every configure; only real source changes should recompile).
         # (no g++ here on purpose: the image's GCC 14 in /usr/local IS the toolchain;
         #  installing bookworm's g++ would put a second, older compiler on disk)
-        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils ccache \\
+        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils ccache \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
           libxtst-dev \
@@ -247,6 +247,13 @@ jobs:
     # issue), so CMake falls back to `git log -1 --format=%h` and the footer carries
     # the hash. (The ${GITHUB_SHA:0:7} bashism from round 6 is a no-op under pwsh —
     # removed; only the Linux container needs the explicit pin + shell: bash.)
+    #
+    # Windows: size lever REVERTED (measured +1.27 MB, see header note).
+    # Keep the two flag lines below exactly as the verified zero-DLL build had them.
+    # NOTE: no '#' comments inside the folded command — YAML folds them into the
+    # shell line where '#' starts a comment and silently truncates every argument
+    # after it (this exact bug once dropped -DCMAKE_EXE_LINKER_FLAGS and the
+    # -static link with it; the DLL gate caught it).
     - name: Configure (exact flags of the verified local build)
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -262,8 +269,6 @@ jobs:
         -DBUILD_TESTING=OFF
         -DCMAKE_C_COMPILER_LAUNCHER=ccache
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        # Windows: size lever REVERTED (measured +1.27 MB, see header note).
-        # Keep these two lines exactly as the verified zero-DLL build had them.
         -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
         -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
 
