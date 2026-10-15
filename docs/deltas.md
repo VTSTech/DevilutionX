@@ -17,6 +17,10 @@ traceability).
 | ROB-01 | **High** | Robustness | Uncaught `std::stoi` on texture binding names terminates the process mid-frame | 2026-10-15 |
 | ROB-02 | **High** | Robustness | `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort | 2026-10-15 |
 | MAINT-02 | Medium | Maintainability | ~10K lines of dead built-in shader/LUT payload still compiled and embedded | 2026-10-15 |
+| MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching | 2026-10-15 |
+| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run | 2026-10-15 |
+| TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite | 2026-10-15 |
+| MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature | 2026-10-15 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -134,3 +138,129 @@ weight cost compile time and binary size, and — worst — reader confusion.
   path produces a header containing only the live pair.
 - Whole `Source/` tree clang-format 18.1.8 scan: 0 violations / 697 files.
 - Working-tree diff for the round: 135 insertions / 10,288 deletions across 17 files.
+
+---
+
+## MAINT-01 — CLOSED: CI rebuilds entire vendored dep tree on every push to every branch, no caching
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Maintainability |
+| **Original location** | `.github/workflows/gpu-shaders.yml` (trigger block, both jobs), `CMakeLists.txt` (ccache autodetect) |
+
+**Original finding.** The fork's only real CI declared `push` with no branch or path filter —
+every push, including README edits, ran both heavy jobs, and neither job configured any
+`actions/cache` step or ccache despite the build system auto-detecting it. Every run
+re-downloaded and recompiled the entire FetchContent tree (SDL3, SDL3_image, glslang,
+SPIRV-Cross, libzt, libsodium, …) from scratch.
+
+**Resolution.**
+- Trigger filter: `push.paths-ignore: ['**.md', 'docs/**']` — doc-only commits no longer burn
+  a full build.
+- ccache wired into **both** jobs: `ccache` added to the apt install lists,
+  `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER=ccache` in both configure steps, and
+  an `actions/cache@v4` restore step per job (`ccache-linux-x64-*` / `ccache-windows-x64-*`
+  keys, SHA key + prefix restore-keys, 2 GB cap, `time_macros,pch_defines` sloppiness, cache
+  dir pinned under the workspace so container jobs see it).
+
+**Verification.** Workflow YAML parsed and step order asserted (both jobs: Checkout → Restore
+ccache → Install → Configure → Build → [Test] → gates → Package → Upload). Cache effectiveness
+itself is observable in the first pushed run (setup-ccache log lines + job duration).
+
+---
+
+## MAINT-03 — CLOSED: Four broken upstream workflows ship active; cleanup script never run
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **Original location** | `.github/workflows/{clang-format-check,clang-tidy-check,translations,cache-cleanup}.yml`, `cleanup-fork-workflows.{sh,ps1}` |
+
+**Original finding.** Four leftover upstream workflows pinned `actions/checkout@v7` (a version
+that does not exist), so every triggered run failed instantly at checkout — red X's with no
+signal. The fork author had shipped `cleanup-fork-workflows.sh`/`.ps1` to delete every workflow
+except `gpu-shaders.yml` but never ran it.
+
+**Resolution.** Curated rather than blanket-deleted, per the audit's "decide deliberately" note:
+- `clang-format-check.yml` — **kept and fixed** (`actions/checkout@v7` → `@v4`; the
+  `jidicula/clang-format-action@v4.18.0` pin was already valid). The format gate is actively
+  used to police fork changes.
+- `clang-tidy-check.yml` — **deleted** (configured an SDL2 apt stack that never matched the
+  mod's SDL3 configuration).
+- `translations.yml`, `cache-cleanup.yml` — **deleted** (upstream tooling; PR-scoped caches that
+  never existed on this fork).
+- `cleanup-fork-workflows.sh` / `.ps1` — **removed**: their one-shot purpose is fulfilled, and
+  re-running them now would delete the deliberately-kept format check.
+- `dependabot.yml` (github-actions ecosystem, weekly) kept — it now maintains the curated set.
+
+**Verification.** `ls .github/workflows` shows exactly `clang-format-check.yml` (YAML-valid,
+`@v4`) and `gpu-shaders.yml`.
+
+---
+
+## TEST-02 — CLOSED: No CI workflow ever runs the existing test suite
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Testing |
+| **Original location** | `.github/workflows/gpu-shaders.yml` (`-DBUILD_TESTING=OFF` in both jobs), `codecov.yml` |
+
+**Original finding.** Both CI jobs passed `-DBUILD_TESTING=OFF` explicitly; no workflow ever
+executed ctest. The entire existing gtest suite — dungeon generation, savegame codec, UI state,
+the deterministic timedemo regression — ran only when a contributor remembered to run it
+locally. (It was not merely un-run: in this fork it did not even *build* — see below.)
+
+**Resolution.**
+- CI: the Linux job now configures `-DBUILD_TESTING=ON -DDEVILUTIONX_SYSTEM_GOOGLETEST=OFF
+  -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF` (vendored googletest/benchmark, consistent with the
+  project's zero-submodule reproducible-deps convention) and runs
+  `ctest --test-dir build --output-on-failure` after Build. Windows stays `BUILD_TESTING=OFF`
+  (cross-compiled binaries cannot execute on the runner).
+- The suite itself required three real fixes to build and pass headless:
+  1. **gmock link gap** — the standalone tests include `<gmock/gmock.h>` but linked only
+     `GTest::gtest_main`, which carries no gmock include dirs; they only ever built where system
+     gtest headers sat on the default include path. `CMake/Tests.cmake` now links
+     `GTest::gmock` into standalone tests whenever that target exists.
+  2. **Fork link-closure gap** — the fork's settings browser in `options.cpp` (compiled
+     `USE_GPU_SCALER`) calls `ScanPresets`/`ListPresetDir`/`ShaderRootDir`, which existed only
+     inside the engine monolith `libdevilutionx`. Four standalone test/benchmark targets whose
+     closure contains `libdevilutionx_options` failed to link; they now compile the two preset
+     TUs (`preset_parser.cpp`, `slang_translate.cpp`) directly.
+  3. **Fixture skip-path crash** — `UITest`-derived fixtures override `SetUp()` and call the
+     base first; the base's `GTEST_SKIP()` (MPQ fixtures absent) is a plain `return`, so the
+     derived setup continued into uninitialized engine state (null `MyPlayer`, unloaded quest
+     data) and segfaulted all 65 cases in `inventory_ui_test`, `panel_state_test`,
+     `spell_ui_test`. Derived SetUps now bail via the new `UITest::MissingAssets()`, and
+     `UITest::TearDown()` guards its cleanup the same way.
+
+**Verification.** Full ctest suite headless: **608/608 tests pass** (before the fixes: build
+failure for vendored gtest, then 89% pass with 65 segfaults). `preset_failure_modes` (the
+ROB-01/ROB-02 harness, TEST-01 partial progress) runs as test #608 in the same invocation.
+*Residual:* `codecov.yml` coverage upload remains dormant (project target 0%, comments off) —
+tracked as open scope under the coverage umbrella rather than blocking this closure.
+
+---
+
+## MAINT-06 — CLOSED: vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **Original location** | `CMake/VcPkgManifestFeatures.cmake` (lines 4-5), `vcpkg.json` |
+
+**Original finding.** `VcPkgManifestFeatures.cmake` appends feature name `"sdl3"` when
+`USE_SDL3=ON`, but `vcpkg.json` defined no `sdl3` feature — any vcpkg-based configure (the
+documented MSVC path) with the flagship `USE_SDL3=ON` aborted during manifest install.
+
+**Resolution.** Added the feature to `vcpkg.json`:
+`"sdl3": { "description": "Use SDL3", "dependencies": ["sdl3", "sdl3-image"] }` (mirroring the
+`sdl2` feature's shape, including the image codec). The cosmetic `version-string: 1.6.0` vs
+`VERSION` = `1.6.0-dev` divergence was left untouched.
+
+**Verification.** `vcpkg.json` re-parsed as valid JSON; feature name matches the exact string
+`VcPkgManifestFeatures.cmake` appends. End-to-end vcpkg configure is exercised on MSVC path
+usage (not covered by this fork's CI).

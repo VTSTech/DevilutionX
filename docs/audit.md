@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-15
 **Audit commit:** `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-47 Findings | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST
+47 Findings (40 open / 7 closed → [deltas.md](deltas.md)) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST
 
 ---
 
@@ -28,7 +28,9 @@
 
 ## Executive Summary
 
-This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 47 findings break down as 5 High, 17 Medium, and 25 Low across all seven categories.
+**Status update (2026-10-15):** 7 findings are closed — ROB-01, ROB-02, MAINT-02, MAINT-01, MAINT-03, TEST-02, MAINT-06 — resolutions and verification are recorded in [deltas.md](deltas.md). 40 findings remain open (1 High, 15 Medium, 24 Low). TEST-01 is partially addressed: the hostile-input preset harness now runs in CI as `preset_failure_modes`. The narrative below describes the codebase as audited at commit `27548c8`.
+
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 47 findings break down as 5 High, 18 Medium, and 24 Low across all seven categories.
 
 The most consequential theme is a **failure-contract violation cluster**: the mod's explicit design promise is that a bad preset or a GPU problem "never dies" — the session falls back to the stock renderer — yet several reachable paths throw uncaught exceptions (`std::stoi` on malformed texture names in `preset_runner.cpp`, a 30-byte preset declaring `shaders = 2147483647` triggering a ~250 GB allocation) that terminate the process outright (ROB-01, ROB-02). The second theme is **the mod ships without a safety net**: zero tests reference the ~15K-line GPU pipeline (TEST-01) and no CI workflow executes the existing 60-target gtest suite (TEST-02), while every push rebuilds the full vendored dependency tree from scratch with no caching (MAINT-01). The third theme is **untrusted-input trust boundaries**: preset files downloaded from the internet can reference arbitrary files anywhere on disk for compilation and texture loading (SEC-01), and compiled SPIR-V sidecars bypass all translation-layer guarantees on a magic-number check alone (SEC-03). Finally, the CI/packaging layer has correctness gaps that reach users directly: release builds are produced but never attached to GitHub Releases (MAINT-04), and the shipped zips cannot run Hellfire because `mods/hf.mpq` is not packaged (MAINT-05).
 
@@ -50,11 +52,11 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| ROB-01 | **High** | Robustness | Uncaught `std::stoi` on texture binding names terminates the process mid-frame |
-| ROB-02 | **High** | Robustness | `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort |
-| MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching |
+| ROB-01 | **High** | Robustness | ~~Uncaught `std::stoi` on texture binding names terminates the process mid-frame~~ — **CLOSED** → [deltas.md](deltas.md) |
+| ROB-02 | **High** | Robustness | ~~`shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort~~ — **CLOSED** → [deltas.md](deltas.md) |
+| MAINT-01 | **High** | Maintainability | CI rebuilds entire vendored dep tree on every push to every branch, no caching  ~~CI rebuilds entire vendored dep tree on every push to every branch, no caching~~ — **CLOSED** → [deltas.md](deltas.md) |
 | TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline |
-| TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite |
+| TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite  ~~No CI workflow ever runs the existing test suite~~ — **CLOSED** → [deltas.md](deltas.md) |
 | SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs |
 | ROB-03 | Medium | Robustness | Torn cache write permanently poisons a shader cache entry, no recompile fallback |
 | ROB-04 | Medium | Robustness | Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades |
@@ -63,11 +65,11 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 | ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII |
 | ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
 | ROB-09 | Medium | Robustness | Corrupt `diablo.ini` hard-fails startup with no recovery path |
-| MAINT-02 | Medium | Maintainability | ~10K lines of dead built-in shader/LUT payload still compiled and embedded |
-| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run |
+| MAINT-02 | Medium | Maintainability | ~~10K lines of dead built-in shader/LUT payload still compiled and embedded~~ — **CLOSED** → [deltas.md](deltas.md) |
+| MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run  ~~Four broken upstream workflows ship active; cleanup script never run~~ — **CLOSED** → [deltas.md](deltas.md) |
 | MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases |
 | MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire |
-| MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature |
+| MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature  ~~vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature~~ — **CLOSED** → [deltas.md](deltas.md) |
 | FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets |
 | FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message |
 | FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log |
@@ -159,30 +161,6 @@ The sidecar fast path — `<shader>.vert.spv`/`.frag.spv` next to a `.slang` —
 ---
 
 ### Robustness
-
-#### ROB-01: Uncaught `std::stoi` on texture binding names terminates the process mid-frame
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 1228, 1240, 1246, 1267, 438-439, 465), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 571, 231-235) |
-
-`Runner::Run` resolves per-pass texture bindings by name using `std::stoi(name.substr(N))` after only a prefix check (`rfind(prefix, 0) == 0`) for `OriginalHistory`, `PassOutput`, `PassFeedback`, and `User` prefixes. A preset whose alias or texture is named exactly `"OriginalHistory"`, `"PassOutput"`, `"PassFeedback"`, or `"User"` — or whose suffix is non-numeric (e.g. `PassOutputx`) — makes `std::stoi` throw `std::invalid_argument`; a very long numeric suffix throws `std::out_of_range`. There is no try/catch anywhere on the call path from `PresentFrame`, so the exception propagates out of the frame loop and calls `std::terminate`, killing the game. The same unchecked pattern exists in `Load` (`preset_runner.cpp:438-439, 465`) and in `BuiltinTextureIndex` (`slang_translate.cpp:571`), and `std::stof` at `slang_translate.cpp:231-235` accepts matches like `"."` or `"-"` alone from `#pragma parameter` lines. Critically, this exact class was already fixed once — the `PassFeedback#Size` bug documented in SLANG_SPEC.md gap #4 and the comment at `preset_runner.cpp:1013-1021` — proving real presets trigger it. This directly violates the mod's failure contract ("any preset load/run failure → session fallback, game never dies"). Fix: replace bare `stoi` with the codebase's own `utils/parse_int.hpp` helpers (or wrap in try/catch returning `std::optional<int>`) and fall back to the source-texture binding when a name doesn't resolve, consistent with the existing null-texture guard at `preset_runner.cpp:1293-1303`.
-
-**Impact:** A single malformed (or merely unusually named) preset goes from guaranteed process crash to a logged load failure with the stock renderer intact.
-
-#### ROB-02: `shaders = 2147483647` in a preset triggers uncaught ~250 GB allocation → abort
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 424, 535-536, 582-583) |
-
-The parser reads `shaders = N` into `shaderCount` and resizes `preset.passes` accordingly (`preset_parser.cpp:424`, `:535-536`, and `:582-583` for `shaderN` keys), with no upper clamp. A 30-byte preset file containing `shaders = 2147483647` makes `std::vector<PassDef>::resize(2^31-1)` attempt an allocation on the order of 250 GB — either throwing `std::bad_alloc`/`std::length_error` uncaught (→ `std::terminate`, same violation as ROB-01) or thrashing the system into OOM under overcommit before dying. Individual `shaderN = path` keys with huge indices are already safe (`SplitPassKey` catches `stoi` failures and ignores the key), which makes the unclamped count path an inconsistency rather than a design choice. `histories` is clamped 1..8 (`:432`), showing the codebase's own convention for this. Fix: clamp `shaderCount` to a sane ceiling (RetroArch effectively caps far lower; 32 is generous), and resize lazily per `shaderN` key seen instead of by declared count.
-
-**Impact:** The cheapest possible denial-of-service against the game — a tiny malformed preset file — fails politely instead of terminating the process.
 
 #### ROB-03: Torn cache write permanently poisons a shader cache entry, no recompile fallback
 
@@ -319,42 +297,6 @@ Combining the game's own Integer Scaling option with a desktop resolution that i
 ---
 ### Maintainability
 
-#### MAINT-01: CI rebuilds entire vendored dep tree on every push to every branch, no caching
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Maintainability |
-| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 41-49), `CMakeLists.txt` (lines 323-327) |
-
-The fork's only real CI declares `push` with **no branch or path filter** — every push to every branch, including README and docs edits, runs both heavy jobs (Linux gcc:14 container build and Windows MinGW cross-build). Neither job configures any `actions/cache` step or ccache, despite the build system auto-detecting ccache (`CMakeLists.txt:323-327`) — so every run re-downloads and recompiles SDL3, SDL3_image with libpng/zlib (git-clone-with-submodules), glslang, SPIRV-Cross, libzt, libsodium, bzip2, and the rest of the FetchContent tree from scratch. This wastes 20-40+ minutes of runner time per trivial commit, discourages small iterative pushes, and makes branch-based testing slow. Concurrency cancel-in-progress (`:47-49`) partially mitigates but doesn't fix the per-run cost. Fix: add `branches: [master]` plus `paths` filtering, and cache `~/.ccache` keyed on the compiler plus a lockfile-ish hash — ccache alone typically cuts repeat builds by 70-90%.
-
-**Impact:** Fast feedback for the actual shader/engine work being iterated on, at a fraction of the runner cost.
-
-#### MAINT-02: ~10K lines of dead built-in shader/LUT payload still compiled and embedded
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Maintainability |
-| **File(s)** | `Source/engine/render/gpu/gpu_luts.hpp`, `Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp` (lines 101-5538), `Source/engine/render/gpu/gpu_shaders_msl.hpp` (lines 39-417), `Source/engine/render/gpu/shaders/vulkan/hqx_*.frag`, `scalefx_pass*.frag`, `CMakeLists.txt` (lines 145-153) |
-
-The built-in HQ2x/ScaleFX filters were removed from the option (`options.cpp:433-436`; the enum now has only `None`, and `gpu_scaler.cpp:962-964` documents the removal), but their payloads still ship: `gpu_luts.hpp` (3,820 lines of HQ2x/HQ3x/HQ4x LUT data) is referenced by nothing anywhere in the build; the prebuilt SPV header embeds ~5.4K lines of dead `kHqxIndex`/`kHqxBlend`/`kSfxPass0-4` SPIR-V (only `kVertex` and `kBlit` are live); the MSL header carries the same dead set; and the `gpu_scaler_spv` CMake target still compiles the 7 dead `.frag` sources into the generated header on every build that has glslangValidator. All of it is faithful work worth keeping in git history, but it costs compile time, binary size, and — worst — reader confusion, since the audit trail shows new contributors assuming the built-in path is live. Fix: delete the dead sources from the SPV generation list, delete `gpu_luts.hpp` (the handoff doc already marks it "safe to delete"), and trim the two embedded headers to `kVertex`/`kBlit`.
-
-**Impact:** Binary shrinks, builds get faster, and the render path reads as what it is: preset-only.
-
-#### MAINT-03: Four broken upstream workflows ship active; cleanup script never run
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Maintainability |
-| **File(s)** | `.github/workflows/clang-format-check.yml` (line 25), `clang-tidy-check.yml` (line 21), `translations.yml` (line 25), `cache-cleanup.yml` (line 12), `cleanup-fork-workflows.sh` / `.ps1` (repo root) |
-
-Four leftover upstream workflows pin `actions/checkout@v7`, a version that does not exist, so every triggered run fails instantly at checkout — red X's on every push for format checks, translation validation, and tidy that never actually run. The fork author anticipated exactly this: `cleanup-fork-workflows.sh`/`.ps1` at the repo root delete every workflow except `gpu-shaders.yml` — but the scripts were never executed. Additional noise: `clang-tidy-check.yml` configures an SDL2 apt stack that doesn't match the mod's SDL3 configuration, and dependabot keeps bumping the dead workflows. Fix: run the shipped cleanup script (or delete the four files), and decide deliberately whether clang-format checks should run on the fork (they'd need an updated action version).
-
-**Impact:** Green CI badge means something again; contributors stop ignoring red X's that carry no signal.
-
 #### MAINT-04: Release builds never attach to GitHub Releases
 
 | Property | Value |
@@ -378,18 +320,6 @@ The workflow triggers on `release: published`, but no step uploads the built art
 The CI package steps copy `build/devilutionx.mpq` plus the shader helper scripts into the zips, but not `build/mods/hf.mpq` — which the build system does produce when `smpq` is available (as it is on the CI Linux job, which installs it). CPack-based packaging installs `mods/hf.mpq` (`CMakeLists.txt:714-716`), but the fork's hand-rolled zips bypass CPack, so every shipped build is Diablo-only even though the Hellfire mod asset tree (`mods/hf/`) is fully present in the repo. Users who own Hellfire get a silent "expansion doesn't work" experience. Fix: add `mkdir -p mods && cp build/mods/hf.mpq mods/` (guarded on file existence) to both job's package steps, next to the existing `devilutionx.mpq` copy.
 
 **Impact:** Shipped zips support the full game out of the box, matching what CPack-based installs deliver.
-
-#### MAINT-06: vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Maintainability |
-| **File(s)** | `CMake/VcPkgManifestFeatures.cmake` (lines 4-5), `vcpkg.json` (lines 17-56) |
-
-`VcPkgManifestFeatures.cmake` appends feature name `"sdl3"` to the manifest features list when `USE_SDL3=ON`, but `vcpkg.json` defines only `sdl1`, `sdl2`, `encryption`, `translations`, and `tests` — no `sdl3` feature exists. Any vcpkg-based configure (the documented MSVC/Visual Studio path via `CMakeSettings.json`) with `USE_SDL3=ON` aborts during manifest install, blocking the flagship feature on the primary Windows-from-source toolchain. The fix is a two-line addition to `vcpkg.json`: `"sdl3": { "description": "SDL3 backend with GPU scaler support", "dependencies": [ "sdl3", { "name": "sdl3-image" } ] }`. While there, `version-string: 1.6.0` diverges from `VERSION` = `1.6.0-dev` (cosmetic).
-
-**Impact:** MSVC contributors can build the actual mod instead of hitting an opaque manifest error.
 
 #### MAINT-07: Magic number 9 / dead enum values / unused include in gpu_scaler.cpp
 
@@ -646,18 +576,6 @@ The fork's identity lives in two places that couple it to upstream behavior: `Se
 
 **Impact:** The failure-contract violations and translator regressions this audit documents become mechanically un-reintroducible.
 
-#### TEST-02: No CI workflow ever runs the existing test suite
-
-| Property | Value |
-|----------|-------|
-| **Severity** | High |
-| **Category** | Testing |
-| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 113, 224), `.github/workflows/clang-tidy-check.yml`, `codecov.yml` (root) |
-
-Both gpu-shaders.yml jobs pass `-DBUILD_TESTING=OFF` explicitly; the clang-tidy workflow configures a build only to produce `compile_commands.json` and never executes ctest; and `codecov.yml` is configured with project target 0%, `patch: no`, and comments disabled — coverage reporting is fully dormant. Net effect: the entire existing gtest suite (dungeon generation, savegame codec, UI state, the deterministic timedemo full-state regression) runs only when a contributor remembers to run it locally. Any regression in *upstream* code the fork carries — or in the options/render integration the fork touches — ships unnoticed. Fix: add a lightweight `tests.yml` workflow (ubuntu-24.04, vendored deps, `BUILD_TESTING=ON`, `ctest --output-on-failure`), reusing the linux job's container pattern from gpu-shaders.yml; enable codecov upload with the existing ignore patterns.
-
-**Impact:** The project's strongest existing quality asset — its deterministic demo-based regression harness — starts working automatically on every push.
-
 #### TEST-03: Options layer (ini round-trip, shader-filter self-heal) untested
 
 | Property | Value |
@@ -702,8 +620,8 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 
 | Timeline | Findings |
 |----------|----------|
-| **Immediate** (next 1-2 builds) | ROB-01 (stoi crash), ROB-02 (allocation DoS), TEST-02 (run ctest in CI), MAINT-01 (CI caching + trigger filter), TEST-01 (register preset_smoke + parser tests) |
-| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), MAINT-02 (delete dead shader payload), MAINT-03 (run cleanup-fork-workflows), MAINT-04 (release upload step), MAINT-05 (package hf.mpq), MAINT-06 (vcpkg sdl3 feature), ARCH-01 (window claim protocol), TEST-03 (options tests) |
+| **Immediate** (next 1-2 builds) | ~~ROB-01 (stoi crash)~~ ✅, ~~ROB-02 (allocation DoS)~~ ✅, ~~TEST-02 (run ctest in CI)~~ ✅, ~~MAINT-01 (CI caching + trigger filter)~~ ✅, TEST-01 (preset failure-mode harness registered; broader GPU-pipeline coverage still open) |
+| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), ~~MAINT-02 (delete dead shader payload)~~ ✅, ~~MAINT-03 (run cleanup-fork-workflows)~~ ✅, MAINT-04 (release upload step), MAINT-05 (package hf.mpq), ~~MAINT-06 (vcpkg sdl3 feature)~~ ✅, ARCH-01 (window claim protocol), TEST-03 (options tests) |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-04, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-07 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
 Sequencing notes: TEST-01/TEST-02 belong in the immediate window despite being testing items — the ROB-01/ROB-02 fixes are one-line guards whose regressions only stay fixed if *something* runs; adding the preset failure-mode tests alongside the crash fixes is the cheapest possible verification. ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point. MAINT-02 (dead payload removal) should land before any future touch of the shader headers, so the diff doesn't re-review dead code.
