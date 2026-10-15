@@ -129,8 +129,8 @@ endif()
   mark_as_advanced(DEVILUTIONX_DISPLAY_TEXTURE_FORMAT)
 endif()
 
-# SDL_GPU shader scaler (ScaleFX / HQx)
-cmake_dependent_option(USE_GPU_SCALER "Enable the SDL_GPU shader scaler (ScaleFX/HQx upscaling filters)" ON "USE_SDL3;NOT USE_SDL1" OFF)
+# SDL_GPU shader scaler (libretro slang preset upscaling)
+cmake_dependent_option(USE_GPU_SCALER "Enable the SDL_GPU shader scaler (libretro slang preset upscaling)" ON "USE_SDL3;NOT USE_SDL1" OFF)
 if(USE_GPU_SCALER)
   set(GPU_SCALER_SHADER_DIR "${PROJECT_SOURCE_DIR}/Source/engine/render/gpu/shaders/vulkan")
   set(GPU_SCALER_SPV_HEADER "${CMAKE_BINARY_DIR}/Source/engine/render/gpu/gpu_shader_spv.hpp")
@@ -143,13 +143,6 @@ if(USE_GPU_SCALER)
           -DOUTPUT=${GPU_SCALER_SPV_HEADER}
           -P ${PROJECT_SOURCE_DIR}/CMake/gen_spv_header.cmake
       DEPENDS ${GPU_SCALER_SHADER_DIR}/fullscreen.vert
-              ${GPU_SCALER_SHADER_DIR}/hqx_index.frag
-              ${GPU_SCALER_SHADER_DIR}/hqx_blend.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass0.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass1.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass2.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass3.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass4.frag
               ${GPU_SCALER_SHADER_DIR}/blit.frag
               ${PROJECT_SOURCE_DIR}/CMake/gen_spv_header.cmake
       COMMENT "Compiling GPU scaler shaders to SPIR-V"
@@ -172,8 +165,9 @@ if(USE_GPU_SCALER)
   # Runtime libretro slang preset support ("shaders folder"): glslang
   # compiles .slang sources to SPIR-V in-process on first load (with a disk
   # cache), SPIRV-Cross transpiles SPIR-V to HLSL for the D3D12 backend.
-  # The build-time glslangValidator block above only affects the BAKED-IN
-  # ScaleFX/HQx shaders and is independent of this.
+  # The build-time glslangValidator block above only affects the two BAKED-IN
+  # shared programs (fullscreen vertex + blit fragment) and is independent
+  # of this.
   option(DEVILUTIONX_SYSTEM_GLSLANG "Use system-provided glslang" ON)
   if(DEVILUTIONX_SYSTEM_GLSLANG)
     find_package(glslang QUIET CONFIG)

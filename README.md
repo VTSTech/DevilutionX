@@ -36,7 +36,7 @@ DevilutionX is a port of Diablo and Hellfire that strives to make it simple to r
 
 Check out the [manual](https://github.com/diasurgical/devilutionX/wiki) for available features and how to take advantage of them.
 
-For a full list of base-game changes, see the [changelog](docs/CHANGELOG.md).
+For a full list of base-game changes, see the [upstream changelog](docs/CHANGELOG_UPSTREAM.md).
 
 # What this mod adds
 
