@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-15
 **Audit commit:** `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-28 Findings (all open) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 19 closed → [deltas.md](deltas.md)
+28 Findings (all open) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 20 closed → [deltas.md](deltas.md)
 
 ---
 

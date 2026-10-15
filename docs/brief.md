@@ -1,6 +1,6 @@
 # Codebase Intelligence Brief: DevilutionX (VTSTech GPU Shader Mod)
 
-> Generated: 2026-10-15 | Auditor: Super Z (GLM) | Commit: `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` (squashed fork history; `VERSION` = `1.6.0-dev`)
+> Generated: 2026-10-15 | Auditor: Super Z (GLM) | Commit: `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` (squashed fork history; `VERSION` = `1.6.0-dev`) — refreshed after codebase-audit rounds 1–6 (tip `b60356e1a`); items fixed by the audit are marked ✅ with their finding IDs, open items cross-reference the ledger in `docs/audit.md`
 
 ---
 
@@ -36,7 +36,7 @@ test/                   → ~60 gtest targets + fixtures (.dun dungeons, timedem
 3rdParty/               → Thin CMake FetchContent wrappers ONLY (pinned tarball/SHA or GIT_TAG) — no submodules
 CMake/                  → Modules: Dependencies.cmake, Tests.cmake, Platforms.cmake (~40 platform files)
 Packaging/              → CPack per-OS + fork's shader helper scripts (windows/, linux/)
-.github/workflows/      → gpu-shaders.yml (the fork's real CI) + 4 broken upstream leftovers
+.github/workflows/      → gpu-shaders.yml (the fork's real CI) + clang-format-check.yml (curated set, MAINT-03 ✅)
 docs/                   → handoff/GPU_SHADERS/SLANG_SPEC/audit CSVs; android-project/, uwp-project/ = stale upstream scaffolding
 ```
 
@@ -45,7 +45,7 @@ docs/                   → handoff/GPU_SHADERS/SLANG_SPEC/audit CSVs; android-p
 - `3rdParty/*/` contents — vendor code behind thin wrappers; read only the wrapper `CMakeLists.txt`
 - `Translations/`, `assets/`, `mods/` asset trees; `Packaging/*` platform scripts except `windows/`, `linux/`
 - `android-project/`, `uwp-project/` — cannot build the mod (no SDL3), stale upstream scaffolding
-- `Source/engine/render/gpu/gpu_luts.hpp`, `gpu_shader_spv_prebuilt.hpp`, `gpu_shaders_msl.hpp` — generated/committed binary blobs; only `kVertex`/`kBlit` entries of the prebuilt/MSL headers are live, and `gpu_luts.hpp` is referenced by nothing (orphan)
+- `Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp`, `gpu_shaders_msl.hpp` — generated/committed binary blobs, trimmed (MAINT-02 ✅) to carry only the live `kVertex`/`kBlit` pair; `gpu_luts.hpp` was deleted outright (it was an unreferenced orphan)
 - `docs/audit/*.csv` — per-preset field-sweep results, useful only when debugging a specific shader pack
 - Root gameplay TUs you don't touch (`missiles.cpp`, `stores.cpp`, `levels/*`) — stock upstream, stable
 
@@ -57,9 +57,9 @@ docs/                   → handoff/GPU_SHADERS/SLANG_SPEC/audit CSVs; android-p
 |------|---------|----------------|
 | `Source/engine/render/gpu/gpu_scaler.cpp` (1197 ln) | SDL_GPU device/swapchain lifecycle, per-frame present, OSD, gpu-scaler.log | The heart of the mod. Owns `Reinit()`/`Shutdown()`/`PresentFrame()`; every failure funnel ends here via sticky `gFailed` → session fallback to SDL_Renderer |
 | `Source/engine/render/gpu/preset/preset_runner.cpp` (1385 ln) | Multi-pass preset executor: pipelines, history ring, feedback double-buffering, LUTs | Where compiled presets actually run each frame; `Runner::Load()` is the preset→GPU boundary; Vulkan-only gate at line 228 |
-| `Source/engine/render/gpu/preset/preset_parser.cpp` (799 ln) | `.slangp` parser: passes, scale rules, aliases, `#reference` merge, `ScanPresets`, path resolution | All untrusted-input entry points live here (`ResolvePresetPath` :732, `ResolvePresetFilePath` :743) |
+| `Source/engine/render/gpu/preset/preset_parser.cpp` | `.slangp` parser: passes, scale rules, aliases, `#reference` merge, `ScanPresets`, path resolution | All untrusted-input entry points live here (`ResolvePresetPath`, `ResolvePresetFilePath`); references are sandboxed to the shader root via `IsPathInsideShaderRoot` (SEC-01 closed ✅) |
 | `Source/engine/render/gpu/preset/slang_translate.cpp` (1207 ln) | `.slang` → GLSL translation: includes, stage split, UBO/push-block rewrites, dense bindings | The most intricate logic; cache keys hash its **output**, so changes here invalidate the entire shader cache |
-| `Source/engine/render/gpu/preset/slang_compile.cpp` (183 ln) | glslang runtime (FetchContent singleton) → SPIR-V, sidecar `.spv` fast path, SHA-256 disk cache | Cache key = SHA-256 of translated GLSL (`:121`); sidecar `.spv` always wins (`:147`); glslang version NOT in key |
+| `Source/engine/render/gpu/preset/slang_compile.cpp` | glslang runtime (FetchContent singleton) → SPIR-V, sidecar `.spv` fast path, SHA-256 disk cache | Cache key = SHA-256 of translated GLSL; sidecar `.spv` always wins; the key is version-salted with the glslang/toolchain version and cache writes are atomic with self-healing recompile on GPU rejection (ROB-03/ROB-04 closed ✅) |
 | `Source/engine/dx.cpp` | 3-way present: GPU scaler → SDL_Renderer → window surface; backbuffer + dirty-rect blits | `RenderPresent()` (`:294`) is where the scaler takes over (`:312-325`) and where fallback happens (`:315-321`) |
 | `Source/utils/display.cpp` | Window/renderer creation & recreation, `ReinitializeRenderer()` | Mediates window ownership hand-off between SDL_Renderer and SDL_GPU (DXGI one-swapchain-per-HWND constraint) |
 | `Source/options.cpp` | Self-registering options system; `OptionEntryShaderFilter` (`:420-626`) | Shader Filter ini persistence, folder-browser navigation via negative values, stale-value self-heal, documented magic-static deadlock trap (`:437-443`) |
@@ -127,7 +127,7 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 | Aspect | Pattern |
 |--------|---------|
 | Error handling | Fatal: `app_fatal()` (dialog + quit). Recoverable: `std::expected` (utils/status_macros.hpp). **GPU mod deviates on purpose**: log to gpu-scaler.log + session fallback, never abort |
-| Exceptions | Compiled out under `DEVILUTIONX_DISABLE_EXCEPTIONS`; dvlnet uses exceptions internally; preset code has try/catch only around its own `ParseInt/ParseFloat` (a live hazard — see audit ROB-01) |
+| Exceptions | Compiled out under `DEVILUTIONX_DISABLE_EXCEPTIONS`; dvlnet uses exceptions internally; the ROB-01/ROB-02 uncaught-`stoi`/bad-allocation hazards are fixed and regression-locked (`preset_failure_modes` harness + `preset_smoke` malformed corpus ✅) |
 | Options | Self-registering `OptionEntryBase` subclasses; flags `CantChangeInGame`/`RecreateUI`; change callbacks via static-initializer idiom `(GetOptions().X.SetValueChangedCallback(fn), true)` |
 | Strings | `std::string_view` params, `StrCat`/`BufCopy`, fmt-style `Log("{}", …)`, gettext `N_()`/`_()`, UTF-8 everywhere |
 | Naming | Namespaces `devilution`, `devilution::gpu_scaler`, `devilution::preset`; Diablo-legacy globals (`gb*`, `sg*`) coexist with snake_case; `DVL_API_FOR_TEST` marks test-exposed globals |
@@ -142,13 +142,13 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 - **Magic-static deadlock in options** — `OptionEntryShaderFilter` must NOT scan the shaders folder from its constructor; `GetOptions()` is a function-local static and re-entering it mid-construction deadlocks silently at startup (documented `options.cpp:437-443`). Rescans are deferred to `LoadFromIni`.
 - **`USE_GPU_SCALER` define in two CMake paths** — if you add a source file or flag, it must be added in both the glslangValidator and prebuilt-header branches (`CMakeLists.txt:166-170`), or the feature silently disappears while the build stays green.
 - **Demo mode replays the entire loop deterministically** — it intercepts the clock (`diablo.cpp:925`) and event pump (`demomode.cpp:725`); breaking determinism (e.g. adding wall-clock reads to the render path) breaks recorded demos and `timedemo_test`.
-- **Window ownership ABA** — `WindowHasSwapchainHistory()` compares `SDL_Window*` by pointer only against `gLastClaimedWindow` (gpu_scaler.cpp:86), which is deliberately never cleared; a recycled window address causes false positives. Works today, fragile under refactoring.
+- **Window ownership hand-off** — ✅ FIXED (ARCH-01, `d5ca0c055`): swapchain history is explicit state keyed by SDL window ID (`gLastClaimedWindowId`, never reused by SDL) instead of a dangling-pointer compare — the ABA false-positive is gone; the consolidated protocol comment in gpu_scaler.cpp names all three participants (gpu_scaler / display.cpp / dx.cpp).
 - **Orientation convention** — every intermediate pass gets a Y-mirror MVP; the last pass keeps legacy orientation so the present blit cancels the flip. Inserting/removing passes must preserve this pairing (preset_runner.cpp:924-947, well-commented).
 - **Integer Scaling crash (known, deliberately unfixed)** — Integer Scaling + non-multiple resolution → divide-by-zero in `CalculatePreferredWindowSize` (display.cpp) + zero-size-fit path in `PresentFrame`. Ruled out-of-scope by VTSTech; do not "fix" casually (handoff doc §8).
 - **Palette fade runs its own present loop** — `PaletteFadeIn/Out` (palette.cpp:288-319) does SDL_Delay+blit+present reentrancy, and it flows through the GPU scaler too.
 - **HeadlessMode is a bare global** — every new render-path branch must check it or unit tests crash/open windows (`test/main.cpp:84` sets it globally).
 - **MP asset-integrity hard abort** — release builds `app_fatal` mid-game when MP is used with modified lua/tsv/sol assets (`diablo.cpp:905-907`).
-- **Cache poisoning** — the SPIR-V disk cache is written directly to the final path (no temp+rename); a torn write becomes a permanent bad cache hit that fails every session until the user deletes `shaders/cache/`.
+- **Cache poisoning** — ✅ FIXED (ROB-03, `d5ca0c055`): SPIR-V cache blobs are written to a process-unique temp file and atomically renamed, and a GPU-rejected cache hit self-heals by deleting the blobs and recompiling once with the cache disabled.
 - **Broken symlinks in repo** — `CMake/platforms/*-pkg-config` and `Packaging/windows/mingw-prep64.sh` are dangling symlinks; they break rg/file-tooling scans (harmless to the core build).
 
 ---
@@ -160,7 +160,7 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 | Preset format | libretro slang (`.slangp`/`.slang`) | Full RetroArch shader ecosystem; spec semantics per `docs/SLANG_SPEC.md` |
 | Shader dir | `shaders/` **next to the executable**, recursive | Portable-zip deployment model; nothing baked into the binary |
 | Compile | In-process glslang → SPIR-V; `shaders/cache/` content-addressed; sidecar `.spv` always wins | Near-instant reload; cache key = SHA-256 of translated GLSL |
-| Built-in filters | REMOVED (user request) | Only `Off` + custom presets; `gpu_luts.hpp` is an orphan; stale ini values sanitize to Off |
+| Built-in filters | REMOVED (user request) | Only `Off` + custom presets; dead payload deleted outright (MAINT-02 ✅); stale ini values sanitize to Off |
 | D3D12 | Excised entirely (2026-10-14) | SPIR-V→HLSL transpile path deleted; Vulkan is the only Windows/Linux backend |
 | Metal | Accepted at device level, but presets reject non-Vulkan | MSL scaffolding exists; preset path deterministically fails on macOS today |
 | Failure contract | Any preset/GPU failure → session fallback to stock renderer, game never dies | Core product promise; scatters through gpu_scaler.cpp |
@@ -171,15 +171,16 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 
 ## What's Missing / Incomplete
 
-- **Zero tests for the mod**: `grep -ri 'gpu\|shader' test/` → 0 hits; `preset_smoke` harness exists but is `EXCLUDE_FROM_ALL` and not registered with ctest.
-- **No CI run of the test suite**: both gpu-shaders.yml jobs pass `-DBUILD_TESTING=OFF`; codecov is dormant (target 0%, comments off).
-- **No CI caching**: every push re-downloads and rebuilds the entire vendored dep tree (SDL3, glslang, libzt…); push trigger is unfiltered (all branches/paths).
-- **No release attachment**: `release: published` triggers builds but nothing uploads artifacts to the Release; 90-day artifact expiry.
-- **4 dead upstream workflows** (nonexistent `actions/checkout@v7`); `cleanup-fork-workflows.sh` ships at root but was never run.
-- **Release zips omit `mods/hf.mpq`** → shipped builds cannot run Hellfire.
-- **vcpkg + SDL3 broken**: `VcPkgManifestFeatures.cmake` requests feature `"sdl3"` that `vcpkg.json` does not define → configure aborts.
-- Shader cache: no pruning, no glslang-version salt in the key, PNG-only LUT decode vs 6 accepted extensions in `LooksLikeImagePath`.
+- ~~Zero tests for the mod~~ ✅ TEST-01/TEST-03 closed: `preset_smoke` builds with the suite and registers `preset_smoke_corpus`/`preset_smoke_malformed` ctest tests (good + malformed corpora covering every pipeline stage), plus a standalone options-layer gtest (`test/options_test.cpp`) — the mod's pipeline and options layer are regression-locked.
+- ~~No CI run of the test suite~~ ✅ TEST-02 closed: the Linux CI job configures `-DBUILD_TESTING=ON` and runs ctest (608/608 at closure; three real suite fixes were needed — gmock link gap, fork link-closure gap, fixture skip-path crash). Windows stays `BUILD_TESTING=OFF` (cross-compiled binaries cannot execute on the runner). codecov remains dormant (target 0%).
+- ~~No CI caching~~ ✅ MAINT-01 closed: `push.paths-ignore` for doc-only commits + ccache (`actions/cache@v4`) wired into both jobs.
+- ~~No release attachment~~ ✅ MAINT-04 closed: both gpu-shaders.yml jobs attach zips to GitHub Releases on `release: published`.
+- ~~4 dead upstream workflows~~ ✅ MAINT-03 closed: curated — `clang-format-check.yml` fixed (`@v4`) and kept as the format gate; `clang-tidy-check`/`translations`/`cache-cleanup` deleted; the one-shot cleanup scripts removed.
+- ~~Release zips omit `mods/hf.mpq`~~ ✅ MAINT-05 closed: both Package steps copy `build/mods/hf.mpq` when present (existence-guarded) — shipped builds run Hellfire.
+- ~~vcpkg + SDL3 broken~~ ✅ MAINT-06 closed: `sdl3` feature (sdl3 + sdl3-image) defined in `vcpkg.json`.
+- Shader cache: pruning still absent; PNG-only LUT decode vs 6 accepted extensions in `LooksLikeImagePath` (ROB-12, open). Version salt, atomic writes, and self-heal are done (ROB-03/ROB-04 ✅).
 - Per `SLANG_SPEC.md` §8: ~20 spec gaps tracked (clamp_to_border, history cap 8, `#pragma alias`, `feedback_pass` parsed-unused, …).
+- **Open audit backlog**: 5 Medium (ROB-07 preset-runtime RAII — prerequisite of FEAT-01; ROB-08 mid-session vsync; FEAT-01 retry/hot-reload; FEAT-02 Metal strategy; FEAT-03 in-game preset errors) + 22 Low — full ledger in `docs/audit.md`, closures in `docs/deltas.md`.
 
 ---
 
@@ -187,8 +188,8 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 
 1. **Read the Critical Files Index** — start with `gpu_scaler.cpp`, then `preset_runner.cpp`; everything else in the mod hangs off those two.
 2. **Understand the two pipelines**: baked shaders (`shaders/vulkan/*.frag` → build-time SPV header, used only for `blit`) vs runtime presets (`.slangp` → parse → translate → glslang → cache → `Runner::Run`).
-3. **Check Known Landmines before touching options/CMake/render present** — the deadlock, the dual-define, and the window ABA are the three that bite.
-4. **Follow the failure contract**: preset code must return descriptive error strings and degrade to the stock renderer — never `app_fatal`, never terminate. The audit's ROB-01/ROB-02 findings mark exactly where this contract is currently violated by uncaught exceptions.
-5. **When changing `slang_translate.cpp`**, remember it changes every cache key (users must clear `shaders/cache/`) — and consider bumping a version salt (audit ROB-04).
-6. **Build once with `-DBUILD_TESTING=ON` and run `ctest`** before and after render-path changes; the headless timedemo is the only full-state regression net.
+3. **Check Known Landmines before touching options/CMake/render present** — the deadlock, the dual-define, and the window-ownership hand-off are the three that bite.
+4. **Follow the failure contract**: preset code must return descriptive error strings and degrade to the stock renderer — never `app_fatal`, never terminate. The ROB-01/ROB-02 uncaught-exception violations are fixed and regression-locked by the `preset_failure_modes` harness and the `preset_smoke` malformed corpus — keep it that way.
+5. **When changing `slang_translate.cpp`**, remember it changes every cache key (users must clear `shaders/cache/`); the key is version-salted with the glslang/toolchain version (ROB-04 ✅), so toolchain bumps invalidate the cache automatically.
+6. **Build once with `-DBUILD_TESTING=ON` and run `ctest`** before and after render-path changes; CI already runs ctest on Linux pushes, and the headless timedemo is the only full-state regression net.
 7. Do NOT start by reading every file — use this brief as the map. `docs/diablo-handoff.md` has per-round field history if you need to know *why* something looks defensive.
