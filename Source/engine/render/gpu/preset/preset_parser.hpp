@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,16 @@ std::string ResolvePresetPath(const std::string &relativePath);
  * show the conventional path.
  */
 std::string ResolvePresetFilePath(const std::string &presetDir, const std::string &referencedPath);
+
+/**
+ * @brief True when candidate canonicalizes to the shader root itself or
+ * somewhere below it (symlinks resolved), false otherwise.
+ *
+ * Enforces the preset-pack sandbox (SEC-01): references coming from
+ * untrusted preset files may only reach files inside the shaders folder,
+ * so a downloaded pack cannot direct the engine to open or compile files
+ * from arbitrary locations on disk. */
+bool IsPathInsideShaderRoot(const std::filesystem::path &candidate);
 
 } // namespace preset
 } // namespace gpu_scaler

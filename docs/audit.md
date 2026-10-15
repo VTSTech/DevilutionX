@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-15
 **Audit commit:** `27548c8b2d6b1dbf7b4c348ecd79abd4598b8b99` | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-40 Findings (all open) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 7 closed → [deltas.md](deltas.md)
+36 Findings (all open) | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 11 closed → [deltas.md](deltas.md)
 
 ---
 
@@ -28,9 +28,9 @@
 
 ## Executive Summary
 
-**Status:** 7 findings closed since this audit — resolutions in [deltas.md](deltas.md). The 40 findings below are open.
+**Status:** 11 findings closed since this audit — resolutions in [deltas.md](deltas.md). The 36 findings below are open.
 
-This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 40 open findings break down as 1 High, 15 Medium, and 24 Low across all seven categories.
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. The review examined the fork's entire delta (GPU scaler, preset parser, slang translator, glslang compiler bridge, preset runner), its integration points (`dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`), the engine's game loop and options architecture, and the build/CI/packaging layer, tracing concrete call chains down to individual SDL_GPU API invocations. The 36 open findings break down as 1 High, 13 Medium, and 22 Low across all seven categories.
 
 The most consequential theme is a **failure-contract violation cluster**: the mod's explicit design promise is that a bad preset or a GPU problem "never dies" — the session falls back to the stock renderer — yet several reachable paths throw uncaught exceptions (`std::stoi` on malformed texture names in `preset_runner.cpp`, a 30-byte preset declaring `shaders = 2147483647` triggering a ~250 GB allocation) that terminate the process outright (ROB-01, ROB-02). The second theme is **the mod ships without a safety net**: zero tests reference the ~15K-line GPU pipeline (TEST-01) and no CI workflow executes the existing 60-target gtest suite (TEST-02), while every push rebuilds the full vendored dependency tree from scratch with no caching (MAINT-01). The third theme is **untrusted-input trust boundaries**: preset files downloaded from the internet can reference arbitrary files anywhere on disk for compilation and texture loading (SEC-01), and compiled SPIR-V sidecars bypass all translation-layer guarantees on a magic-number check alone (SEC-03). Finally, the CI/packaging layer has correctness gaps that reach users directly: release builds are produced but never attached to GitHub Releases (MAINT-04), and the shipped zips cannot run Hellfire because `mods/hf.mpq` is not packaged (MAINT-05).
 
@@ -53,7 +53,6 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
 | TEST-01 | **High** | Testing | Zero test coverage for the fork's ~15K-line GPU pipeline |
-| SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs |
 | ROB-03 | Medium | Robustness | Torn cache write permanently poisons a shader cache entry, no recompile fallback |
 | ROB-04 | Medium | Robustness | Cache key lacks glslang/toolchain version salt → stale SPIR-V after upgrades |
 | ROB-05 | Medium | Robustness | Unclamped scale factors cause float→Uint32 UB and garbage FBO sizes |
@@ -62,7 +61,6 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 | ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
 | ROB-09 | Medium | Robustness | Corrupt `diablo.ini` hard-fails startup with no recovery path |
 | MAINT-04 | Medium | Maintainability | Release builds never attach to GitHub Releases |
-| MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire |
 | FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets |
 | FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message |
 | FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log |
@@ -70,12 +68,10 @@ Cross-cutting observations: the codebase is consistently defensive in *lifecycle
 | TEST-03 | Medium | Testing | Options layer (ini round-trip, shader-filter self-heal) untested |
 | SEC-02 | Low | Security | `ResolvePresetPath` joins ini-stored paths without containment |
 | SEC-03 | Low | Security | Sidecar `.spv` files accepted on magic+size check alone |
-| SEC-04 | Low | Security | Log injection: untrusted preset paths/names written raw to gpu-scaler.log |
 | ROB-10 | Low | Robustness | `Runner::Run` failure-contract mismatch: header says transient, caller hard-fails |
 | ROB-11 | Low | Robustness | LUT upload size computed in Uint32; no dimension cap on preset LUTs |
 | ROB-12 | Low | Robustness | Preset parser accepts six image extensions the PNG-only build cannot decode |
 | ROB-13 | Low | Robustness | Known Integer Scaling crash remains (deliberately unfixed, documented) |
-| MAINT-07 | Low | Maintainability | Magic number 9 / dead enum values / unused include in gpu_scaler.cpp |
 | MAINT-08 | Low | Maintainability | Trim/lowercase/case-compare utilities triplicated across preset TUs |
 | MAINT-09 | Low | Maintainability | Comment/code mismatches: `#reference` merge order and silent UBO validation |
 | MAINT-10 | Low | Maintainability | Diagnostics log written next to the executable — fails silently in protected dirs |
@@ -103,18 +99,6 @@ Severity levels:
 
 ### Security
 
-#### SEC-01: Preset references escape the shaders root — arbitrary file read via preset packs
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Security |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp`, `Source/engine/render/gpu/preset/slang_translate.cpp` |
-
-The preset loader resolves every path reference without a containment check against the shaders root. `ResolvePresetFilePath` (`preset_parser.cpp:743-793`) passes absolute paths through outright, and walks up to six ancestor directories for relative ones with no check that the final resolved path stays under `ShaderRootDir()`; `../../`-style relative escapes therefore succeed. `slang_translate.cpp:151-153` likewise accepts absolute `#include` targets inside `.slang` sources. The practical consequence: a preset pack downloaded from the internet can direct the engine to open, parse, and compile `.slang` sources and load LUT textures (via `IMG_Load`) from anywhere the user account can read — for example `C:\Users\...\credentials` fed back as a "texture" — erasing the "shaders folder sandbox" the README implies. This is not memory-unsafe and not remote, but it converts an untrusted content folder into an arbitrary-file-read primitive. Recommended fix: after resolution, compute `std::filesystem::weakly_canonical` and reject any path whose normalized form does not start with the canonical shader root (allow-list exceptions for explicit user-sidecar files only), and log-and-refuse absolute paths in presets by default.
-
-**Impact:** Closing this restores a real trust boundary so untrusted shader packs can only read what they ship.
-
 #### SEC-02: `ResolvePresetPath` joins ini-stored paths without containment
 
 | Property | Value |
@@ -138,18 +122,6 @@ The preset loader resolves every path reference without a containment check agai
 The sidecar fast path — `<shader>.vert.spv`/`.frag.spv` next to a `.slang` — always wins over translation and cache, and its only validation is `SpvLooksValid`: size ≥ 20 bytes, size divisible by 4, and the SPIR-V magic `0x07230203` (`slang_compile.cpp:102-107`). A shipped or planted sidecar therefore bypasses every translation-layer structural guarantee (stage splitting, binding dedup, UBO validation) and hands arbitrary SPIR-V straight to the GPU driver. SPIR-V is designed to be validated by drivers, and modern runtimes sandbox it, but the fast path means an attacker-controlled preset pack ships pre-compiled GPU code with no reviewable source. Recommended mitigation: when a sidecar is used, log it prominently; optionally require sidecars to be opt-in via an ini key, or verify the module's entry-point/execution-model bytes match the expected stage before use.
 
 **Impact:** Users can see when they are loading precompiled GPU code instead of translated source, and packs lose the ability to smuggle opaque binaries past inspection.
-
-#### SEC-04: Log injection: untrusted preset paths/names written raw to gpu-scaler.log
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Security |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 208-214), `Source/engine/render/gpu/preset/preset_runner.cpp` (lines 302-303, 498-516) |
-
-`LogFileLine` writes messages with raw `fprintf`, and the log's content includes file names, `#pragma` descriptions, glslang info-log text, and warning strings that originate in the untrusted shaders folder. A preset whose file name or pragma description contains `\n` can forge log lines (corrupting the field-diagnosis workflow this log exists to support), and terminal-escape sequences or `%`-heavy content can cause noise or misformatting when the log is viewed or pasted. The log is size-capped (200 KB with one-generation rotation, `gpu_scaler.cpp:95-173`), so there is no growth vector. Fix: sanitize control characters (strip bytes < 0x20 except nothing — i.e., replace all with `?`) in `LogFileLine`, and keep using argument-passing rather than format-string composition (which the current code already does correctly).
-
-**Impact:** gpu-scaler.log remains a trustworthy forensic record even when loaded content is hostile.
 
 ---
 
@@ -301,30 +273,6 @@ Combining the game's own Integer Scaling option with a desktop resolution that i
 The workflow triggers on `release: published`, but no step uploads the built artifacts to that release — the zips live only as workflow artifacts with 90-day retention, requiring the maintainer to manually download and re-attach them. Users hitting the README's "latest release" link rely on that manual step having happened; a missed step means the release page shows notes with no binaries while the actual builds silently expire. The fix is mechanical: in each job, add a `softprops/action-gh-release` (or `gh release upload`) step conditioned on `github.event_name == 'release'`, uploading the same zips already staged for artifacts.
 
 **Impact:** Every published release automatically carries its Windows and Linux builds, removing a manual distribution step that can silently fail.
-
-#### MAINT-05: Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Maintainability |
-| **File(s)** | `.github/workflows/gpu-shaders.yml` (lines 158, 241), `CMake/Mods.cmake` (line 59), `CMakeLists.txt` (lines 714-716) |
-
-The CI package steps copy `build/devilutionx.mpq` plus the shader helper scripts into the zips, but not `build/mods/hf.mpq` — which the build system does produce when `smpq` is available (as it is on the CI Linux job, which installs it). CPack-based packaging installs `mods/hf.mpq` (`CMakeLists.txt:714-716`), but the fork's hand-rolled zips bypass CPack, so every shipped build is Diablo-only even though the Hellfire mod asset tree (`mods/hf/`) is fully present in the repo. Users who own Hellfire get a silent "expansion doesn't work" experience. Fix: add `mkdir -p mods && cp build/mods/hf.mpq mods/` (guarded on file existence) to both job's package steps, next to the existing `devilutionx.mpq` copy.
-
-**Impact:** Shipped zips support the full game out of the box, matching what CPack-based installs deliver.
-
-#### MAINT-07: Magic number 9 / dead enum values / unused include in gpu_scaler.cpp
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Low |
-| **Category** | Maintainability |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 15, 47-61, 506-508, 1127-1136) |
-
-`SDL_GPUShader *gFragmentShaders[9]` is sized for the removed filter set while the `Program` enum and `kFragmentPrograms[]` only ever use index 1; `FilterDisplayName`'s switch carries a lone `case None: break;` fallthrough; `<csetjmp>` is included but never used. None of this is wrong — it's residue from the built-in-filter removal that invites future off-by-one mistakes when someone resizes the enum. Fix: shrink the array to the live program count behind a `kMaxFragmentPrograms` constant, drop the unused include, and flatten the switch.
-
-**Impact:** The scaler's program table reads honestly, preventing a class of silent indexing bugs.
 
 #### MAINT-08: Trim/lowercase/case-compare utilities triplicated across preset TUs
 
@@ -614,8 +562,8 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | Timeline | Findings |
 |----------|----------|
 | **Immediate** (next 1-2 builds) | TEST-01 (preset failure-mode harness registered; broader GPU-pipeline coverage still open) |
-| **Next sprint** (2-4 builds) | SEC-01 (preset path containment), ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), MAINT-04 (release upload step), MAINT-05 (package hf.mpq), ARCH-01 (window claim protocol), TEST-03 (options tests) |
-| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-04, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-07 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
+| **Next sprint** (2-4 builds) | ROB-03 (atomic cache writes), ROB-04 (cache version salt), ROB-05 (scale clamps), ROB-06 (log mutex), ROB-09 (ini recovery), MAINT-04 (release upload step), ARCH-01 (window claim protocol), TEST-03 (options tests) |
+| **Backlog** (opportunistic) | SEC-02, SEC-03, ROB-07 (unlocks FEAT-01), ROB-08, ROB-10, ROB-11, ROB-12, ROB-13, MAINT-08 through MAINT-14, PERF-01 through PERF-05, FEAT-01 through FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
 Sequencing notes: ROB-07 (runtime RAII) is a prerequisite for FEAT-01 (retry/hot-reload), so pair them when the backlog reaches that point.
 

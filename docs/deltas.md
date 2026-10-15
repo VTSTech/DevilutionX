@@ -21,6 +21,10 @@ open findings; this ledger is the single record of closures.
 | MAINT-03 | Medium | Maintainability | Four broken upstream workflows ship active; cleanup script never run | 2026-10-15 |
 | TEST-02 | **High** | Testing | No CI workflow ever runs the existing test suite | 2026-10-15 |
 | MAINT-06 | Medium | Maintainability | vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature | 2026-10-15 |
+| SEC-01 | Medium | Security | Preset references escape the shaders root — arbitrary file read via preset packs | 2026-10-15 |
+| SEC-04 | Low | Security | Log injection: untrusted preset paths/names written raw to gpu-scaler.log | 2026-10-15 |
+| MAINT-05 | Medium | Maintainability | Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire | 2026-10-15 |
+| MAINT-07 | Low | Maintainability | Magic number 9 / dead enum values / unused include in gpu_scaler.cpp | 2026-10-15 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -243,6 +247,116 @@ ROB-01/ROB-02 harness, TEST-01 partial progress) runs as test #608 in the same i
 tracked as open scope under the coverage umbrella rather than blocking this closure.
 
 ---
+
+## SEC-01 — CLOSED: Preset references escape the shaders root — arbitrary file read via preset packs
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Security |
+| **Original location** | `Source/engine/render/gpu/preset/preset_parser.cpp` (`ResolvePresetFilePath`), `Source/engine/render/gpu/preset/slang_translate.cpp` (include resolver) |
+
+**Original finding.** `ResolvePresetFilePath` passed absolute references through outright and
+walked up to six ancestor folders for relative ones with no check that the resolved path stays
+under `ShaderRootDir()`; `../../`-style relative escapes succeeded, and `.slang` `#include`
+targets likewise accepted absolute paths. A preset pack downloaded from the internet could
+direct the engine to open, parse, compile, or load-as-texture files anywhere the user account
+can read — an arbitrary-file-read primitive built on untrusted content.
+
+**Resolution.** Added `preset::IsPathInsideShaderRoot()` (`preset_parser.{hpp,cpp}`): the
+candidate and the shader root are run through `std::filesystem::weakly_canonical` (symlinks
+resolved) and the candidate must sit at or below the root, with a separator-boundary check so
+`shaders-ng` cannot pass a `shaders` prefix test (case-insensitive compare for Windows/macOS).
+`ResolvePresetFilePath` now refuses (returns empty) when an absolute reference or an
+ancestor-walk hit canonicalizes outside the root; the not-found fallback join was left
+uncontained because it is guaranteed nonexistent and only feeds error text. The slang
+`#include` resolver (`slang_translate.cpp`) applies the same check before recursing and fails
+translation with "include target outside the shaders root: <path>". The runner
+(`preset_runner.cpp`) names the refused reference in its gpu-scaler.log error lines so
+refusals are diagnosable in the field log.
+
+**Verification.** `test/preset_failure_modes_test.cpp` extended 20 → 37 checks (all passing as
+the `preset_failure_modes` ctest): relative `../` include escape refused; absolute include
+escape refused; in-root `#include` still translates; `../../` preset reference refused;
+absolute preset reference refused; sibling prefix directory (`shaders-ng`) rejected;
+in-root reference still resolves; escaping `#reference` fails the whole preset with a
+traceable error. All four touched TUs compile clean under the project Release flags; full
+gtest suite 608/608.
+
+---
+
+## SEC-04 — CLOSED: Log injection: untrusted preset paths/names written raw to gpu-scaler.log
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Security |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`LogFileLine`) |
+
+**Original finding.** `LogFileLine` wrote messages with raw `fprintf`, and log content
+includes untrusted file names, `#pragma` descriptions, and glslang info-log text. A preset
+whose name or description contains `\n` could forge log lines, and terminal-escape sequences
+could inject noise into the field-diagnosis record.
+
+**Resolution.** New header `Source/engine/render/gpu/gpu_log_sanitize.hpp` with
+`gpu_scaler::SanitizeLogLine()` — replaces every byte < 0x20 (including `\n`, `\r`, `\t`,
+ESC) and 0x7F (DEL) with `?`, leaving printable text (and `%` signs — callers already use
+argument passing, never format-string composition) untouched. `LogFileLine` now sanitizes
+before writing. Header-only so every consumer (including the SDL-free test harness) can
+exercise it without new link dependencies.
+
+**Verification.** `TestLogLineSanitized` in the harness (6 checks): clean text unchanged;
+newline/CR/tab → `?`; ESC escape → `?`; DEL → `?`; empty stays empty; percent signs pass
+through. gpu-scaler.log remains a single-writer, line-per-entry forensic record under
+hostile content.
+
+---
+
+## MAINT-05 — CLOSED: Release zips omit `mods/hf.mpq` — shipped builds cannot run Hellfire
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **Original location** | `.github/workflows/gpu-shaders.yml` (both Package steps), `CMake/Mods.cmake` (line 59) |
+
+**Original finding.** The build system produces `build/mods/hf.mpq` when `smpq` is available
+(`hellfire_mpq` target, a dependency of `libdevilutionx` under `BUILD_ASSETS_MPQ`), and
+CPack-based packaging installs it — but the fork's hand-rolled CI zips copied only
+`devilutionx.mpq`, so every shipped build was Diablo-only and Hellfire owners got a silent
+"expansion doesn't work" experience.
+
+**Resolution.** Both Package steps (Linux and Windows jobs) now copy the expansion MPQ into
+the zip, guarded on file existence so configurations that did not build it still package
+cleanly:
+`if [ -f build/mods/hf.mpq ]; then mkdir -p pkg/mods && cp build/mods/hf.mpq pkg/mods/; fi`
+
+**Verification.** `scripts/validate_workflows.py` (YAML parse + `bash -n` on every run block)
+passes; the step is guarded, so the Linux job (which installs `smpq`) ships `mods/hf.mpq`
+while any job without the MPQ packages unchanged.
+
+---
+
+## MAINT-07 — CLOSED: Magic number 9 / dead enum values / unused include in gpu_scaler.cpp
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Maintainability |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 15, 47-61, 506-508, 1127-1136) |
+
+**Original finding.** `SDL_GPUShader *gFragmentShaders[9]` was sized for the removed built-in
+filter set while only index 1 (`Program::Blit`) is ever used; `FilterDisplayName` carried a
+lone `case None: break;` switch fallthrough; `<csetjmp>` was included but never used —
+residue that invited off-by-one mistakes when the enum is resized next.
+
+**Resolution.** Added `constexpr int kMaxFragmentPrograms = static_cast<int>(Program::Blit) + 1;`
+next to the `Program` enum and sized the table with it, so resizing the enum trips a compile
+error at the table instead of silently changing its bounds. Removed the dead switch in
+`FilterDisplayName` and the unused `<csetjmp>` include.
+
+**Verification.** TU compiles clean with project Release flags (`-Wall -Wextra`); full
+gtest suite 608/608; clang-format 18.1.8 clean (0 failing / 697 tree-wide).
 
 ## MAINT-06 — CLOSED: vcpkg + `USE_SDL3` is broken: manifest requests an undefined `sdl3` feature
 

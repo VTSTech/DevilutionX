@@ -182,6 +182,12 @@ jobs:
         mkdir -p pkg
         cp build/devilutionx pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        # Hellfire: ship the expansion MPQ the build produces (BUILD_ASSETS_MPQ
+        # + smpq). Without it the zip cannot run Hellfire even for users who own it.
+        if [ -f build/mods/hf.mpq ]; then
+          mkdir -p pkg/mods
+          cp build/mods/hf.mpq pkg/mods/
+        fi
         # shader helper scripts ship beside the binary (corpus download / cache wipe)
         install -m 0755 Packaging/linux/install_shaders.sh Packaging/linux/clear_shader_cache.sh pkg/
         cp Packaging/resources/COPYING.legend.txt pkg/ 2>/dev/null || true
@@ -284,6 +290,12 @@ jobs:
         mkdir -p pkg
         cp build/devilutionx.exe pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        # Hellfire: ship the expansion MPQ the build produces (BUILD_ASSETS_MPQ
+        # + smpq). Without it the zip cannot run Hellfire even for users who own it.
+        if [ -f build/mods/hf.mpq ]; then
+          mkdir -p pkg/mods
+          cp build/mods/hf.mpq pkg/mods/
+        fi
         # shader helper scripts ship beside the exe (corpus download / cache wipe)
         cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/install_git.cmd pkg/
         # gate: the exe must stay fully static — Windows system DLLs ONLY.

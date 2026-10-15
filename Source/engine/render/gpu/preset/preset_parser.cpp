@@ -749,6 +749,31 @@ std::string ShaderCacheDir()
 	return ShaderRootDir() + "/cache";
 }
 
+bool IsPathInsideShaderRoot(const std::filesystem::path &candidate)
+{
+	std::error_code ec;
+	const std::filesystem::path root = std::filesystem::weakly_canonical(std::filesystem::path(ShaderRootDir()), ec);
+	if (ec)
+		return false;
+	// weakly_canonical resolves symlinks (a root-internal link pointing
+	// outside is correctly rejected) and tolerates nonexistent tails.
+	const std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
+	if (ec)
+		return false;
+	const std::string rootStr = root.string();
+	const std::string resStr = resolved.string();
+	if (resStr.size() < rootStr.size())
+		return false;
+	const bool prefixMatches = std::equal(rootStr.begin(), rootStr.end(), resStr.begin(), [](char a, char b) {
+		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+	});
+	if (!prefixMatches)
+		return false;
+	// ".../shaders-ng/x" must not pass a ".../shaders" prefix check: the
+	// first differing position must be a separator (or the root itself).
+	return resStr.size() == rootStr.size() || resStr[rootStr.size()] == '/' || resStr[rootStr.size()] == '\\';
+}
+
 std::string ResolvePresetPath(const std::string &relativePath)
 {
 	if (relativePath.empty())
@@ -767,9 +792,15 @@ std::string ResolvePresetFilePath(const std::string &presetDir, const std::strin
 	if (IsAbsolutePath(referencedPath)) {
 		std::error_code ec;
 		const std::filesystem::path absolute(referencedPath);
+		std::filesystem::path resolved = absolute;
 		if (std::filesystem::exists(absolute, ec) && !ec)
-			return NormalizeSeparators(absolute.lexically_normal().string());
-		return NormalizeSeparators(referencedPath);
+			resolved = absolute.lexically_normal();
+		// SEC-01: untrusted preset packs may only reach files inside the
+		// shaders root; absolute references pointing elsewhere are refused
+		// (the caller's "not found" path reports the failure).
+		if (!IsPathInsideShaderRoot(resolved))
+			return {};
+		return NormalizeSeparators(resolved.string());
 	}
 
 	std::string normalizedRef = NormalizeSeparators(referencedPath);
@@ -802,12 +833,19 @@ std::string ResolvePresetFilePath(const std::string &presetDir, const std::strin
 	for (const std::filesystem::path &base : bases) {
 		ec.clear();
 		const std::filesystem::path candidate = base / normalizedRef;
-		if (std::filesystem::exists(candidate, ec) && !ec)
+		if (std::filesystem::exists(candidate, ec) && !ec) {
+			// SEC-01: the ancestor walk can reach above the shaders root
+			// (../../-style). A hit outside is refused, not read.
+			if (!IsPathInsideShaderRoot(candidate))
+				return {};
 			return NormalizeSeparators(candidate.lexically_normal().string());
+		}
 	}
 
 	// Nothing found: keep the conventional preset-relative join so the
-	// "cannot open shader file" error shows the expected path.
+	// "cannot open shader file" error shows the expected path. This path is
+	// guaranteed nonexistent (every base above was tried and missed), so it
+	// is never read and needs no sandbox check.
 	const std::string baseDir = dirStr.empty() ? std::string() : dirStr + "/";
 	return NormalizeSeparators(std::filesystem::path(baseDir + normalizedRef).lexically_normal().string());
 }

@@ -6,6 +6,9 @@
  * Every case that previously terminated the process through an uncaught
  * std::stoi / std::stof / std::bad_alloc must now either fail politely with
  * an error string or succeed with sane fallback values.
+ *
+ * SEC-01/SEC-04 cases stage files inside (kShaderDir = the shader root) and
+ * outside (kWorkRoot) the sandbox, and check the log sanitizer directly.
  */
 #include <cstdio>
 #include <cstdlib>
@@ -13,28 +16,35 @@
 #include <fstream>
 #include <string>
 
+#include "engine/render/gpu/gpu_log_sanitize.hpp"
 #include "engine/render/gpu/preset/preset_parser.hpp"
 #include "engine/render/gpu/preset/slang_translate.hpp"
 
 namespace preset = devilution::gpu_scaler::preset;
+namespace scaler = devilution::gpu_scaler;
+
+// Harness work tree (declared before the SDL stub, which roots the shader
+// dir at it): SEC-01 tests stage files inside (kShaderDir = the shader
+// root) and outside (kWorkRoot) the sandbox enforced by
+// IsPathInsideShaderRoot.
+const std::string kWorkRoot = (std::filesystem::temp_directory_path() / "devilutionx_preset_failure_modes").string();
+const std::string kPresetDir = kWorkRoot + "/presets";
+const std::string kShaderDir = kWorkRoot + "/shaders";
 
 // Harness stub: preset_parser calls SDL_GetBasePath for the shader root dir.
 // SDL is deliberately NOT linked into this test target (it must stay runnable
-// on any headless CI box); path resolution itself is not under test.
+// on any headless CI box). The stub roots the shader dir at the work root, so
+// the sandbox tests can exercise both the inside-root and outside-root paths.
 extern "C" char *SDL_GetBasePath(void)
 {
-	static char path[] = "/";
-	return path;
+	static const std::string base = kWorkRoot + "/";
+	return const_cast<char *>(base.c_str());
 }
 
 namespace {
 
 int gFailures = 0;
 int gChecks = 0;
-
-const std::string kWorkRoot = (std::filesystem::temp_directory_path() / "devilutionx_preset_failure_modes").string();
-const std::string kPresetDir = kWorkRoot + "/presets";
-const std::string kShaderDir = kWorkRoot + "/shaders";
 
 void WriteFile(const std::string &path, const std::string &content)
 {
@@ -198,6 +208,101 @@ void TestBuiltinNamesStillValid()
 	Check(ok, "translation succeeds: " + out.error);
 }
 
+// ---------------------------------------------------------------- sandbox --
+
+void TestIncludeEscapeRejected()
+{
+	std::printf("[SEC-01] #include target outside the shaders root is refused\n");
+	WriteFile(kWorkRoot + "/outside.slang",
+	    "#pragma stage vertex\n"
+	    "void main() { gl_Position = vec4(0.0); }\n");
+	WriteFile(kShaderDir + "/escape_rel.slang",
+	    "#include \"../outside.slang\"\n"
+	    "#pragma stage fragment\n"
+	    "void main() { }\n");
+	preset::SlangTranslation out;
+	Check(!preset::TranslateSlang(kShaderDir + "/escape_rel.slang", {}, 0, 1, out),
+	    "relative ../ escape refused");
+	Check(out.error.find("outside the shaders root") != std::string::npos,
+	    "error names the sandbox: " + out.error);
+
+	WriteFile(kShaderDir + "/escape_abs.slang",
+	    "#include \"" + kWorkRoot + "/outside.slang\"\n"
+	                                "#pragma stage fragment\n"
+	                                "void main() { }\n");
+	preset::SlangTranslation outAbs;
+	Check(!preset::TranslateSlang(kShaderDir + "/escape_abs.slang", {}, 0, 1, outAbs),
+	    "absolute escape refused");
+	Check(outAbs.error.find("outside the shaders root") != std::string::npos,
+	    "error names the sandbox: " + outAbs.error);
+}
+
+void TestIncludeInsideRootStillWorks()
+{
+	std::printf("[SEC-01] #include inside the shaders root still resolves\n");
+	WriteFile(kShaderDir + "/inc_part.slang",
+	    "#pragma stage vertex\n"
+	    "void main() { gl_Position = vec4(0.0); }\n");
+	WriteFile(kShaderDir + "/inc_main.slang",
+	    "#include \"inc_part.slang\"\n"
+	    "#pragma stage fragment\n"
+	    "void main() { }\n");
+	preset::SlangTranslation out;
+	Check(preset::TranslateSlang(kShaderDir + "/inc_main.slang", {}, 0, 1, out),
+	    "in-root include translates: " + out.error);
+}
+
+void TestReferenceEscapeRejected()
+{
+	std::printf("[SEC-01] preset file references outside the shaders root are refused\n");
+	WriteFile(kWorkRoot + "/evil.slang", "void main() {}\n");
+	std::filesystem::create_directories(kShaderDir + "/pack");
+
+	// Parent-directory escape through the ancestor walk (../../).
+	const std::string parentEscape = preset::ResolvePresetFilePath(kShaderDir + "/pack", "../../evil.slang");
+	Check(parentEscape.empty(), "../../ escape returns no path");
+
+	// Absolute path escape.
+	const std::string absEscape = preset::ResolvePresetFilePath(kShaderDir + "/pack", kWorkRoot + "/evil.slang");
+	Check(absEscape.empty(), "absolute escape returns no path");
+
+	// A sibling prefix directory must not pass ("shaders-ng" vs "shaders").
+	std::filesystem::create_directories(kWorkRoot + "/shaders-ng");
+	WriteFile(kWorkRoot + "/shaders-ng/neighbor.slang", "void main() {}\n");
+	const std::string sibling = preset::ResolvePresetFilePath(kShaderDir, "../shaders-ng/neighbor.slang");
+	Check(sibling.empty(), "sibling prefix directory is outside the root");
+
+	// In-root references still resolve (legit packs keep working).
+	WriteFile(kShaderDir + "/pack/ok.slang", "void main() {}\n");
+	const std::string inside = preset::ResolvePresetFilePath(kShaderDir + "/pack", "ok.slang");
+	Check(!inside.empty() && inside.find("pack/ok.slang") != std::string::npos,
+	    "in-root reference resolves: " + inside);
+
+	// An escaping #reference fails the whole preset at parse time.
+	WriteFile(kShaderDir + "/pack/ref_escape.slangp",
+	    "#reference \"../../evil.slang\"\n"
+	    "shader0 = shaders/simple.slang\n");
+	preset::Preset refOut;
+	std::string refError;
+	Check(!preset::ParsePreset(kShaderDir + "/pack/ref_escape.slangp", refOut, refError),
+	    "escaping #reference fails the preset");
+	Check(refError.find("referenced preset failed") != std::string::npos,
+	    "error traces the reference: " + refError);
+}
+
+// -------------------------------------------------------------------- log --
+
+void TestLogLineSanitized()
+{
+	std::printf("[SEC-04] control characters in log text are neutralized\n");
+	Check(scaler::SanitizeLogLine("plain text stays") == "plain text stays", "clean text unchanged");
+	Check(scaler::SanitizeLogLine("a\nb\r\tc") == "a?b??c", "newline/CR/tab become '?'");
+	Check(scaler::SanitizeLogLine("esc\x1b[31mred") == "esc?[31mred", "terminal escape becomes '?'");
+	Check(scaler::SanitizeLogLine("del\x7f") == "del?", "DEL becomes '?'");
+	Check(scaler::SanitizeLogLine("") == "", "empty stays empty");
+	Check(scaler::SanitizeLogLine("100%%sure %s %n") == "100%%sure %s %n", "percent signs pass through");
+}
+
 } // namespace
 
 int main()
@@ -219,6 +324,10 @@ int main()
 	TestMalformedPragmaNumbers();
 	TestHugeHistoryIndex();
 	TestBuiltinNamesStillValid();
+	TestIncludeEscapeRejected();
+	TestIncludeInsideRootStillWorks();
+	TestReferenceEscapeRejected();
+	TestLogLineSanitized();
 
 	std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
 	return gFailures == 0 ? 0 : 1;

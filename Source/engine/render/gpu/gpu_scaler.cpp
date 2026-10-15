@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <csetjmp>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +26,7 @@
 #else
 #include "engine/render/gpu/gpu_shader_spv_prebuilt.hpp"
 #endif
+#include "engine/render/gpu/gpu_log_sanitize.hpp"
 #include "engine/render/gpu/gpu_shaders_msl.hpp"
 #include "engine/render/gpu/preset/preset_parser.hpp"
 #include "engine/render/gpu/preset/preset_runner.hpp"
@@ -49,6 +49,12 @@ enum class Program {
 	Blit,
 };
 
+/** @brief Slot count of the fragment shader table: one slot per live Program
+ *  index. Sized by the live program set, not by the removed built-in filter
+ *  set (which once needed 9), so resizing the enum trips a compile error
+ *  here instead of silently changing the table bounds. */
+constexpr int kMaxFragmentPrograms = static_cast<int>(Program::Blit) + 1;
+
 SDL_GPUDevice *gDevice = nullptr;
 SDL_Window *gWindow = nullptr;
 SDL_GPUShaderFormat gShaderFormat = SDL_GPU_SHADERFORMAT_INVALID;
@@ -58,7 +64,7 @@ int gGameWidth = 0;
 int gGameHeight = 0;
 
 SDL_GPUShader *gVertexShader = nullptr;
-SDL_GPUShader *gFragmentShaders[9] = {};
+SDL_GPUShader *gFragmentShaders[kMaxFragmentPrograms] = {};
 
 SDL_GPUGraphicsPipeline *gBlitPipeline = nullptr;
 
@@ -208,7 +214,11 @@ FILE *LogFileForWrite(size_t incomingBytes)
 void LogFileLine(std::string_view line)
 {
 	if (FILE *file = LogFileForWrite(line.size() + 16); file != nullptr) {
-		std::fprintf(file, "[%10u ms] %.*s\n", static_cast<unsigned>(SDL_GetTicks()), static_cast<int>(line.size()), line.data());
+		// SEC-04: log text includes untrusted strings (preset paths, pragma
+		// descriptions, glslang info logs). Control bytes would let a hostile
+		// preset forge log lines or inject terminal escapes.
+		const std::string safe = SanitizeLogLine(line);
+		std::fprintf(file, "[%10u ms] %.*s\n", static_cast<unsigned>(SDL_GetTicks()), static_cast<int>(safe.size()), safe.data());
 		std::fflush(file);
 	}
 }
@@ -1126,10 +1136,6 @@ std::string gOsdText;
 
 const char *FilterDisplayName(ShaderFilter filter)
 {
-	switch (filter) {
-	case ShaderFilter::None:
-		break;
-	}
 	if (IsCustomFilter(filter))
 		return gPresetDisplayName.empty() ? "Custom" : gPresetDisplayName.c_str();
 	return "Off";

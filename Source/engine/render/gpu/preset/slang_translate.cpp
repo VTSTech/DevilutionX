@@ -1,4 +1,5 @@
 #include "engine/render/gpu/preset/slang_translate.hpp"
+#include "engine/render/gpu/preset/preset_parser.hpp"
 
 #ifdef USE_GPU_SCALER
 #ifndef USE_SDL1
@@ -153,6 +154,13 @@ bool ResolveIncludes(const std::string &path, int depth, int &stage,
 			std::filesystem::path candidate = std::filesystem::path(dir) / incPath;
 			if (!std::filesystem::exists(candidate, ec))
 				candidate = std::filesystem::path(path).parent_path() / incPath;
+			// SEC-01: includes from untrusted .slang sources may only reach
+			// files inside the shaders root; absolute paths and ../ escapes
+			// are refused with the reason in the translation error.
+			if (!IsPathInsideShaderRoot(candidate)) {
+				error = StrCat("slang: include target outside the shaders root: ", incPath);
+				return false;
+			}
 			const std::string candidateCanonical = std::filesystem::weakly_canonical(candidate, ec).string();
 			// Include-once per stage bucket: drop repeats within the
 			// same region, keep deliberate re-includes across regions.

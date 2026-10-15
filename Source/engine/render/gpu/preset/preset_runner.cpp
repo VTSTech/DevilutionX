@@ -259,6 +259,13 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	std::unordered_map<int, std::string> pragmaNames;
 	for (size_t i = 0; i < preset_.passes.size(); ++i) {
 		const std::string path = ResolvePresetFilePath(preset_.dir, preset_.passes[i].shaderPath);
+		if (path.empty()) {
+			// SEC-01 refusals return an empty path; name the offending
+			// reference so gpu-scaler.log shows what was refused and why.
+			error = StrCat("shader file not found or refused (references must stay inside ",
+			    ShaderRootDir(), "): ", preset_.passes[i].shaderPath);
+			return false;
+		}
 		std::ifstream stream(path, std::ios::binary);
 		if (!stream) {
 			error = StrCat("cannot open shader file: ", path);
@@ -826,6 +833,11 @@ void Runner::ReleaseTargets()
 bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 {
 	const std::string path = ResolvePresetFilePath(preset_.dir, lut.def.path);
+	if (path.empty()) {
+		error = StrCat("LUT texture not found or refused (references must stay inside ",
+		    ShaderRootDir(), "): ", lut.def.path);
+		return false;
+	}
 	SDL_Surface *loaded = IMG_Load(path.c_str());
 	if (loaded == nullptr) {
 		error = StrCat("IMG_Load failed: ", DescribeImageLoadFailure(path), "; SDL: ", SDL_GetError());
