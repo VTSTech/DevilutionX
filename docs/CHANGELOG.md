@@ -11,6 +11,97 @@ dated with an America/Toronto timestamp. Upstream (diasurgical) release
 history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
+## 1.6.0-dev-d5ca0c0 (2026-10-15 1:46:21 PM)
+
+Codebase audit fixes, round 4 — the entire "next sprint" batch from the audit:
+the shader-cache failure contract (atomic writes + toolchain-version salt),
+three more robustness closures (scale clamp, diagnostics-log race, corrupt-ini
+self-heal), the window-ownership ABA fix, release-asset CI, and the first
+options-layer test registration (which immediately caught a real
+startup-restore bug). Field result: shader presets now load right from the
+title screen instead of requiring a trip through the shader menu first. 19 of
+the original 47 findings are now closed; `audit.md` carries only the open set
+(28 findings: 1 High, 5 Medium, 22 Low) and `deltas.md` remains the single
+record of closures.
+
+### Fixed
+
+#### Graphics / GPU scaler
+
+- Shader cache blobs can no longer be poisoned by a torn write: each
+  `.vert.spv`/`.frag.spv` is written to a process-unique temp sibling
+  (`<path>.<pid>.tmp`) and atomically renamed into place (existing target
+  removed first for Windows), so a crash or kill mid-write can no longer leave
+  a truncated blob that fails every later load; `CompilePass` gained an
+  out-parameter form (`SpirvSource` = Compiled/Cache/Sidecar, plus
+  `allowCache`) so callers know where each pass's SPIR-V came from, and a new
+  `DeleteCachedSpv` removes both blobs of a pass. A GPU-rejected cache hit now
+  self-heals: `Runner::Load` releases any shader built from the poisoned blob,
+  deletes the cached pair, and recompiles once with the cache disabled instead
+  of failing the preset until the user manually wipes `shaders/cache/` (ROB-03)
+- The disk-cache key is salted with the toolchain version: the hashed payload
+  now mixes in `kSpirvCacheVersion` plus the glslang version macros
+  (`GLSLANG_VERSION_MAJOR/MINOR/PATCH`, guarded for exotic builds), and cache
+  file names carry a `-v<version>-` segment so a future bump can also prune by
+  name; upgrading glslang no longer silently serves stale SPIR-V compiled by
+  the previous toolchain (ROB-04)
+- Resolved pass-target dimensions are clamped to [1, 16384] before the
+  float→Uint32 cast (`ClampPassTargetDim`, NaN → 1), each clamp logged with its
+  pass index, and the clamped values feed the prevW/prevH chain; a preset with
+  absurd or NaN `target_size` values can no longer trigger UB in the conversion
+  or request a multi-gigabyte framebuffer (ROB-05)
+- Swapchain window ownership is explicit state keyed by the SDL window ID
+  instead of a `SDL_Window*` compare: SDL window IDs are never reused, so the
+  old `gLastClaimedWindow` dangling-pointer ABA (destroy + recreate landing on
+  the same address, misread as "same window") can no longer hand the swapchain
+  to the wrong window; the three-participant handoff protocol (gpu_scaler /
+  display.cpp / dx.cpp) is documented in one comment (ARCH-01)
+
+#### Configuration
+
+- A corrupt `diablo.ini` no longer terminates the game at startup: the
+  unreadable file is preserved as `diablo.ini.corrupt-<YYYYMMDD-HHMMSS>`, the
+  parse failure is logged, and defaults load via the empty-buffer parse path;
+  the fatal error remains only if preservation itself fails, so a bad write can
+  cost the user their settings but never their config file or their session
+  (ROB-09)
+
+#### Options menu
+
+- Fixed an undocumented startup-restore bug found by the new tests:
+  `GraphicsOptions::GetEntries()` listed `shaderFilter` before
+  `shaderFilterPreset`, and the preset entry re-resolves its path at Rescan
+  time — which is empty at startup — so every restart sanitized a saved custom
+  preset back to Off, and it only re-activated after the shader menu was
+  opened; the (invisible) preset-path entry now loads first and saved custom
+  presets survive restarts — shader presets load right from the title screen
+
+#### CI
+
+- Built binaries now land on the GitHub Release instead of only 90-day
+  workflow artifacts: both `gpu-shaders.yml` jobs attach their package zips via
+  `softprops/action-gh-release@v2`, conditioned on the `release` event, with
+  job-level `permissions: contents: write` for the default token (MAINT-04)
+
+### Testing
+
+- New standalone gtest `options_test` (7 cases) registered in
+  `CMake/Tests.cmake` under the `standalone_tests` pattern (links
+  `libdevilutionx_options` + the preset TUs + `libdevilutionx_assets`, same as
+  `dun_render_benchmark`): stale builtin-filter sanitize (1..99), custom
+  shader-preset index mapping, missing-preset self-heal, ini round-trip, and
+  two corrupt-ini recovery cases (TEST-03). Verification evidence for the
+  round: options_test 7/7 pass headless, all 5 touched TUs compile clean with
+  project flags (gnu++23, -Wall -Wextra), clang-format 18.1.8 clean
+
+### Documentation
+
+- Ledger: 8 closure entries added to `deltas.md` (ROB-03, ROB-04, ROB-05,
+  ROB-06, ROB-09, MAINT-04, ARCH-01, TEST-03) plus the bonus fix; `audit.md`
+  master table and section bodies updated, next-sprint matrix row retired —
+  open set now 1 High (TEST-01), 5 Medium (ROB-07, ROB-08, FEAT-01, FEAT-02,
+  FEAT-03), 22 Low
+
 ## 1.6.0-dev-c37e75a (2026-10-15 6:12:02 AM)
 
 Codebase audit fixes, round 3 — CI repair on the `gpu-shaders.yml` pipeline plus
