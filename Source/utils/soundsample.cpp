@@ -77,6 +77,7 @@ float VolumeLogToLinear(int logVolume, int logMin, int logMax)
 
 #ifdef USE_SDL3
 
+#ifdef DEVILUTIONX_WAV_FALLBACK
 /**
  * @brief Builds a minimal canonical RIFF/WAVE file (44-byte header + data)
  * around raw PCM returned by SDL_LoadWAV_IO, so SDL3_mixer can load it even
@@ -167,6 +168,7 @@ MIX_Audio *LoadWavViaSdlFallback(const std::uint8_t *data, std::size_t size, std
 		wavError = SDL_GetError();
 	return audio;
 }
+#endif // DEVILUTIONX_WAV_FALLBACK
 
 /**
  * @brief Converts a log pan value to left/right linear gain factors.
@@ -476,14 +478,18 @@ int SoundSample::SetChunk(ArraySharedPtr<std::uint8_t> fileData, std::size_t dwB
 		// SDL3_mixer's WAV decoder is stricter than the one SDL2_mixer used for
 		// years (e.g. it aborts on zero-length RIFF chunks, which 1990s-era WAVs
 		// contain). Decode with SDL's own loader and retry with a canonical WAV.
+		// Diagnostic: configure with -DDEVILUTIONX_WAV_FALLBACK=OFF to compile this
+		// retry out and exercise the raw SDL3_mixer path (zero-length RIFF diagnosis).
 		const std::string mixerError = SDL_GetError();
 		std::string wavError;
+#ifdef DEVILUTIONX_WAV_FALLBACK
 		if (!isMp3_)
 			audio_ = LoadWavViaSdlFallback(file_data_.get(), file_data_size_, wavError);
 		if (audio_ != nullptr) {
 			LogVerbose(LogCategory::Audio, "SoundSample::SetChunk: recovered audio via SDL_LoadWAV_IO (SDL_mixer error: {})", mixerError);
 			return 0;
 		}
+#endif // DEVILUTIONX_WAV_FALLBACK
 		// Include a hex dump of the first bytes: an "unknown format" error
 		// usually means the asset bytes are not what we think they are.
 		const size_t headLen = std::min<std::size_t>(file_data_size_, 24);

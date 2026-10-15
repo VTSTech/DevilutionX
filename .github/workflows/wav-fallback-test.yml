@@ -1,0 +1,226 @@
+# Fork CI: WAV-fallback A/B test builds (diagnostic round, 2026-10-16).
+#
+# WHY THIS EXISTS
+# DevilutionX upstream suspects the zero-length RIFF WAV failure (1990s-era
+# assets that SDL3_mixer's stricter parser rejects) may be WINDOWS-ONLY.
+# DEVILUTIONX_WAV_FALLBACK (CMake option, default ON) gates the fix in
+# SoundSample::SetChunk (Source/utils/soundsample.cpp): on MIX_LoadAudio_IO
+# failure it decodes with SDL_LoadWAV_IO (SDL core's tolerant legacy parser)
+# and retries with a canonical 44-byte-header RIFF/WAVE repack.
+#
+# WHAT IT BUILDS
+# The SAME commit twice per OS with -DDEVILUTIONX_WAV_FALLBACK=ON and =OFF:
+#   fallback-OFF : raw SDL3_mixer path, fix compiled out entirely.
+#                  This is the diagnostic build - on Windows it should
+#                  reproduce/characterize the suspected zero-length RIFF
+#                  failure (or prove it Windows-only if Linux-OFF is fine).
+#   fallback-ON  : shipped behavior, regression reference on the same commit.
+# Per-variant artifacts: devilutionx-wavabtest-<os>-x64-fallback-<ON|OFF>.
+# The zip carries WAV-ABTEST-NOTES.txt stating the flag state, commit and
+# date, so ON/OFF zips can never be confused after download.
+#
+# RECIPES mirror .github/workflows/gpu-shaders.yml EXACTLY (same vendored-dep
+# configure lines; Windows: MinGW cross + fully static + DLL gate; Linux:
+# gcc:14-bookworm container = glibc 2.36 floor + portability gate) with ONE
+# added -D flag. Do not trim the static-link/gate lines: they are what keeps
+# these artifacts runnable outside the CI environment.
+#
+# Reading the result: run the game with the mpq present; failing sounds log
+# "MIX_LoadAudio_IO failed (from SoundSample::SetChunk)" including a hex dump
+# of the first 24 asset bytes (in both flag states). The fallback-ON build
+# additionally logs "recovered audio via SDL_LoadWAV_IO" at verbose level.
+name: WAV Fallback A/B Test (Windows + Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Source/utils/soundsample.cpp'
+      - 'CMakeLists.txt'
+      - 'CMake/Definitions.cmake'
+      - '.github/workflows/wav-fallback-test.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86_64 — WAV_FALLBACK=${{ matrix.wav_fallback }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # quoted: some YAML parsers coerce unquoted ON/OFF to booleans
+        wav_fallback: ['ON', 'OFF']
+    container:
+      # Same base as gpu-shaders.yml: Debian 12 bookworm (glibc 2.36 floor)
+      # + GCC 14 in /usr/local (bookworm's GCC 12 has no C++23 <format>).
+      image: gcc:14-bookworm
+    steps:
+    - name: Bootstrap container (git for actions/checkout)
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends git ca-certificates
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils \
+          libasound2-dev libpulse-dev \
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+          libxtst-dev \
+          libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
+          libudev-dev libdbus-1-dev \
+          libbz2-dev libpng-dev
+        g++ --version | head -1
+
+    # Same configure line as gpu-shaders.yml (Linux job) + the A/B flag.
+    # BUILD_TESTING=OFF: this is a diagnostic binary build, not the test suite.
+    - name: Configure (WAV_FALLBACK=${{ matrix.wav_fallback }})
+      shell: bash
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DUSE_SDL3=ON
+        -DUSE_GPU_SCALER=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DBUILD_TESTING=OFF
+        -DDEVILUTIONX_WAV_FALLBACK=${{ matrix.wav_fallback }}
+        -DCMAKE_C_COMPILER=gcc
+        -DCMAKE_CXX_COMPILER=g++
+        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
+        -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++'
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Portability gate (glibc 2.36 floor)
+      run: |
+        if objdump -T build/devilutionx | grep -qE 'GLIBCXX_|CXXABI_'; then
+          echo '::error::devilutionx still requires libstdc++ symbol versions - the -static-libstdc++ linker flag was lost.'
+          exit 1
+        fi
+        MAX_GLIBC=$(objdump -T build/devilutionx | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+        echo "max GLIBC_ symbol requirement: ${MAX_GLIBC#GLIBC_} (floor: 2.36)"
+        if [ "$(printf '%s\n2.36\n' "${MAX_GLIBC#GLIBC_}" | sort -V | tail -1)" != "2.36" ]; then
+          echo '::error::devilutionx requires a GLIBC newer than 2.36 - the bookworm build base was lost.'
+          exit 1
+        fi
+        ./build/devilutionx --version
+
+    - name: Package
+      run: |
+        ls -l build/devilutionx
+        mkdir -p pkg
+        cp build/devilutionx pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        if [ -f build/mods/hf.mpq ]; then
+          mkdir -p pkg/mods
+          cp build/mods/hf.mpq pkg/mods/
+        fi
+        cat > pkg/WAV-ABTEST-NOTES.txt <<EOT
+        devilutionx WAV A/B test build - Linux x86_64
+        DEVILUTIONX_WAV_FALLBACK=${{ matrix.wav_fallback }}
+        commit: ${GITHUB_SHA}
+        built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        fallback=ON  : shipped behavior (SDL_LoadWAV_IO canonical-RIFF retry).
+        fallback=OFF : raw SDL3_mixer path, retry compiled out (diagnostic).
+        Failing sounds log "MIX_LoadAudio_IO failed (from SoundSample::SetChunk)"
+        with a 24-byte hex dump; fallback=ON also logs "recovered audio via
+        SDL_LoadWAV_IO" at verbose level. Compare behavior of the two variants
+        on the same assets and report which sounds fail/crash on which OS.
+        EOT
+        cd pkg && zip -r ../devilutionx-wavabtest-linux-x64-fallback-${{ matrix.wav_fallback }}.zip . && cd ..
+
+    - name: Upload Linux artifact (fallback=${{ matrix.wav_fallback }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-wavabtest-linux-x64-fallback-${{ matrix.wav_fallback }}
+        path: devilutionx-wavabtest-linux-x64-fallback-${{ matrix.wav_fallback }}.zip
+
+  windows:
+    name: Windows x64 (MinGW cross, fully static) — WAV_FALLBACK=${{ matrix.wav_fallback }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # quoted: some YAML parsers coerce unquoted ON/OFF to booleans
+        wav_fallback: ['ON', 'OFF']
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch glslang-tools
+
+    # Same configure line as gpu-shaders.yml (Windows job, exact flags of the
+    # verified zero-DLL build) + the A/B flag. NOTE: no '#' comments inside
+    # the folded command - YAML folds them into the shell line.
+    - name: Configure (WAV_FALLBACK=${{ matrix.wav_fallback }})
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/CMake/platforms/mingwcc64.toolchain.cmake
+        -DCROSS_PREFIX=/usr
+        -DUSE_SDL3=ON
+        -DUSE_GPU_SCALER=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DDEVILUTIONX_SYSTEM_ZLIB=OFF
+        -DDEVILUTIONX_SYSTEM_BZIP2=OFF
+        -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
+        -DBUILD_TESTING=OFF
+        -DDEVILUTIONX_WAV_FALLBACK=${{ matrix.wav_fallback }}
+        -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
+        -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Package
+      run: |
+        ls -l build/devilutionx.exe
+        mkdir -p pkg
+        cp build/devilutionx.exe pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        if [ -f build/mods/hf.mpq ]; then
+          mkdir -p pkg/mods
+          cp build/mods/hf.mpq pkg/mods/
+        fi
+        cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/install_git.cmd pkg/ 2>/dev/null || true
+        cat > pkg/WAV-ABTEST-NOTES.txt <<EOT
+        devilutionx WAV A/B test build - Windows x64 (fully static MinGW)
+        DEVILUTIONX_WAV_FALLBACK=${{ matrix.wav_fallback }}
+        commit: ${GITHUB_SHA}
+        built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        fallback=ON  : shipped behavior (SDL_LoadWAV_IO canonical-RIFF retry).
+        fallback=OFF : raw SDL3_mixer path, retry compiled out (diagnostic).
+        Failing sounds log "MIX_LoadAudio_IO failed (from SoundSample::SetChunk)"
+        with a 24-byte hex dump; fallback=ON also logs "recovered audio via
+        SDL_LoadWAV_IO" at verbose level. Compare behavior of the two variants
+        on the same assets and report which sounds fail/crash on which OS.
+        EOT
+        # gate: the exe must stay fully static - Windows system DLLs ONLY.
+        x86_64-w64-mingw32-objdump -p build/devilutionx.exe | grep 'DLL Name' | sort -u | tee dlls.txt
+        if grep -qiE 'DLL Name:.*(libstdc|libgcc|libwinpthread|libssp|zlib1|liblzma|libpng|libjpeg|freetype|SDL)' dlls.txt; then
+          echo '::error::devilutionx.exe links non-system DLLs - the -static linker flags were lost. This build would not launch on a clean Windows install.'
+          exit 1
+        fi
+        cd pkg && zip -r ../devilutionx-wavabtest-windows-x64-fallback-${{ matrix.wav_fallback }}.zip . && cd ..
+
+    - name: Upload Windows artifact (fallback=${{ matrix.wav_fallback }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-wavabtest-windows-x64-fallback-${{ matrix.wav_fallback }}
+        path: devilutionx-wavabtest-windows-x64-fallback-${{ matrix.wav_fallback }}.zip
