@@ -816,6 +816,17 @@ the neighboring stages treat it.
 **Verification.** Upload-stage failures now name themselves in gpu-scaler.log and take the
 session fallback instead of presenting stale contents. `clang-format 18.1.8` clean.
 
+**Fixup (r7.6, 2026-10-16, same day).** The upload-result half above does not compile against
+the vendored SDL3 (master `570f7229`): SDL >= 3.2 changed the command-encoded copy calls to
+return `void` — per-call failure reporting was removed upstream ("can't fail usefully"; SDL
+logs the error and it surfaces at the checked `SDL_SubmitGPUCommandBuffer`). The
+`const bool uploaded = ...` capture broke the CI build (`void value not ignored`,
+gpu_scaler.cpp:1108). Reverted to a bare call (documented in-tree), which compiles against
+both the old bool-returning preview signature and the current void one. The copy-pass-begin
+null check is untouched — `SDL_BeginGPUCopyPass` still returns a pointer. The submit-time
+check is the effective upload-failure net. Verified by compiling all four touched round-7.5
+TUs against the vendored SDL3 with GCC 14.2 (CI parity).
+
 ---
 
 ## ROB-24 — CLOSED: Vulkan-retry claim failure leaves `gWindow` set → release of an unclaimed window
