@@ -11,6 +11,76 @@ dated with an America/Toronto timestamp. Upstream (diasurgical) release
 history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
+## 1.6.0-dev-c37e75a (2026-10-15 6:12:02 AM)
+
+Codebase audit fixes, round 3 — CI repair on the `gpu-shaders.yml` pipeline plus
+four more audit closures: both Security findings, Hellfire packaging, and
+`gpu_scaler.cpp` hygiene. 11 of the original 47 findings are now closed;
+`audit.md` carries only the open set (36 findings: 1 High, 13 Medium, 22 Low)
+and `deltas.md` remains the single record of closures.
+
+### Fixed
+
+#### Security
+
+- Preset references can no longer escape the shaders root (arbitrary file read
+  via preset packs): new `preset::IsPathInsideShaderRoot()` runs the candidate
+  and the shader root through `std::filesystem::weakly_canonical` (symlinks
+  resolved) and requires the result to sit at or below the root, with a
+  separator-boundary check so `shaders-ng` cannot pass a `shaders` prefix test
+  (case-insensitive compare for Windows/macOS). `ResolvePresetFilePath` refuses
+  absolute references and ancestor-walk hits that canonicalize outside the root,
+  the slang `#include` resolver fails translation with "include target outside
+  the shaders root: <path>", and the runner names the refused reference in
+  gpu-scaler.log so refusals are diagnosable in the field (SEC-01)
+- gpu-scaler.log is no longer an injection target: new header
+  `gpu_log_sanitize.hpp` (`gpu_scaler::SanitizeLogLine()`) replaces every control
+  byte (< 0x20, including `\n` `\r` `\t` ESC, and 0x7F DEL) with `?` before
+  `LogFileLine` writes, so hostile preset names, `#pragma` descriptions, and
+  glslang info-log text cannot forge log lines or spray terminal escapes;
+  printable text and `%` signs pass through untouched (SEC-04)
+
+#### CI
+
+- `gpu-shaders.yml` Linux job installs dependencies again: the `apt-get install`
+  continuation line ended in a doubled `\` (`ccache \\`), so the shell received a
+  literal `\` as a package name and apt aborted with "E: Unable to locate
+  package \" — back to a single continuation backslash
+- Windows builds are static again: two `#` comment lines sat inside the folded
+  `run: >` scalar of the Configure step; YAML folds comment lines into the shell
+  command, where `#` starts a comment and silently truncated every argument after
+  `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache` — the
+  `-DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'` flags
+  never reached CMake, the exe linked `libgcc_s_seh-1.dll` / `libstdc++-6.dll`,
+  and the DLL-import gate failed. Comments moved above the step and a warning
+  note about the folded-scalar `#` trap added
+
+#### Packaging
+
+- CI release zips now include Hellfire: both Package steps (Linux and Windows)
+  copy `build/mods/hf.mpq` into `pkg/mods/`, existence-guarded so configurations
+  that did not build the expansion MPQ still package cleanly; shipped builds are
+  no longer silently Diablo-only (MAINT-05)
+
+#### Graphics / GPU scaler
+
+- `gFragmentShaders` is sized by a named constant (`kMaxFragmentPrograms =
+  static_cast<int>(Program::Blit) + 1`) instead of the stale magic number 9 left
+  over from the removed built-in filter set, so resizing the `Program` enum trips
+  a compile error at the table instead of silently changing its bounds; the dead
+  `case None:` switch in `FilterDisplayName` and the unused `<csetjmp>` include
+  are gone (MAINT-07)
+
+### Testing
+
+- `preset_failure_modes` grew 20 → 37 checks: relative and absolute `#include`
+  escapes refused while an in-root include still translates; `../../`, absolute,
+  and sibling-prefix (`shaders-ng`) preset-reference refusals with an in-root
+  reference still resolving; an escaping `#reference` failing the whole preset
+  with a traceable error; and 6 log-sanitizer checks. The harness sandbox is
+  re-rooted at a working-directory fake `SDL_GetBasePath` so containment staging
+  works headless
+
 ## 1.6.0-dev-caee40e (2026-10-15 5:08:04 AM)
 
 Codebase audit fixes, round 2 — CI hygiene and the test-suite revival, plus
