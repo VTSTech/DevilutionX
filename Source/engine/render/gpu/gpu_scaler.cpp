@@ -222,15 +222,15 @@ FILE *LogFile()
 		initialized = true;
 		gLogFile = LogOpenAppended();
 		if (gLogFile != nullptr) {
-		        if (gLogBytes + 64 > kMaxLogBytes)
-		        	RotateLog(); // keep even the session header within the cap
-		        if (gLogFile != nullptr) {
-		        	const std::string header = StrCat("\n=== GPU scaler session (build ", __DATE__, " ", __TIME__, ", exe ", PROJECT_VERSION, ") ===\n");
-		        	std::fwrite(header.data(), 1, header.size(), gLogFile);
-		        	gLogBytes += static_cast<long>(header.size());
-		        	std::fflush(gLogFile);
-		        }
-		        InstallSdlLogCapture();
+			if (gLogBytes + 64 > kMaxLogBytes)
+				RotateLog(); // keep even the session header within the cap
+			if (gLogFile != nullptr) {
+				const std::string header = StrCat("\n=== GPU scaler session (build ", __DATE__, " ", __TIME__, ", exe ", PROJECT_VERSION, ") ===\n");
+				std::fwrite(header.data(), 1, header.size(), gLogFile);
+				gLogBytes += static_cast<long>(header.size());
+				std::fflush(gLogFile);
+			}
+			InstallSdlLogCapture();
 		}
 	}
 	return gLogFile;
@@ -543,8 +543,8 @@ void ReleaseFilterResources()
 	}
 	for (auto *&shader : gFragmentShaders) {
 		if (shader != nullptr) {
-		        SDL_ReleaseGPUShader(gDevice, shader);
-		        shader = nullptr;
+			SDL_ReleaseGPUShader(gDevice, shader);
+			shader = nullptr;
 		}
 	}
 	if (gBlitPipeline != nullptr) {
@@ -564,7 +564,7 @@ bool EnsureShaders()
 	};
 	for (const Program program : kFragmentPrograms) {
 		if (!CreateShader(program, SDL_GPU_SHADERSTAGE_FRAGMENT, &gFragmentShaders[static_cast<int>(program)]))
-		        return false;
+			return false;
 	}
 	return true;
 }
@@ -586,14 +586,14 @@ bool EnsurePresetRunner()
 		path = preset::ResolvePresetPath(storedPath);
 	if (path.empty()) {
 		if (storedPath.empty())
-		        LogFileLine("preset load failed: no preset path is stored for the selected custom filter");
+			LogFileLine("preset load failed: no preset path is stored for the selected custom filter");
 		else
-		        LogFileLine(StrCat("preset load failed: preset file not found in the shaders folder: ", storedPath));
+			LogFileLine(StrCat("preset load failed: preset file not found in the shaders folder: ", storedPath));
 		return false;
 	}
 	if (gPresetRunner.IsLoaded()) {
 		if (gLoadedPresetPath == path)
-		        return true;
+			return true;
 		// The selection moved to a different preset: rebuild the chain from
 		// scratch instead of presenting the previously loaded one.
 		LogFileLine(StrCat("preset changed: ", gLoadedPresetPath, " -> ", path));
@@ -629,20 +629,20 @@ bool EnsureFilterResources(ShaderFilter filter)
 
 	if (IsCustomFilter(filter)) {
 		if (!EnsurePresetRunner())
-		        return false;
+			return false;
 	}
 
 	if (gBlitPipeline == nullptr) {
 		const SDL_GPUTextureFormat swapchainFormat = SDL_GetGPUSwapchainTextureFormat(gDevice, gWindow);
 		if (swapchainFormat == SDL_GPU_TEXTUREFORMAT_INVALID) {
-		        // The swapchain is not ready yet (claimed but never
-		        // presented to). Build the blit pipeline lazily on the
-		        // first present instead of guessing the format here.
-		        LogFileLine("swapchain format unavailable at init; deferring blit pipeline creation");
-		        return true;
+			// The swapchain is not ready yet (claimed but never
+			// presented to). Build the blit pipeline lazily on the
+			// first present instead of guessing the format here.
+			LogFileLine("swapchain format unavailable at init; deferring blit pipeline creation");
+			return true;
 		}
 		if (!EnsureBlitPipeline(swapchainFormat))
-		        return false;
+			return false;
 	}
 	return true;
 }
@@ -651,8 +651,8 @@ void ReleaseFrameResources()
 {
 	for (SDL_GPUTexture **texture : { &gGameTex }) {
 		if (*texture != nullptr) {
-		        SDL_ReleaseGPUTexture(gDevice, *texture);
-		        *texture = nullptr;
+			SDL_ReleaseGPUTexture(gDevice, *texture);
+			*texture = nullptr;
 		}
 	}
 	gGameWidth = 0;
@@ -801,77 +801,77 @@ bool Reinit(SDL_Window *window)
 
 	if (gDevice == nullptr) {
 		if (!CreateDevice(/*name=*/nullptr)) {
-		        LogFailHard("SDL_CreateGPUDevice failed");
-		        gFilter = ShaderFilter::None;
-		        return false;
+			LogFailHard("SDL_CreateGPUDevice failed");
+			gFilter = ShaderFilter::None;
+			return false;
 		}
 	}
 
 	if (gWindow != window) {
 		if (gWindow != nullptr)
-		        SDL_ReleaseWindowFromGPUDevice(gDevice, gWindow);
+			SDL_ReleaseWindowFromGPUDevice(gDevice, gWindow);
 		gWindow = window;
 		bool claimed = SDL_ClaimWindowForGPUDevice(gDevice, gWindow);
 		if (!claimed) {
-		        LogFailHard("SDL_ClaimWindowForGPUDevice failed");
-		        gWindow = nullptr;
-		        Shutdown();
-		        return false;
+			LogFailHard("SDL_ClaimWindowForGPUDevice failed");
+			gWindow = nullptr;
+			Shutdown();
+			return false;
 		}
 		gLastClaimedWindowId = SDL_GetWindowID(gWindow);
 		const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
 		if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
 		        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-		        LogFail("SDL_SetGPUSwapchainParameters failed");
+			LogFail("SDL_SetGPUSwapchainParameters failed");
 		}
 		LogFileLine(StrCat("window claimed, swapchain format=", static_cast<int>(SDL_GetGPUSwapchainTextureFormat(gDevice, gWindow)),
 		    " vsync=", vsync ? "1" : "0"));
 		// The swapchain format may have changed with the new window.
 		if (gBlitPipeline != nullptr) {
-		        SDL_ReleaseGPUGraphicsPipeline(gDevice, gBlitPipeline);
-		        gBlitPipeline = nullptr;
-		        gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+			SDL_ReleaseGPUGraphicsPipeline(gDevice, gBlitPipeline);
+			gBlitPipeline = nullptr;
+			gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
 		}
 	}
 
 	if (!EnsureFilterResources(gFilter)) {
 		if (IsCustomFilter(gFilter)) {
-		        // A runtime preset that fails on every backend must not take the
-		        // GPU scaler (and the game) down: turn the filter off for this
-		        // session instead. Picking another preset in Settings retries the
-		        // load from scratch.
-		        LogFileLine("custom preset failed to load; Shader Filter is off for this session");
-		        gFilter = ShaderFilter::None;
-		        Shutdown();
-		        return false;
+			// A runtime preset that fails on every backend must not take the
+			// GPU scaler (and the game) down: turn the filter off for this
+			// session instead. Picking another preset in Settings retries the
+			// load from scratch.
+			LogFileLine("custom preset failed to load; Shader Filter is off for this session");
+			gFilter = ShaderFilter::None;
+			Shutdown();
+			return false;
 		}
 		// A shader compile or pipeline creation failure can be
 		// backend-specific. Retry once on the Vulkan backend before
 		// giving up on the GPU path.
 		const char *driver = gDevice != nullptr ? SDL_GetGPUDeviceDriver(gDevice) : nullptr;
 		if (driver != nullptr && std::strcmp(driver, "vulkan") != 0) {
-		        LogFileLine(StrCat("filter resource initialization failed on ", driver,
-		            "; retrying once with the vulkan backend"));
-		        Shutdown();
-		        gFilter = *GetOptions().Graphics.shaderFilter;
-		        if (CreateDevice(/*name=*/"vulkan")) {
-		        	gWindow = window;
-		        	if (SDL_ClaimWindowForGPUDevice(gDevice, gWindow)) {
-		        		gLastClaimedWindowId = SDL_GetWindowID(gWindow);
-		        		const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
-		        		if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-		        	        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-		        		        LogFail("SDL_SetGPUSwapchainParameters failed");
-		        		}
-		        		if (EnsureFilterResources(gFilter))
-		        		        return true;
-		        	} else {
-		        		// ROB-24: mirror the first claim site - a failed claim must not
-		        		// leave gWindow set, or the Shutdown() below releases a window
-		        		// this device never claimed.
-		        		gWindow = nullptr;
-		        	}
-		        }
+			LogFileLine(StrCat("filter resource initialization failed on ", driver,
+			    "; retrying once with the vulkan backend"));
+			Shutdown();
+			gFilter = *GetOptions().Graphics.shaderFilter;
+			if (CreateDevice(/*name=*/"vulkan")) {
+				gWindow = window;
+				if (SDL_ClaimWindowForGPUDevice(gDevice, gWindow)) {
+					gLastClaimedWindowId = SDL_GetWindowID(gWindow);
+					const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
+					if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+					        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+						LogFail("SDL_SetGPUSwapchainParameters failed");
+					}
+					if (EnsureFilterResources(gFilter))
+						return true;
+				} else {
+					// ROB-24: mirror the first claim site - a failed claim must not
+					// leave gWindow set, or the Shutdown() below releases a window
+					// this device never claimed.
+					gWindow = nullptr;
+				}
+			}
 		}
 		LogFailHard("filter resource initialization failed");
 		Shutdown();
@@ -935,15 +935,15 @@ void PresentFrame(const SDL_Surface &frame)
 	{
 		const Uint32 now = SDL_GetTicks();
 		if (sLastHeartbeat == 0)
-		        sLastHeartbeat = now;
+			sLastHeartbeat = now;
 		if (now - sLastHeartbeat >= 5000) {
-		        LogFileLine(StrCat("heartbeat: ", sHeartbeatFrames, " frames (", sSkippedFrames,
-		            " skipped, ", sDestSkipFrames, " dest-skipped, ", sTotalFrames,
-		            " total, filter=", static_cast<int>(gFilter), ")"));
-		        sLastHeartbeat = now;
-		        sHeartbeatFrames = 0;
-		        sSkippedFrames = 0;
-		        sDestSkipFrames = 0;
+			LogFileLine(StrCat("heartbeat: ", sHeartbeatFrames, " frames (", sSkippedFrames,
+			    " skipped, ", sDestSkipFrames, " dest-skipped, ", sTotalFrames,
+			    " total, filter=", static_cast<int>(gFilter), ")"));
+			sLastHeartbeat = now;
+			sHeartbeatFrames = 0;
+			sSkippedFrames = 0;
+			sDestSkipFrames = 0;
 		}
 	}
 
@@ -1012,7 +1012,7 @@ void PresentFrame(const SDL_Surface &frame)
 		// DOWNSCALE ratio (< 1) collapses the scale to zero and silently
 		// blacks out every frame; keep the fractional fit instead.
 		if (floored >= 1.0F)
-		        fitScale = floored;
+			fitScale = floored;
 	}
 
 	float destScale;
@@ -1030,9 +1030,9 @@ void PresentFrame(const SDL_Surface &frame)
 		static Uint32 sLastFilterSkipLog = 0;
 		const Uint32 nowTickFilter = SDL_GetTicks();
 		if (sLastFilterSkipLog == 0 || nowTickFilter - sLastFilterSkipLog >= 5000) {
-		        LogFileLine(StrCat("present skip: unexpected filter value ", static_cast<int>(gFilter),
-		            " (not a custom preset); skipping presentation"));
-		        sLastFilterSkipLog = nowTickFilter;
+			LogFileLine(StrCat("present skip: unexpected filter value ", static_cast<int>(gFilter),
+			    " (not a custom preset); skipping presentation"));
+			sLastFilterSkipLog = nowTickFilter;
 		}
 		SubmitSkipAfterAcquire(cmd);
 		return;
@@ -1062,7 +1062,7 @@ void PresentFrame(const SDL_Surface &frame)
 		SDL_GPUTransferBuffer *buffer;
 		~TransferBufferReleaser()
 		{
-		        SDL_ReleaseGPUTransferBuffer(device, buffer);
+			SDL_ReleaseGPUTransferBuffer(device, buffer);
 		}
 	} transferReleaser { gDevice, transfer };
 
@@ -1070,30 +1070,30 @@ void PresentFrame(const SDL_Surface &frame)
 		const int bytesPerRow = gameWidth * 4;
 		auto *dst = static_cast<uint8_t *>(SDL_MapGPUTransferBuffer(gDevice, transfer, false));
 		if (dst == nullptr) {
-		        // ROB-16: device loss / allocation failure must cost one skipped
-		        // frame like every neighboring stage, not a memcpy to NULL outside
-		        // the failure contract.
-		        LogFailHard("frame transfer buffer map failed");
-		        SubmitSkipAfterAcquire(cmd);
-		        return;
+			// ROB-16: device loss / allocation failure must cost one skipped
+			// frame like every neighboring stage, not a memcpy to NULL outside
+			// the failure contract.
+			LogFailHard("frame transfer buffer map failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
 		}
 		const auto *src = static_cast<const uint8_t *>(frame.pixels);
 		if (frame.pitch == bytesPerRow) {
-		        std::memcpy(dst, src, static_cast<size_t>(bytesPerRow) * gameHeight);
+			std::memcpy(dst, src, static_cast<size_t>(bytesPerRow) * gameHeight);
 		} else {
-		        for (int y = 0; y < gameHeight; ++y)
-		        	std::memcpy(dst + static_cast<size_t>(y) * bytesPerRow, src + static_cast<size_t>(y) * frame.pitch, bytesPerRow);
+			for (int y = 0; y < gameHeight; ++y)
+				std::memcpy(dst + static_cast<size_t>(y) * bytesPerRow, src + static_cast<size_t>(y) * frame.pitch, bytesPerRow);
 		}
 		SDL_UnmapGPUTransferBuffer(gDevice, transfer);
 
 		SDL_GPUCopyPass *copyPass = SDL_BeginGPUCopyPass(cmd);
 		if (copyPass == nullptr) {
-		        // ROB-17: device loss at copy-pass begin - submit the empty command
-		        // buffer (post-acquire contract) and fail visibly instead of blitting
-		        // the previous frame contents with a clean log.
-		        LogFailHard("frame upload copy pass begin failed");
-		        SubmitSkipAfterAcquire(cmd);
-		        return;
+			// ROB-17: device loss at copy-pass begin - submit the empty command
+			// buffer (post-acquire contract) and fail visibly instead of blitting
+			// the previous frame contents with a clean log.
+			LogFailHard("frame upload copy pass begin failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
 		}
 		SDL_GPUTextureTransferInfo transferSrc {};
 		transferSrc.transfer_buffer = transfer;
@@ -1133,30 +1133,30 @@ void PresentFrame(const SDL_Surface &frame)
 		Uint32 outHeight = 0;
 		if (!gPresetRunner.Run(cmd, gGameTex, gameWidth, gameHeight, swapchainWidth, swapchainHeight,
 		        frameDeltaUs, &outTex, &outWidth, &outHeight)) {
-		        // Run failure = hard failure per the failure contract: the runner
-		        // logged the reason (target creation, render pass, samplers);
-		        // tear the scaler down and revert to the regular renderer for the
-		        // session instead of retrying every frame.
-		        LogFailHard("preset run failed");
-		        SubmitSkipAfterAcquire(cmd);
-		        return;
+			// Run failure = hard failure per the failure contract: the runner
+			// logged the reason (target creation, render pass, samplers);
+			// tear the scaler down and revert to the regular renderer for the
+			// session instead of retrying every frame.
+			LogFailHard("preset run failed");
+			SubmitSkipAfterAcquire(cmd);
+			return;
 		}
 		// Fit the chain output into the window, honoring Integer Scaling.
 		float outFit = std::min(static_cast<float>(swapchainWidth) / static_cast<float>(outWidth),
 		    static_cast<float>(swapchainHeight) / static_cast<float>(outHeight));
 		if (*GetOptions().Graphics.integerScaling) {
-		        // Round 9 field fix (ds-hybrid-scalefx black screen): chains
-		        // whose FINAL pass renders LARGER than the window (viewport
-		        // scale 2x/3x finals: ds-hybrid-sabr 3840x2160, scalefx
-		        // 5760x3240 into 1920x1080) had their fit floored from 1/2
-		        // or 1/3 to ZERO, hitting the destWidth <= 0 skip below
-		        // every frame - black screen, responsive game, zero log
-		        // lines. The chain content itself is verified good (round-9
-		        // sandbox readback: avgLuma 150/255, 100% non-black on
-		        // lavapipe). Keep the fractional fit for downscales.
-		        const float floored = std::floor(outFit);
-		        if (floored >= 1.0F)
-		        	outFit = floored;
+			// Round 9 field fix (ds-hybrid-scalefx black screen): chains
+			// whose FINAL pass renders LARGER than the window (viewport
+			// scale 2x/3x finals: ds-hybrid-sabr 3840x2160, scalefx
+			// 5760x3240 into 1920x1080) had their fit floored from 1/2
+			// or 1/3 to ZERO, hitting the destWidth <= 0 skip below
+			// every frame - black screen, responsive game, zero log
+			// lines. The chain content itself is verified good (round-9
+			// sandbox readback: avgLuma 150/255, 100% non-black on
+			// lavapipe). Keep the fractional fit for downscales.
+			const float floored = std::floor(outFit);
+			if (floored >= 1.0F)
+				outFit = floored;
 		}
 		destScale = outFit;
 		presentTex = outTex;
@@ -1186,11 +1186,11 @@ void PresentFrame(const SDL_Surface &frame)
 		static Uint32 sLastDestSkipLog = 0;
 		const Uint32 nowTickDest = SDL_GetTicks();
 		if (sLastDestSkipLog == 0 || nowTickDest - sLastDestSkipLog >= 5000) {
-		        LogFileLine(StrCat("present skip: destination rect ", destWidth, "x", destHeight,
-		            " (present ", presentWidth, "x", presentHeight, ", swapchain ",
-		            swapchainWidth, "x", swapchainHeight, ", scale ", std::to_string(destScale),
-		            ", integer ", *GetOptions().Graphics.integerScaling ? "on" : "off", ")"));
-		        sLastDestSkipLog = nowTickDest;
+			LogFileLine(StrCat("present skip: destination rect ", destWidth, "x", destHeight,
+			    " (present ", presentWidth, "x", presentHeight, ", swapchain ",
+			    swapchainWidth, "x", swapchainHeight, ", scale ", std::to_string(destScale),
+			    ", integer ", *GetOptions().Graphics.integerScaling ? "on" : "off", ")"));
+			sLastDestSkipLog = nowTickDest;
 		}
 		SubmitSkipAfterAcquire(cmd);
 		return;

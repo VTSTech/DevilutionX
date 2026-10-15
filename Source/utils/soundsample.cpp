@@ -500,18 +500,18 @@ int SoundSample::SetChunk(ArraySharedPtr<std::uint8_t> fileData, std::size_t dwB
 			return 0;
 		}
 #endif // DEVILUTIONX_WAV_FALLBACK
-		// Include a hex dump of the first bytes: an "unknown format" error
-		// usually means the asset bytes are not what we think they are.
-		// 56 bytes covers the canonical 44-byte RIFF/WAVE/fmt head plus the
-		// data-chunk header at offset 36. Field capture (vanilla 18355-byte
-		// WAV: 8-bit 22050 Hz mono PCM, data size 18003) shows a fully
-		// canonical head, so the defect sits in the trailing bytes: the
-		// SDL_mixer 3.2.0 chunk scanner keeps walking chunk headers past
-		// the data chunk and aborts on malformed tails ("chunk goes past
-		// EOF"), while SDL core's tolerant loader accepts the file - which
-		// is why the SDL_LoadWAV_IO fallback recovers it (its canonical
-		// repack drops the tail). The asset/mpq context names the file to
-		// extract and reproduce against.
+       // Include a hex dump of the first bytes: an "unknown format" error
+       // usually means the asset bytes are not what we think they are.
+       // 56 bytes covers the canonical 44-byte RIFF/WAVE/fmt head plus the
+       // data-chunk header at offset 36. Field capture (vanilla 18355-byte
+       // WAV: 8-bit 22050 Hz mono PCM, data size 18003) shows a fully
+       // canonical head, so the defect sits in the trailing bytes: the
+       // SDL_mixer 3.2.0 chunk scanner keeps walking chunk headers past
+       // the data chunk and aborts on malformed tails ("chunk goes past
+       // EOF"), while SDL core's tolerant loader accepts the file - which
+       // is why the SDL_LoadWAV_IO fallback recovers it (its canonical
+       // repack drops the tail). The asset/mpq context names the file to
+       // extract and reproduce against.
 		const size_t headLen = std::min<std::size_t>(file_data_size_, 56);
 		std::string head;
 		char byte[4];
