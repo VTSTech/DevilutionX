@@ -12,7 +12,7 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
-## 1.6.0-dev-dfd49f09d (2026-10-16 07:56:17 PM)
+## 1.6.0-dev-9cac3fe (2026-10-16 07:56:17 PM)
 
 Round 14 runs the 8C runner sweep and closes the last five Medium findings —
 the audit ledger is Medium-free for the first time (**73 findings / 42 closed
