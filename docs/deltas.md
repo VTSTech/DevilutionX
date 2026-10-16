@@ -1005,6 +1005,8 @@ one hard-fail record and the session fallback. Success-path behavior for
 vulkan/metal-selected devices is byte-identical. `clang-format 18.1.8` clean; the TU
 recompiles warning-free under the project's Release flags (GCC 14.2).
 
+**Field verification (2026-10-16, round 12, build `c4b07281a`).** First in-the-wild exercise of the failure path this fix covers: a koko-aio-ng preset-load failure (missing `libjpeg-9.dll`, see the coverage CSV round-12 note) ran the full fallback ladder — `Shutdown` → `GPU scaler unavailable, using the regular renderer instead` → `Recreating the main window for the presentation path switch` — after which the session continued on the stock renderer with the OSD message "Shader Filter is off for this session". No fatal `ErrSdl`, no crash, window alive throughout. Fix behaves as designed.
+
 ---
 
 ## ROB-19 — CLOSED: `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path

@@ -17,7 +17,7 @@
 |---|---|
 | repo tip | **2026-10-16: docs-sync** — round 9 (`Fix round 9: ROB-20, ROB-21`) rebased onto the audit condensation, brief refreshed to 33 closed / 39 open, merge-plan links repaired → `d071ac558` "docs" (audit exec summary condensed to a fix-history pointer; Round 7.6.1 record added to deltas.md; koko-aio-ng BLOCKED on the SDLIMAGE_JPG gap — CMake fix `c4b07281a`) → `319da03c9` CHANGELOG (round-8 entry) → `bbb0a9349` round 8 (ROB-18/19/22) → `8690cc7bb` handoff v2 rewrite (two-track restructure: Track A slang-shaders audit + Track B upstream merge; history stripped, live state kept in the ledger CSVs / audit.md / deltas.md) → prior tip line: `0f9e69324` "Linux CI" (r7.6.2 — `preset_smoke` `RUNTIME_OUTPUT_DIRECTORY` ctest geometry fix, CI green, user-applied) → `2c9a4ddfa` committed merge-plan drafts r1+r2 → `a0cbeccb6` = release **`gpu-shaders-v14`** (preset_smoke corpus green again) → beneath that: codebase-audit rounds 1–7.5 (closure history lives in `docs/deltas.md` — do not re-derive from this file) |
 | release tag | **`gpu-shaders-v14`** (`a0cbeccb6`, tip-most of 14). v8 first shipped `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe; v9 added the Linux helper scripts + `install_git.cmd` |
-| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **76 working / 22 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`; Tier 1b scanlines-Modern + ossc closed 2026-10-16 on r10 build `bbb0a9349`); coverage CSV 231 rows → 226 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** koko-aio-ng family is BLOCKED on the vendored SDL3_image JPG gap (`SDLIMAGE_JPG OFF` — one-line CMake fix + `external/jpeg` submodule, §6 canary 2), then the 22 pending tiered rows (§6) |
+| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **76 working / 22 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`; Tier 1b scanlines-Modern + ossc closed 2026-10-16 on r10 build `bbb0a9349`); coverage CSV 231 rows → 226 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** the 22 pending tiered rows in tier order (§6) — koko-aio-ng family is DEFERRED (round 13: loads but renders black; parked pending RetroArch-style shader-parameter support, §6 canary 2) |
 | Track B — upstream merge | **Plan-first, reply pending.** r1+r2 sent to diasurgical (AJenbo) 2026-10-16; nothing scaffolded — no `pr/*` branches, no upstream contact — until the maintainers reply AND VTSTech directs. Plans: `docs/merge-plan-draft-r1.md` / `docs/merge-plan-draft-r2.md`. Default fork-side queue meanwhile: Phase 0 audit sweeps **8A → 8B → 8C** (§7) |
 | codebase-audit ledger | **72 findings / 33 closed / 39 open (0 High / 9 Medium / 30 Low)** as of fix round 9 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
 
@@ -57,7 +57,7 @@ its history.
 
 | Ref | State |
 |---|---|
-| fork `master` (what CI builds) | `8690cc7bb` (this handoff revision; live tip + lineage in §0). Tracks origin/master. Field-verified on Windows (v8/v9-lineage CI builds) and Debian 12 bookworm (`gcc:14-bookworm` container, glibc 2.36 floor, GLIBCXX gate) |
+| fork `master` (what CI builds) | `7b29aa282` (docs; prior `e7f213c31` = SDLIMAGE_JPG_SHARED OFF build fix; live tip + lineage in §0). Tracks origin/master. Field-verified on Windows (v8/v9-lineage CI builds) and Debian 12 bookworm (`gcc:14-bookworm` container, glibc 2.36 floor, GLIBCXX gate) |
 | release tags | 14 total; tip-most **`gpu-shaders-v14`** (`a0cbeccb6`) |
 | PRs #8734/#8736/#8737 | **DEAD — do not pursue.** 18k monoliths (baked filters + SDL patching) violate AJenbo's merge conditions (§7); superseded by the 8-PR ladder. Report bugs and request features **in this repository** (README "IMPORTANT"). Upstream issue #4453 and the demo video remain as history. Never post to upstream by any means other than VTSTech by hand (§7 standing rules) |
 | upstream SDL_mixer PR #906 | OPEN; fixes the zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode). Nice-to-have, **not gating** — the mod carries its own vendored `3rdParty/SDL3_mixer` patch + `SDL_LoadWAV_IO` fallback. Watch only |
@@ -176,18 +176,32 @@ to date: 0 uncontained failures — the failure contract (§4) held every time.
    flipped to working via `scripts/apply_ds_hybrid_retest.py`. Visual defect check
    (flip/color) pending explicit user confirmation — reopen as partial if the
    image ever looked wrong.
-2. **koko-aio-ng family (3 presets) — BLOCKED on a build fix, not a shader bug.**
-   Field rounds 6 and 11 hit the identical fallback: lookup texture `backdrop.jpg`
-   (verified intact upstream — 86227 bytes, baseline JFIF RGB 912×677) fails with
-   `IMG_Load … Unsupported image format`. Root cause (located round 11):
-   `3rdParty/SDL3_image/CMakeLists.txt` builds the vendored SDL_image with
-   `SDLIMAGE_JPG OFF` + `SDLIMAGE_BACKEND_STB OFF` — every codec off except PNG
-   (that file was already fixed once for PNG with this exact symptom). Round-11
-   silver lining: the load reached the texture stage with 17/17 passes resolved
-   to cache hits, so the `c1ee40544` include-once fix is implicitly validated.
-   Fix: `set(SDLIMAGE_JPG ON)` + add `external/jpeg` to `GIT_SUBMODULES`
-   (vendored libsdl-org/jpeg), rebuild, then re-test the family
-   (`DEVILUTIONX_GPU_DEBUG=1`).
+2. **koko-aio-ng family (3 presets) — DEFERRED (2026-10-16, VTSTech call).**
+   The build blockers are fixed and the preset loads end-to-end; what remains is
+   engine/UX scope, not a shader bug, so the family is parked. Timeline:
+   rounds 6+11 — fallback at `IMG_Load backdrop.jpg` (vendored SDL_image
+   `SDLIMAGE_JPG OFF`; fixed by `c4b07281a` + `external/jpeg` submodule).
+   Round 12 — backend active but `SDLIMAGE_JPG_SHARED` defaulted ON →
+   `LOAD_JPG_DYNAMIC="libjpeg-9.dll"` → missing DLL; fixed by
+   `set(SDLIMAGE_JPG_SHARED OFF)` (`e7f213c31`). Round 13 (build `e7f213c31`):
+   family ×3 (koko-aio-ng, -DMG, Presets_Handhelds-ng/Dots-sharp_4-3) all LOAD —
+   17 passes, all 6 bezel textures (PNG+JPG) clean, pass targets all correct
+   (incl. absolute 96×64 / 128×128 and viewport-scaled final), mip chain on pass
+   0 output, feedback aliases bound — but the screen is BLACK on all three while
+   the game stays alive (HW cursor + sound; heartbeats normal, 0 dest-skipped).
+   Root cause not settled; resume notes: (a) top suspect — the preset's custom
+   `global` UBO (`config.inc`, ~150 members: every RA runtime shader parameter +
+   per-alias sizes like `global.upscale_passSize`); if our translator leaves it
+   zero-filled, `coords_QULEZ(coords, global.upscale_passSize)` divides by zero
+   → NaN → black; (b) `ParseWrapMode` has no clamp_to_border case (falls back to
+   clamp_to_edge) — the preset needs border wrap on backdrop/halo/avglum/ambi/
+   reflection_pre; small standalone engine gap; (c) the family leans on RA's
+   runtime shader-parameter UI (dozens of `#pragma parameter`s) which we do not
+   have — even with (a)/(b) fixed, field tuning needs a parameter UI or defaults
+   verified against the pack's stock presets. Upstream sources fetched to
+   `scripts/koko-ng/` (libretro/slang-shaders `bezel/koko-aio`). Revisit only if
+   parameter support gets scoped; until then the family stays out of the sweep
+   queue.
 3. **Then the 22 pending tiered rows** — ntsc-adaptive,
    motion_interpolation, super-2xbr-3d-2p, crt-guest-advanced-ntsc,
    koko-ambi-crt-geom, crt-geom-deluxe-ntsc-adaptive (the Tier 1c pass-feedback
