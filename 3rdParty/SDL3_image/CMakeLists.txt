@@ -12,6 +12,7 @@ include(FetchContent)
 # texture loading) and IMG_SavePNG fails (breaks screenshots).
 set(SDLIMAGE_VENDORED ON)
 set(SDLIMAGE_PNG_SHARED OFF)
+set(SDLIMAGE_JPG_SHARED OFF)
 
 if(DEVILUTIONX_STATIC_SDL_IMAGE)
   set(BUILD_SHARED_LIBS OFF)
