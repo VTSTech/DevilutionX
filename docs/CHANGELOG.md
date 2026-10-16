@@ -12,6 +12,103 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-007f3956a (2026-10-16 5:55:57 PM)
+
+The window between the field-verified 1f7d111fd build and this one. Engine
+code changes exactly once — the FEAT-02 Metal disposition — while the bulk of
+the window is audit-ledger work (rounds 10–12), the fork's first test-TU
+clang-format pass, and a two-step Linux CI restructure: shader baking left
+the build via `GPU_SCALER_SPV_PREBUILT` (MAINT-15), then the gtest suite left
+the Linux build job entirely for its own `linux-tests` job, closing the ~5x
+Linux-vs-Windows wall-time gap. The window closes MAINT-15 and FEAT-02 — the
+last two of the nine first-contact-bar Mediums measured at merge-plan r2,
+leaving ROB-08 and PERF-06 — and the ledger now stands at 73 findings:
+**35 closed / 38 open (0 High / 7 Medium / 31 Low)**.
+
+### Fixed
+
+#### GPU scaler (macOS)
+
+- **FEAT-02** — the Metal question is answered by retiring the MSL path
+  instead of leaving it half-wired: the hand-ported MSL for the shared
+  programs (`gpu_shaders_msl.hpp`) was never field-validated and the preset
+  runner submits SPIR-V only, so an MSL-capable device produced a session
+  that deterministically failed at first preset load behind the generic
+  error. `BuildDeviceProperties` no longer advertises the MSL shader-format
+  property, `CreateShader` is SPIR-V-only (the `MslFor`/`MslEntryFor` helpers
+  and the MSL branch are gone; the entrypoint is always `"main"`), and
+  `gpu_shaders_msl.hpp` is no longer included, carrying only an unwired
+  banner for reference. Auto-selected Metal now gets an honest log line —
+  "GPU shader mod requires Vulkan; Metal is not yet supported" — and falls
+  into ROB-18's single explicit-Vulkan retry (MoltenVK keeps the scaler
+  available on stock macOS); a retry that still comes back non-Vulkan
+  records the hard failure and reverts to the stock renderer exactly as
+  before. The handoff table's macOS row now matches the code.
+
+### Changed
+
+#### Continuous integration
+
+- **MAINT-15** — shipped SPIR-V becomes a function of the repo, not of the
+  build runner: a new `GPU_SCALER_SPV_PREBUILT` CMake option (default OFF)
+  skips the glslangValidator probe and embeds the committed
+  `gpu_shader_spv_prebuilt.hpp` directly. Previously the prebuilt header was
+  only the no-glslang fallback, so CI — which has glslang — regenerated the
+  header at build time and shipped bytes drifted with the runner's apt
+  glslang version. Every CI job sets it ON: Windows drops `glslang-tools`
+  from its apt line entirely, Linux keeps it only as the Package step's
+  source-health canary and the spirv-blobs artifact compiler, and local
+  development stays OFF to iterate on the `.vert`/`.frag` sources against a
+  live glslangValidator. deltas.md's MAINT-15 closure record carries the
+  CI-split addendum.
+- Linux CI split: the gtest suite moved out of the Linux build job into its
+  own `linux-tests` job. The Linux job carried the full vendored-dep build
+  AND the headless-GPU test run serially — ~5x the Windows job's wall time;
+  now the binary build (`-DBUILD_TESTING=OFF`: no gtest, no test TUs, no
+  Vulkan/Xvfb stack on its critical path) and the suite (same
+  gcc:14-bookworm image, Xvfb + lavapipe, full ctest plus the preset_unload
+  "ALL OK" coverage guard) run in parallel. Both Linux jobs configure with
+  identical flags and share the `ccache-linux-` cache prefix, so the tests
+  job's tree build is mostly cache hits; all three jobs keep
+  `GPU_SCALER_SPV_PREBUILT=ON`. Trade-off: a suite failure now fails the run
+  red without blocking the Linux artifact upload — tests gate the run, not
+  the package step.
+
+#### Tests
+
+- clang-format 18.1.8 (the CI-pinned version) pass over every TU the
+  round-8/9 window touched found all seven `Source/` TUs clean with line
+  endings and tab conventions byte-intact; the one offender was
+  `test/preset_unload_test.cpp`, space-indented since it landed — now
+  re-indented under `test/.clang-format` (169 lines, whitespace-only:
+  `git diff -w` is empty) so the CI format gate covers it cleanly.
+
+#### Audit ledger / documentation
+
+- Round-10 re-head (2026-10-17): the field records keep ROB-26/ROB-27 —
+  matching the code comments shipped in 69be0cad5 and b0b4d5e0a — and the
+  open Low finding that shared the ROB-26 number moves to **ROB-30**
+  (audit.md ledger + merge-plan-draft-r2.md's 8B row, with a renumber note
+  on both). Open count unchanged by the re-head: **40 findings — 0 High /
+  9 Medium / 31 Low**.
+- Merge-plan arithmetic corrected in the same push: the first-contact bar
+  is **9 of the 14** Medium open when r2 was measured — 8A carries four
+  (ROB-20/21, PERF-06, MAINT-15) and 8B five (ROB-08/18/19/22, FEAT-02
+  disposition), with ROB-20 no longer double-counted across the PR 1/PR 2
+  gates — not the "10 of 14" r2 originally wrote. `merge-plan-draft-r2.md`
+  and `audit.md` carry the fix plus a dated ledger note reconciling r2's
+  44-open snapshot with the round-10 count.
+- Round 12 (2026-10-17, docs-only): the round-by-round fix history moved
+  out of `audit.md`'s Executive Summary into a new **Fix History** section
+  in [deltas.md](deltas.md) (whose index table also gained the missing
+  round-11 rows, MAINT-15 and FEAT-02), and the Executive Summary was
+  regenerated as a current-state snapshot — 35 closed / 38 open (0 High /
+  7 Medium / 31 Low), bar = ROB-08 + PERF-06. `diablo-handoff.md`'s ledger
+  line updated to the round-11 state and its stale "10 of 14" bar note
+  aligned with the 9-of-14 errata. No findings closed, no code changed.
+- `docs/audit/vulkan-coverage-updated.csv` refreshed repeatedly through the
+  window (+226/−25 net).
+
 ## 1.6.0-dev-1f7d111fd (2026-10-16 3:39:59 PM)
 
 The window that closes the Shaders → 'Off' field CTD. Five code commits shipped
@@ -119,17 +216,6 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
   harness also gained round 4: menu-context `InitVirtualGamepadGFX()` /
   `FreeVirtualGamepadGFX()` with `pCursCels` empty — the exact ROB-27 sequence,
   which kills the process pre-fix and passes asset-free post-fix.
-- Linux CI split (2026-10-17): the gtest suite moved out of the Linux build job
-  into its own `linux-tests` job. The Linux job carried the full vendored-dep
-  build AND the headless-GPU test run serially — ~5x the Windows job's wall
-  time; now the binary build (`-DBUILD_TESTING=OFF`: no gtest, no test TUs, no
-  Vulkan/Xvfb stack on its critical path) and the suite (same gcc:14-bookworm
-  image, Xvfb + lavapipe, full ctest plus the preset_unload "ALL OK" coverage
-  guard) run in parallel. Both Linux jobs configure with identical flags and
-  share the `ccache-linux-` cache prefix, so the tests job's tree build is
-  mostly cache hits; all three jobs keep `GPU_SCALER_SPV_PREBUILT=ON`.
-  Trade-off: a suite failure now fails the run red without blocking the Linux
-  artifact upload — tests gate the run, not the package step.
 
 ### Added
 
@@ -149,45 +235,12 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
 
 - [deltas.md](deltas.md) gains the closure records for ROB-20/21 (round 9) and
   the field regressions ROB-26/ROB-27, plus the ROB-19 field-regression addendum
-  (mechanism, fix, plan-B note). At the round-10 re-head (2026-10-17, same docs
-  push as this entry) the ID collision is resolved the low-churn way: the field
-  records keep ROB-26/ROB-27 — matching the code comments shipped in 69be0cad5
-  and b0b4d5e0a — and the open Low finding that shared the number moves to
-  **ROB-30** (audit.md ledger + merge-plan-draft-r2.md's 8B row, with a renumber
-  note on both). Open count unchanged by the re-head: **40 findings — 0 High /
-  9 Medium / 31 Low**. A clang-format 18.1.8 (the CI-pinned version) pass over
-  every TU this window touched found all seven `Source/` TUs clean with line
-  endings and tab conventions byte-intact; the one offender was this window's
-  own `test/preset_unload_test.cpp`, space-indented since it landed — now
-  re-indented to `test/.clang-format` (169 lines, whitespace-only: `git diff -w`
-  is empty) so the CI format gate covers it cleanly.
-- Merge-plan arithmetic corrected in the same push: the first-contact bar is **9 of
-  the 14** Medium open when r2 was measured — 8A carries four (ROB-20/21, PERF-06,
-  MAINT-15) and 8B five (ROB-08/18/19/22, FEAT-02 disposition), with ROB-20 no longer
-  double-counted across the PR 1/PR 2 gates — not the "10 of 14" r2 originally
-  wrote; rounds 8/9 already shipped five of those nine, leaving ROB-08, PERF-06,
-  MAINT-15, and the FEAT-02 disposition. `merge-plan-draft-r2.md` and `audit.md`
-  carry the fix plus a dated ledger note reconciling r2's 44-open snapshot with
-  today's 40 (0 High / 9 Medium / 31 Low).
+  (mechanism, fix, plan-B note). The audit.md open-list re-head for the field
+  closures is still pending — and note the field records' ROB-26 ID collides with
+  an existing open Low finding of the same number (the swapchain-acquire vs
+  minimized-window-skip finding); renumber at the next re-head. Open ledger per
+  the round-9 re-head: **40 findings — 0 High / 9 Medium / 31 Low**.
 - `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
-
-- Round 11 (2026-10-17) closed seven of the nine first-contact-bar Mediums, leaving ROB-08
-  and PERF-06: **MAINT-15** — a new `GPU_SCALER_SPV_PREBUILT` CMake option (default
-  OFF) skips the glslangValidator probe and embeds the committed
-  `gpu_shader_spv_prebuilt.hpp`, so both CI jobs bake no SPIR-V and shipped bytes are a
-  function of the repo (Windows drops apt glslang-tools; Linux keeps it only as the Package
-  step's source-health canary) — and **FEAT-02** — Metal dispositioned:
-  `CreateDevice` no longer accepts MSL, auto-selected Metal logs an honest message and takes
-  the ROB-18 Vulkan retry (MoltenVK stays viable), `CreateShader` is SPIR-V-only,
-  `gpu_shaders_msl.hpp` is unincluded with an unwired banner, and the handoff table matches
-  the code. Ledger 40 → **38 open (0 High / 7 Medium / 31 Low)**.
-- Round 12 (2026-10-17, docs-only): the round-by-round fix history moved out of `audit.md`'s
-  Executive Summary into a new **Fix History** section in [deltas.md](deltas.md) (whose
-  index table also gained the missing round-11 rows, MAINT-15 and FEAT-02), and the
-  Executive Summary was regenerated as a current-state snapshot — 35 closed / 38 open
-  (0 High / 7 Medium / 31 Low), bar = ROB-08 + PERF-06. `diablo-handoff.md`'s ledger line
-  updated to the round-11 state and its stale "10 of 14" bar note aligned with the 9-of-14
-  errata. No findings closed, no code changed.
 
 ## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)
 
