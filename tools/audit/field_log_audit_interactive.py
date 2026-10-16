@@ -321,14 +321,72 @@ class InteractiveAuditDigest:
         except Exception as e:
             print(f"Warning: Could not load audit CSV {csv_path}: {e}", file=sys.stderr)
     
-    def populate_vulkan_coverage(self, output_csv):
-        """Populate vulkan coverage CSV from field log data."""
-        print(f"Populating {output_csv} with field log data...")
+    def load_existing_coverage(self, csv_path):
+        """Load existing coverage data from CSV file."""
+        existing_data = {}
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8") as fh:
+                    header = fh.readline().strip()
+                    for line in fh:
+                        if line.strip():
+                            parts = line.strip().split(",", 3)
+                            if len(parts) >= 4:
+                                preset = parts[0]
+                                status = parts[1]
+                                category = parts[2]
+                                notes = parts[3].strip('"')
+                                existing_data[preset] = {
+                                    "status": status,
+                                    "category": category,
+                                    "notes": notes
+                                }
+            except Exception as e:
+                print(f"Warning: Could not load existing coverage {csv_path}: {e}", file=sys.stderr)
+        return existing_data
+    
+    def find_matching_preset(self, preset_name, existing_data):
+        """Find matching preset in existing data with flexible matching."""
+        # Direct match
+        if preset_name in existing_data:
+            return preset_name
+        
+        # Try partial matches (filename without extension)
+        base_name = os.path.splitext(preset_name)[0]
+        for existing_preset in existing_data:
+            if base_name in existing_preset or existing_preset in base_name:
+                return existing_preset
+        
+        # Try directory-based matching
+        preset_dir = preset_name.split("/")[0] if "/" in preset_name else ""
+        for existing_preset in existing_data:
+            existing_dir = existing_preset.split("/")[0] if "/" in existing_preset else ""
+            if preset_dir and preset_dir == existing_dir:
+                return existing_preset
+        
+        return None
+    
+    def populate_vulkan_coverage(self, output_csv, mode="update"):
+        """Populate vulkan coverage CSV from field log data.
+        
+        Args:
+            output_csv: Path to output CSV file
+            mode: "update" (update existing, append new), "append" (only add new), "overwrite" (replace all)
+        """
+        print(f"Populating {output_csv} with field log data (mode: {mode})...")
+        
+        # Load existing data
+        existing_data = self.load_existing_coverage(output_csv)
         
         # Create header
         header = "preset,status,category,notes"
         lines = [header]
         
+        # Track what was updated/added
+        updated_count = 0
+        added_count = 0
+        
+        # Process all presets from field log
         for preset in self.order:
             rec = self.agg[preset]
             
@@ -363,13 +421,48 @@ class InteractiveAuditDigest:
             if rec["dev_notes"]:
                 notes += f"; dev notes: {rec['dev_notes']}"
             
-            lines.append(f"{preset},{status},{category},\"{notes}\"")
+            # Check if preset already exists (with flexible matching)
+            matching_preset = self.find_matching_preset(preset, existing_data)
+            
+            if matching_preset:
+                if mode == "update":
+                    # Update existing entry with new data, but keep original name
+                    existing_entry = existing_data[matching_preset]
+                    lines.append(f"{matching_preset},{status},{category},\"{notes}\"")
+                    updated_count += 1
+                elif mode == "append":
+                    # Keep existing, don't update
+                    existing_entry = existing_data[matching_preset]
+                    lines.append(f"{matching_preset},{existing_entry['status']},{existing_entry['category']},\"{existing_entry['notes']}\"")
+                else:  # overwrite
+                    lines.append(f"{matching_preset},{status},{category},\"{notes}\"")
+                    updated_count += 1
+            else:
+                # Add new entry
+                lines.append(f"{preset},{status},{category},\"{notes}\"")
+                added_count += 1
+        
+        # Add existing entries that weren't in the field log (for append/overwrite modes)
+        if mode in ["append", "overwrite"]:
+            for preset, data in existing_data.items():
+                if preset not in self.order:
+                    lines.append(f"{preset},{data['status']},{data['category']},\"{data['notes']}\"")
         
         # Write to file
         with open(output_csv, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("\n".join(lines) + "\n")
         
-        print(f"✓ Vulkan coverage CSV populated: {len(self.order)} presets")
+        if mode == "update":
+            total_entries = len([line for line in lines[1:] if line.strip()])
+            print(f"✓ Vulkan coverage CSV updated: {updated_count} updated, {added_count} added, {total_entries} total")
+        elif mode == "append":
+            total_entries = len([line for line in lines[1:] if line.strip()])
+            print(f"✓ Vulkan coverage CSV appended: {added_count} added, {total_entries} total")
+        else:
+            total_entries = len([line for line in lines[1:] if line.strip()])
+            print(f"✓ Vulkan coverage CSV overwritten: {total_entries} total")
+        
+        return updated_count, added_count
     
     def interactive_sweep(self, collect_notes=False):
         """Interactive sweep through presets with status selection."""
@@ -597,6 +690,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("logs", nargs="*", help="gpu-scaler.log file(s)")
     ap.add_argument("--populate-coverage", help="Populate vulkan-coverage-updated.csv from field log")
+    ap.add_argument("--coverage-mode", choices=["update", "append", "overwrite"], default="update",
+                   help="Coverage CSV mode: update (default), append, or overwrite")
     ap.add_argument("--sweep", action="store_true", help="Interactive sweep through presets with status prompts")
     ap.add_argument("--dev-notes", action="store_true", help="Collect development notes during sweep")
     ap.add_argument("--audit-csv", help="Compare against audit CSV for progress tracking")
@@ -619,7 +714,10 @@ def main(argv=None):
 
     # Handle populate coverage option
     if args.populate_coverage:
-        d.populate_vulkan_coverage(args.populate_coverage)
+        updated_count, added_count = d.populate_vulkan_coverage(
+            args.populate_coverage, 
+            mode=args.coverage_mode
+        )
         if not args.sweep and not args.audit_csv:
             return 0
 

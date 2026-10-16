@@ -24,11 +24,14 @@ The enhanced `field_log_audit_interactive.py` tool provides comprehensive analys
 
 ### 1. Populate Vulkan Coverage CSV
 ```bash
-# Automatically generate vulkan-coverage-updated.csv from field log
-python3 tools/audit/field_log_audit_interactive.py gpu-scaler.log --populate-coverage
+# Update existing coverage CSV (default mode)
+python3 tools/audit/field_log_audit_interactive.py gpu-scaler.log --populate-coverage docs/audit/vulkan-coverage-updated.csv
 
-# Specify custom output file
-python3 tools/audit/field_log_audit_interactive.py gpu-scaler.log --populate-coverage my-coverage.csv
+# Append new presets to existing coverage
+python3 tools/audit/field_log_audit_interactive.py gpu-scaler.log --populate-coverage docs/audit/vulkan-coverage-updated.csv --coverage-mode append
+
+# Overwrite coverage completely (use with caution)
+python3 tools/audit/field_log_audit_interactive.py gpu-scaler.log --populate-coverage docs/audit/vulkan-coverage-updated.csv --coverage-mode overwrite
 ```
 
 ### 2. Interactive Preset Sweep
@@ -115,12 +118,23 @@ Overall: 15 correct, 0 running, 0 not_running (15 total)
 - **`running`**: Default for successfully loaded presets
 - **`correct`**: When manually confirmed during sweep
 
-### Coverage Categories
+### Coverage Modes
+- **`update` (default)**: Updates existing presets, adds new ones to coverage CSV
+- **`append`**: Only adds new presets, preserves all existing entries unchanged
+- **`overwrite`**: Replaces all entries with field log data, preserves presets not in log
+
+## Coverage Categories
 - **`ok`**: Basic working presets
 - **`png-textures`**: Presets using PNG LUTs/textures
 - **`f1-mipmaps`**: Presets using F1 mip chain feature
 - **`feedback`**: Presets using feedback textures
 - **`needs-fix`**: Presets with known issues
+
+## Smart Matching
+The tool uses flexible preset matching to find corresponding entries:
+- Direct filename matches
+- Partial name matches (without extensions)
+- Directory-based matching
 
 ## Best Practices
 
