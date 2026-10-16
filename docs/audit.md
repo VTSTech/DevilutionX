@@ -3,9 +3,9 @@
 **DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
 
 **Repository:** https://github.com/VTSTech/DevilutionX
-**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 7)
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 8)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 28 closed → [deltas.md](deltas.md) | 44 open: **0 High / 14 Medium / 30 Low**
+72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 31 closed → [deltas.md](deltas.md) | 41 open: **0 High / 11 Medium / 30 Low**
 
 ---
 
@@ -34,6 +34,8 @@
 
 **Fix round 7.6.2 (2026-10-16, same day) — CI ctest failure `preset_smoke_corpus` fixed (TEST-01 geometry).** The corpus test added in round 5 was red on its first real CI execution (Linux job, ctest exit 8 — the constant "some test failed" code; exactly one test in the FAILED list): `preset_smoke` is built by `Source/CMakeLists.txt`, which — unlike every other test executable (the `Tests.cmake` foreach gives all gtest targets `RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}`; `preset_failure_modes_test` sets its own) — never set an output directory, so the binary landed at `<build>/Source/preset_smoke`. `SDL_GetBasePath()` follows the executable's location, the SEC-01 shader root therefore resolved to `<build>/Source/shaders`, and the corpus copied to `<build>/shaders/.preset-smoke/` fell outside it: `IsPathInsideShaderRoot()` refused every corpus shader reference, all five good presets died at translate ("cannot open shader file"), exit 1. `preset_smoke_malformed` stayed green — its `--expect-fail` contract is "every preset fails with a non-empty error string", still satisfied — which is why exactly one test was red. Round-5's verification missed this because it ran the harness standalone with SDL stubbed and the shader root pointed at the corpus; the real ctest geometry (basepath from exe location vs the `CMAKE_BINARY_DIR` copy destination) was never exercised, and the test's first CI run only happened after the r7.6 compile break stopped shadowing the Test step. Fix: one `set_target_properties(preset_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})` line plus comment in `Source/CMakeLists.txt` (CRLF preserved, 10 inserted lines, zero other targets touched). Verified at CI parity (GCC 14.2 sandbox): pre-fix baseline reproduced (good corpus 0 ok / 5 failed, first failure "translate pass 0 (shaders/passthrough.slang): slang: cannot open shader file", exit 1; malformed met), post-fix good corpus **5 ok / 8 passes / exit 0** with malformed still met, and the regenerated `CTestTestfile.cmake` now registers the test against `<build>/preset_smoke` (build root) instead of `<build>/Source/preset_smoke`. No engine code touched; CMake files are outside the clang-format gate.
 
+**Fix round 8 (2026-10-16, later the same day).** The three presentation-surface Mediums that opened the short-term queue shipped as one bounded patch. **ROB-18**: the driver whitelist's rejection of an auto-selected backend now retries once with the explicit `"vulkan"` backend inside `CreateDevice` (a new `BuildDeviceProperties` helper keeps both attempts on one property set) before the session falls back — an explicit `DEVILUTIONX_GPU_BACKEND` value or forced name is still honored as-is, and the old double-log (`LogFailHard` inside `CreateDevice` plus the caller's) is gone: only the caller records the hard failure now. **ROB-19**: `RecreateMainRenderWindow` creates the replacement window *before* destroying the old one, so a failed `SDL_CreateWindow` keeps the existing window alive, logs, and returns false — the fallback-of-the-fallback path degrades to the stock renderer instead of aborting the game, and `ghMainWnd` can no longer be left null by the function. **ROB-22**: the scaler-activation branch now frees the virtual-gamepad textures right before `SDL_DestroyRenderer` (mirroring the ROB-14 `texture` handling and `dx_cleanup`), and the renderer-creation site in `ReinitializeRenderer` re-loads the art and recreates the textures against every freshly created renderer — so filter toggles and GPU-failure fallbacks restore the touch UI instead of leaving dangling handles or a permanently missing gamepad. Both touched C++ files are clean under `clang-format 18.1.8`, the CI-pinned version, and both recompile warning-free under the project's own Release flags. Closures are recorded in [deltas.md](deltas.md). **The 41 findings below are open: 0 High / 11 Medium / 30 Low.**
+
 **Merge-plan alignment (2026-10-16, same day — planning, no code change).** The open set now has a governing sequence: the upstream merge plan (r2, `docs/merge-plan.md`) gates every proposed PR on the findings that share its files, and orders closure into three Phase-0 sweeps — **8A** library surface (ROB-20/21, PERF-06, MAINT-15 plus the SEC/ROB/MAINT/TEST/PERF items on `gpu/preset/*`), **8B** presentation surface (ROB-08/18/19/22, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17, PERF-02) — with first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the 14 open Medium. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/03/04 (deferred). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
 
 **Status:** Round 7 (2026-10-16). Code is unchanged since round 6 (`b60356e1a` — the only newer commit, `8341ef99f`, is docs-only). All 19 remaining closures were regression-verified in-tree and hold. A fresh-eyes full sweep of the mod (scaler/present lifecycle, parser/translator, runner/compiler, tests/CI) produced **25 new findings — 2 High, 11 Medium, 12 Low** — and **reopened MAINT-03**: the three workflows its closure claimed to delete were never actually removed from any commit and still ship with the broken `actions/checkout@v7` pin. Closed-finding resolutions remain in [deltas.md](deltas.md). At the close of round 7 the open set stood at 53.
@@ -60,11 +62,8 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| ROB-18 | Medium | Robustness | Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it |
-| ROB-19 | Medium | Robustness | `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path |
 | ROB-20 | Medium | Robustness | Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard) |
 | ROB-21 | Medium | Robustness | Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only) |
-| ROB-22 | Medium | Robustness | Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them |
 | ROB-23 | Medium | Robustness | `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits |
 | PERF-06 | Medium | Performance | Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans |
 | TEST-06 | Medium | Testing | `preset_smoke` known-texture set omits `#pragma name` identifiers — diverges from the runner |
@@ -238,34 +237,6 @@ The `Runner::Run` header documents a `false` return as "frame must be skipped (t
 Combining the game's own Integer Scaling option with a desktop resolution that is not a whole-number multiple crashes: the integer factor truncates to 0 → divide-by-zero in `CalculatePreferredWindowSize`, and `PresentFrame` has a latent zero-size-fit path honoring the same option. VTSTech explicitly ruled this out of scope on 2026-10-14, and the failure signature is documented for support triage (GPU_SHADERS.md §Troubleshooting) with an abandoned fix diff snapshotted in the mod packaging notes. It is filed here solely so the audit record is complete and so the deliberate-unfixed status is visible next to the other robustness items; if anyone touches window-size math for another reason, the fix is small and should ride along.
 
 **Impact:** Documented as known; closure is opportunistic whenever display.cpp is next modified.
-#### ROB-18: Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 760, 766-781, 848-870, 804) |
-
-Device creation requests `SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN = true` (`:760`), then validates the driver the runtime auto-selected against a whitelist that accepts only `"vulkan"`/`"metal"` — anything else takes `LogFailHard` + `Shutdown()` (`:777-781`), making `gFailed` sticky for the session. On Windows, SDL_GPU's default selection order can yield `d3d12` (a SPIR-V-declaring backend per SDL), in which case the scaler can never engage even when a working Vulkan driver exists — the only escape is the `DEVILUTIONX_GPU_BACKEND=vulkan` env override. The retry machinery at `:848-870`, which re-creates the device with an explicit backend name, is reachable only from `EnsureFilterResources` failures, never from this driver-format rejection. The failure is also double-logged (`LogFailHard` at `:778` and again at `:804`). Field evidence (Windows sweep builds reaching Vulkan) shows the trigger depends on the machine's driver enumeration — the defect is the asymmetry: the code has a retry path designed for exactly this and doesn't use it.
-
-Fix: on whitelist rejection, retry once with the explicit `"vulkan"` backend before falling back to the stock renderer for the session.
-
-**Impact:** Windows machines where SDL auto-picks D3D12 get the GPU scaler via the existing retry instead of a silent session-long fallback to the software path.
-
-#### ROB-19: `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/utils/display.cpp` (lines 797-799, 842-843, 869-871), `Source/engine/dx.cpp` (lines 318-321) |
-
-`RecreateMainRenderWindow` ends with `if (ghMainWnd == nullptr) { ErrSdl(); return false; }` — and `ErrSdl()` is `ErrDlg`, i.e. fatal. This sits on the exact path meant to *save* a session: the GPU-failure fallback in `RenderPresent` (dx.cpp:318-321) calls `ReinitializeRenderer`, whose `!RecreateMainRenderWindow()` branches simply `return` with both `ghMainWnd` and `renderer` null — after which the next `RenderPresent` → `GetOutputSurface` → `SDL_GetWindowSurface(nullptr)` raises a second fatal `ErrSdl`. A transient `SDL_CreateWindow` failure during fallback therefore kills the process instead of degrading, violating the game-never-dies contract at its deepest layer.
-
-Fix: on create failure, keep the existing window alive (skip the destroy) and continue with the non-scaler path; only surface a fatal when no window exists at all and cannot be created.
-
-**Impact:** The fallback chain's last resort degrades to the stock renderer instead of aborting the game.
-
 #### ROB-20: Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard)
 
 | Property | Value |
@@ -293,20 +264,6 @@ Fix: cap preset/source file sizes (e.g. 8 MiB preset, 4 MiB per shader) with a n
 Fix: name-dedupe the plain rewrite path (first binding wins) in addition to the alias branch.
 
 **Impact:** Real-world packs that include a stage-guarded header twice compile and bind correctly.
-
-#### ROB-22: Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/utils/display.cpp` (lines 834-837), `Source/engine/dx.cpp` (lines 318-321, 341), `Source/controls/touch/renderers.cpp` (`InitVirtualGamepadTextures`/`FreeVirtualGamepadTextures`), `Source/controls/touch/renderers.h` (lines 74-77) |
-
-`InitVirtualGamepadTextures(*renderer)` (gamemenu.cpp:316, interfac.cpp:565) fills each `ButtonTexture::texture` (`SDLTextureUniquePtr`) created from the live SDL_Renderer. When the scaler-activation path destroys that renderer (the site the round-7.5 ROB-14 fix touched: `texture` is now nulled there before `SDL_DestroyRenderer`, display.cpp:836 — but the gamepad textures are not), those handles dangle — the destroy path calls neither `FreeVirtualGamepadTextures()` nor re-creates them afterwards. Two failure modes follow: (a) the next `FreeVirtualGamepadTextures()` runs the deleter → `SDL_DestroyTexture` on freed memory; (b) after the dx.cpp:318-321 GPU-failure fallback creates a fresh renderer, `InitVirtualGamepadTextures` is never re-run (unlike `ResizeWindow`, which does re-initialize at display.cpp:1042), so `RenderVirtualGamepad` (dx.cpp:341) operates on dangling non-null pointers → `SDL_RenderTexture` on freed memory, or SDL failure → `ErrSdl` → fatal — the game-never-dies contract broken on touch UIs. Scoped Medium because the virtual gamepad is touch-build territory; the desktop CI matrix never creates these textures.
-
-Fix: free gamepad textures before the renderer destroy in the scaler-activation branch, and re-run `InitVirtualGamepadTextures` after any renderer (re)creation, matching `ResizeWindow`'s behavior.
-
-**Impact:** Touch builds survive filter toggling and GPU fallbacks without UAF or a fatal dialog.
 
 #### ROB-23: `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits
 
@@ -716,12 +673,12 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | Timeline | Findings |
 |----------|----------|
 | **Immediate** (next 1–2 builds) | *(empty — the entire previous Immediate row shipped as the 2026-10-16 quick-fix batch: ROB-14, ROB-15, ROB-16, ROB-17, MAINT-03 re-close; see [deltas.md](deltas.md))* |
-| **Short term** (planned work) | ROB-18 (backend retry), ROB-19 (non-fatal window recreate), ROB-20 (file-size caps + catch-all), ROB-21 (sampler dedupe), ROB-22 (gamepad textures — the remaining half of the former ROB-14), ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
+| **Short term** (planned work) | ROB-20 (file-size caps + catch-all), ROB-21 (sampler dedupe), ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-26, ROB-28, ROB-29, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-06, FEAT-02, FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
-Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the short-term queue opens at ROB-18/ROB-19 (both bounded fallback-path changes) and ROB-22 (gamepad textures — design the free/re-init pairing before touching `ReinitializeRenderer` again). ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with ROB-18 (backend retry) — decide the backend policy once, in one change.
+Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), so the short-term queue now opens at ROB-20/ROB-21. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with the ROB-18 backend retry, which now lives at device level — decide the backend policy once, in one change.
 
-**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 + ROB-08/26 → **8B**; ROB-20/21 + PERF-06 + MAINT-15 → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (10 of 14 open Medium closed); sweep 8C pipelines with early PR reviews.
+**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (closed by the round-8 sweep) + ROB-08/26 → **8B**; ROB-20/21 + PERF-06 + MAINT-15 → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (10 of the original 14 open Medium closed — round 8 shipped 3, leaving 7); sweep 8C pipelines with early PR reviews.
 
 ---
 

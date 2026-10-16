@@ -42,6 +42,9 @@ open findings; this ledger is the single record of closures.
 | ROB-25 | Low | Robustness | Non-custom-filter skip is silent and uncounted | 2026-10-16 |
 | MAINT-16 | Low | Maintainability | Self-heal recompile does not repopulate the cache — comment claims it does | 2026-10-16 |
 | TEST-07 | Low | Testing | `wav-fallback-test.yml` paths filter omits the files round 6 actually modified | 2026-10-16 |
+| ROB-18 | Medium | Robustness | Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it | 2026-10-16 |
+| ROB-19 | Medium | Robustness | `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path | 2026-10-16 |
+| ROB-22 | Medium | Robustness | Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -937,3 +940,116 @@ those three files would silently skip the A/B gate.
 
 **Verification.** YAML structure unchanged (same list, three new entries); the gate now
 re-runs whenever any part of the WAV diagnostics surface changes.
+---
+
+## ROB-18 — CLOSED: Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 760, 766-781, 848-870, 804) |
+
+**Original finding.** Device creation requested SPIR-V and then validated the runtime
+auto-selected driver against a whitelist accepting only `"vulkan"`/`"metal"`; anything else
+took `LogFailHard` + `Shutdown()`, making `gFailed` sticky for the session. On Windows, SDL's
+default selection order can yield `d3d12` (a SPIR-V-declaring backend per SDL), so the scaler
+could never engage even when a working Vulkan driver existed — the only escape was the
+`DEVILUTIONX_GPU_BACKEND=vulkan` env override. The retry machinery in `Reinit`, which
+re-creates the device with an explicit backend name, was reachable only from
+`EnsureFilterResources` failures, never from this driver-format rejection, and the failure was
+double-logged (`LogFailHard` inside `CreateDevice` and again at the caller).
+
+**Resolution.** `CreateDevice` now retries once with the explicit `"vulkan"` backend whenever
+the whitelist rejects an *auto-selected* driver: the rejected device is destroyed, the
+property set is rebuilt by a new `BuildDeviceProperties` helper (one shared implementation for
+both attempts — debug mode, SPIR-V+MSL, verbose logging, forced name), and on success the
+session continues on Vulkan with the SPIR-V shader format. An explicit `DEVILUTIONX_GPU_BACKEND`
+value or a forced `name` is still honored as-is (no auto-retry — the override exists to
+troubleshoot one specific backend, and silently retrying Vulkan would defeat it), with a log
+line saying so. A belt-and-braces check destroys the device and reports failure if an
+explicitly named backend ever came back as an unlisted driver. The double-log is gone:
+`CreateDevice` no longer calls `LogFailHard`/`Shutdown` itself; only the caller records the
+hard failure, once, with the full rejection/retry story in the diagnostic log lines above it.
+
+**Verification.** Auto-select → `d3d12` → retry → `vulkan` now engages the scaler (the exact
+Windows field scenario); auto-select → retry-fails and explicit-override paths still end in
+one hard-fail record and the session fallback. Success-path behavior for
+vulkan/metal-selected devices is byte-identical. `clang-format 18.1.8` clean; the TU
+recompiles warning-free under the project's Release flags (GCC 14.2).
+
+---
+
+## ROB-19 — CLOSED: `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/utils/display.cpp` (lines 797-799, 842-843, 869-871), `Source/engine/dx.cpp` (lines 318-321) |
+
+**Original finding.** `RecreateMainRenderWindow` destroyed the main window and then created
+its replacement, ending with `if (ghMainWnd == nullptr) { ErrSdl(); return false; }` — and
+`ErrSdl()` is fatal. This sat on the exact path meant to *save* a session: the GPU-failure
+fallback in `RenderPresent` (`dx.cpp:318-321`) calls `ReinitializeRenderer`, whose
+`!RecreateMainRenderWindow()` branches simply returned with both `ghMainWnd` and `renderer`
+null — after which the next `RenderPresent` → `GetOutputSurface` →
+`SDL_GetWindowSurface(nullptr)` raised a second fatal `ErrSdl`. A transient
+`SDL_CreateWindow` failure during fallback therefore killed the process instead of degrading,
+violating the game-never-dies contract at its deepest layer.
+
+**Resolution.** `RecreateMainRenderWindow` now creates the replacement window *before*
+destroying the old one. On create failure it logs the SDL error, clears it, keeps the old
+window (and `ghMainWnd`) alive, and returns `false`; on success the old window is destroyed
+and `ghMainWnd` reassigned. `ghMainWnd` can therefore never be null after the call, both
+callers' `return` paths continue with a live window on the stock renderer path, and the
+function no longer contains any fatal `ErrSdl` — the game only dies when it is left with no
+window at all.
+
+**Verification.** Failure path now degrades: window alive, `GetOutputSurface` serves the
+window surface, `RenderPresent` continues on the non-scaler path. Success path is
+order-swapped but otherwise identical (same title/size/flags restore, same position/grab/raise
+behavior), and the presentation-path-switch rationale (clean HWND for the new swapchain owner)
+is unchanged — the new window was never presented to. `clang-format 18.1.8` clean; TU
+recompiles warning-free under the project's Release flags (GCC 14.2).
+
+---
+
+## ROB-22 — CLOSED: Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/utils/display.cpp` (lines 834-837), `Source/engine/dx.cpp` (lines 318-321, 341), `Source/controls/touch/renderers.cpp` (`InitVirtualGamepadTextures`/`FreeVirtualGamepadTextures`), `Source/controls/touch/renderers.h` (lines 74-77) |
+
+**Original finding.** `InitVirtualGamepadTextures(*renderer)` (gamemenu.cpp:316,
+interfac.cpp:565) filled each `ButtonTexture::texture` created from the live SDL_Renderer.
+When the scaler-activation path destroyed that renderer (the site the round-7.5 ROB-14 fix
+touched), those handles dangled: the destroy path called neither `FreeVirtualGamepadTextures()`
+nor re-created them afterwards, so (a) the next `FreeVirtualGamepadTextures()` ran
+`SDL_DestroyTexture` on freed memory, and (b) after the `dx.cpp:318-321` GPU-failure fallback
+created a fresh renderer, `RenderVirtualGamepad` (`dx.cpp:341`) operated on dangling non-null
+pointers — a use-after-free on touch builds, with a fatal `ErrSdl` dialog as the softer
+failure mode.
+
+**Resolution.** Both halves ship together, as the ROB-14 closure anticipated. (1) The
+scaler-activation branch now calls `FreeVirtualGamepadTextures()` immediately before
+`SDL_DestroyRenderer(renderer)` — mirroring `dx_cleanup`'s ordering and the ROB-14 `texture`
+handling — so the handles are destroyed while their renderer is still alive. (2) The
+renderer-creation site in `ReinitializeRenderer` now re-runs `InitVirtualGamepadGFX()` +
+`InitVirtualGamepadTextures(*renderer)` after every fresh renderer: the art reload covers the
+common in-game case where `createTextures` already consumed the source surfaces (surviving
+only-null textures would have traded the UAF for a permanently missing gamepad), and the
+extra calls are no-ops in the steady state because `createTextures` only acts on surfaces
+still held. Boot-time behavior is unchanged: with assets not yet mounted both calls fail
+quietly to null and the normal `LoadAllGFX` → `ShowProgress`/`ProgressEventHandler` cycle
+proceeds as before.
+
+**Verification.** The two failure modes are closed: no `SDL_DestroyTexture` on freed memory
+(textures freed pre-destroy, subsequent frees are null no-ops), and `RenderVirtualGamepad`
+after any fallback renders against textures created from the *current* renderer — with the
+gamepad UI restored instead of dropped. Desktop CI matrix is unaffected (the virtual gamepad
+is never created there; the calls compile in for all non-SDL1 builds, matching `dx.cpp`'s
+existing `FreeVirtualGamepadTextures()` usage). `clang-format 18.1.8` clean; both touched TUs
+recompile warning-free under the project's Release flags (GCC 14.2).

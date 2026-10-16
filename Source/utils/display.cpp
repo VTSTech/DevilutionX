@@ -44,6 +44,9 @@
 #include "controls/devices/kbcontroller.h"
 #include "controls/game_controls.h"
 #include "controls/touch/gamepad.h"
+#ifndef USE_SDL1
+#include "controls/touch/renderers.h"
+#endif
 #include "engine/backbuffer_state.hpp"
 #include "engine/dx.h"
 #include "headless_mode.hpp"
@@ -785,7 +788,6 @@ bool RecreateMainRenderWindow()
 	const bool grabbed = (oldFlags & SDL_WINDOW_MOUSE_GRABBED) != 0;
 	Log("Recreating the main window for the presentation path switch");
 
-	SDL_DestroyWindow(ghMainWnd);
 	SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
 	if (fullscreen)
 		flags |= SDL_WINDOW_FULLSCREEN;
@@ -793,11 +795,21 @@ bool RecreateMainRenderWindow()
 		flags |= SDL_WINDOW_RESIZABLE;
 	if (maximized)
 		flags |= SDL_WINDOW_MAXIMIZED;
-	ghMainWnd = SDL_CreateWindow(title.c_str(), width, height, flags);
-	if (ghMainWnd == nullptr) {
-		ErrSdl();
+	// ROB-19: create the replacement window BEFORE destroying the old one.
+	// A failed create used to be fatal here (ErrSdl) on the fallback-of-the-
+	// fallback path - the exact path that exists to save the session - so a
+	// transient SDL_CreateWindow failure aborted the game instead of
+	// degrading. Keeping the old window alive on failure lets both callers
+	// continue on the stock renderer path instead; the game only dies when
+	// it is left with no window at all.
+	SDL_Window *newWindow = SDL_CreateWindow(title.c_str(), width, height, flags);
+	if (newWindow == nullptr) {
+		Log("SDL_CreateWindow failed: {}; keeping the existing window", SDL_GetError());
+		SDL_ClearError();
 		return false;
 	}
+	SDL_DestroyWindow(ghMainWnd);
+	ghMainWnd = newWindow;
 	if (!fullscreen && !maximized)
 		SDL_SetWindowPosition(ghMainWnd, posX, posY);
 	if (grabbed)
@@ -838,6 +850,12 @@ void ReinitializeRenderer()
 			// dx_cleanup) - otherwise the next ReinitializeTexture() destroys an
 			// already-freed texture through this stale unique_ptr.
 			texture = nullptr;
+			// ROB-22: the virtual gamepad's textures were created from this
+			// renderer too; free them before it dies (mirroring dx_cleanup) or the
+			// next FreeVirtualGamepadTextures()/RenderVirtualGamepad() runs on freed
+			// memory. The re-initialization half lives where the replacement
+			// renderer is created, further down in this function.
+			FreeVirtualGamepadTextures();
 			SDL_DestroyRenderer(renderer);
 			renderer = nullptr;
 			// The window has been presented to by the SDL_Renderer's
@@ -886,6 +904,13 @@ void ReinitializeRenderer()
 			if (renderer == nullptr) {
 				ErrSdl();
 			}
+			// ROB-22: recreate the virtual gamepad textures against the new
+			// renderer: whichever path destroyed the previous one (the scaler
+			// hand-off above, or the GPU-failure fallback in dx.cpp) destroyed
+			// them with it. Reload the art first because its source surfaces
+			// were already consumed by an earlier createTextures pass in-game.
+			InitVirtualGamepadGFX();
+			InitVirtualGamepadTextures(*renderer);
 		}
 
 #ifdef USE_SDL3

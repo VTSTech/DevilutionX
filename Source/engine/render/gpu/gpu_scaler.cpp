@@ -731,10 +731,36 @@ bool WindowHasSwapchainHistory(SDL_Window *window)
 	return window != nullptr && gLastClaimedWindowId != 0 && SDL_GetWindowID(window) == gLastClaimedWindowId;
 }
 
+// Builds the device-creation property set shared by the first creation
+// attempt and the ROB-18 Vulkan retry. `backend` forces a backend driver, or
+// SDL auto-selects one when null.
+static SDL_PropertiesID BuildDeviceProperties(bool debugDevice, const char *backend)
+{
+	SDL_PropertiesID props = SDL_CreateProperties();
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debugDevice);
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+	// Ask SDL to log the adapter name and driver version; the log capture
+	// installed below redirects these messages into the diagnostic file.
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VERBOSE_BOOLEAN, true);
+	if (backend != nullptr)
+		SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, backend);
+	return props;
+}
+
 // Creates the GPU device and selects the shader format for its backend.
 // `name` forces a specific backend (e.g. "vulkan") or auto-selects when null.
 // The DEVILUTIONX_GPU_BACKEND environment variable overrides both, which is
 // useful for troubleshooting a broken D3D12 or Vulkan driver.
+//
+// DEVILUTIONX_GPU_DEBUG=1 creates the device in SDL debug mode: SDL's
+// own validation block activates (release asserts on pipeline/texture
+// state) and the Vulkan backend requests the Khronos validation layer
+// when it is installed. A state the release path would pass through
+// silently (or that a driver could die on) then surfaces as a logged
+// SDL error and the scaler's graceful fallback instead of a process
+// abort. Field instrument for silent first-frame crashes (ds-hybrid
+// round): run with DEVILUTIONX_GPU_DEBUG=1, reproduce, read the log.
 static bool CreateDevice(const char *name)
 {
 	const char *backendOverride = SDL_getenv("DEVILUTIONX_GPU_BACKEND");
@@ -742,29 +768,12 @@ static bool CreateDevice(const char *name)
 		backendOverride = nullptr;
 	if (backendOverride != nullptr)
 		LogFileLine(StrCat("backend override from DEVILUTIONX_GPU_BACKEND: ", backendOverride));
-
-	SDL_PropertiesID props = SDL_CreateProperties();
-	// DEVILUTIONX_GPU_DEBUG=1 creates the device in SDL debug mode: SDL's
-	// own validation block activates (release asserts on pipeline/texture
-	// state) and the Vulkan backend requests the Khronos validation layer
-	// when it is installed. A state the release path would pass through
-	// silently (or that a driver could die on) then surfaces as a logged
-	// SDL error and the scaler's graceful fallback instead of a process
-	// abort. Field instrument for silent first-frame crashes (ds-hybrid
-	// round): run with DEVILUTIONX_GPU_DEBUG=1, reproduce, read the log.
 	const char *debugEnv = SDL_getenv("DEVILUTIONX_GPU_DEBUG");
 	const bool debugDevice = debugEnv != nullptr && *debugEnv == '1';
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debugDevice);
 	if (debugDevice)
 		LogFileLine("GPU debug mode enabled via DEVILUTIONX_GPU_DEBUG=1");
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
-	// Ask SDL to log the adapter name and driver version; the log capture
-	// installed below redirects these messages into the diagnostic file.
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VERBOSE_BOOLEAN, true);
-	if (backendOverride != nullptr || name != nullptr)
-		SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING,
-		    backendOverride != nullptr ? backendOverride : name);
+	SDL_PropertiesID props = BuildDeviceProperties(debugDevice,
+	    backendOverride != nullptr ? backendOverride : name);
 	gDevice = SDL_CreateGPUDeviceWithProperties(props);
 	SDL_DestroyProperties(props);
 	if (gDevice == nullptr)
@@ -775,9 +784,44 @@ static bool CreateDevice(const char *name)
 	} else if (driver != nullptr && std::strcmp(driver, "metal") == 0) {
 		gShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
 	} else {
-		LogFailHard(StrCat("unsupported GPU driver: ", driver != nullptr ? driver : "unknown"));
-		Shutdown();
-		return false;
+		// ROB-18: the whitelist above is the set of backends the mod can drive,
+		// but SDL's auto-selection can still return something else (typically
+		// d3d12 on Windows, which SDL reports as a SPIR-V-capable backend). That
+		// used to hard-fail the session even when a working Vulkan driver
+		// existed: the retry machinery in Reinit() is only reachable from
+		// filter-resource failures, never from this driver-format rejection.
+		// Retry once with the Vulkan backend forced before handing the session
+		// back to the stock renderer. An explicit DEVILUTIONX_GPU_BACKEND or a
+		// forced name is honored as-is: the override exists to troubleshoot one
+		// specific backend, and silently retrying Vulkan would defeat it.
+		const bool autoSelected = backendOverride == nullptr && name == nullptr;
+		SDL_DestroyGPUDevice(gDevice);
+		gDevice = nullptr;
+		if (autoSelected) {
+			LogFileLine(StrCat("unsupported GPU driver: ", driver != nullptr ? driver : "unknown",
+			    " - retrying once with the vulkan backend"));
+			props = BuildDeviceProperties(debugDevice, "vulkan");
+			gDevice = SDL_CreateGPUDeviceWithProperties(props);
+			SDL_DestroyProperties(props);
+		} else {
+			LogFileLine(StrCat("unsupported GPU driver: ", driver != nullptr ? driver : "unknown",
+			    " (no retry: the backend was selected explicitly)"));
+		}
+		if (gDevice == nullptr)
+			return false;
+		driver = SDL_GetGPUDeviceDriver(gDevice);
+		if (driver != nullptr && std::strcmp(driver, "vulkan") == 0)
+			gShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
+		else if (driver != nullptr && std::strcmp(driver, "metal") == 0)
+			gShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
+		else {
+			// Belt and braces: an explicitly named backend should never come back
+			// as an unlisted driver. Same contract as before: the caller records
+			// the hard failure and the session reverts to the stock renderer.
+			SDL_DestroyGPUDevice(gDevice);
+			gDevice = nullptr;
+			return false;
+		}
 	}
 	Log("GPU scaler: using the {} backend", driver);
 	LogFileLine(StrCat("device created, backend=", driver != nullptr ? driver : "unknown"));
