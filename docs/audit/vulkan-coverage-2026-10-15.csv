@@ -13,7 +13,7 @@ sharpen/rca_sharpen.slangp,working,ok,"1 pass (rcas)"
 sharpen/cheap-sharpen.slangp,working,ok,"1 pass"
 sharpen/adaptive-sharpen.slangp,working,ok,"1 pass (10.4KB source)"
 sharpen/adaptive-sharpen-multipass.slangp,working,ok,"2 passes"
-sharpen/Anime4k.slangp,working,ok,"4 passes; survived dungeon ShowProgress (load screen) transition; clean Shutdown; Tier 1b canary (round-1 comma-declarator fix)"
+sharpen/Anime4k.slangp,working,ok,"4 passes; survived dungeon ShowProgress (load screen) transition; clean Shutdown; Tier 1b canary (round-1 comma-declarator fix) ; round-14 re-confirm 2026-10-16 (build e7f213c31): 4 passes, 0 errors/warnings/fallbacks"
 denoisers/slow-bilateral.slangp,working,ok,"segment 2: 1 pass"
 denoisers/median_5x5.slangp,working,ok,"segment 2: 1 pass"
 denoisers/median_3x3.slangp,working,ok,"segment 2: 1 pass"
@@ -99,7 +99,7 @@ misc/test-pattern-prepend.slangp,working,ok,segment 4: 1 pass (14 #pragma parame
 misc/tonemapping.slangp,working,ok,segment 4: 1 pass
 misc/white_point.slangp,working,ok,segment 4: 1 pass
 misc/yiq-hue-adjustment.slangp,working,ok,segment 4: 1 pass
-misc/simple_color_controls.slangp,working,ok,"segment 4: 1 pass - Tier 1b misc row cleared"
+misc/simple_color_controls.slangp,working,ok,"segment 4: 1 pass - Tier 1b misc row cleared ; round-14 re-confirm 2026-10-16 (build e7f213c31): 1 pass, 0 errors/warnings/fallbacks"
 handheld/ds-hybrid-sabr.slangp,crash,"silent first-frame abort","round 7 investigation: load path clean (preset_smoke offline ok: parse/translate/SPIR-V), full 3-pass chain renders clean on lavapipe with Khronos validation layers via the new runner_repro harness; crash is driver-interactive on the field GPU; sample_mask=0xFFFFFFFF pipeline-state violation fixed (SDL 3.5: reserved, must be 0 — llvmpipe rejects the pipeline outright); DEVILUTIONX_GPU_DEBUG=1 instrument added for the re-test"
 handheld/ds-hybrid-scalefx.slangp,crash,"silent first-frame abort","round 7 investigation: same class as ds-hybrid-sabr; 7-pass chain incl. float FBOs + viewport-scaled pass 0 + cross-pass aliases renders clean on lavapipe with validation layers; same re-test plan"
 handheld/ds-hybrid-scalefx.slangp,crash,"assert at SDL_CancelGPUCommandBuffer","round 8: field re-test on 0dec42566 + DEVILUTIONX_GPU_DEBUG=1 - load and pipelines clean on the field GPU (sample_mask fix live), first frame died at the SDL cancel-after-acquire assert; root cause engine-side: Run() fails silently in the pass-target creation loop, caller cancels an acquired command buffer; fixed round 8 (submit-skip + hard-fail revert + failure trail); lavapipe regression clean after fix; forced oversize failure reproduces the field signature and surfaced an SDL-side double-free inside SDL_CreateGPUTexture failure path at extreme sizes (pinned SDL 3.5 570f7229, sandbox-only finding)"
@@ -178,7 +178,7 @@ fsr-crt-potato-bvm-vhs,working,ok,"segment 8: 5 passes; 3 cache hits — closes 
 crt-guest-advanced-fast,working,ok,"segment 8: 9 passes; 3 cache hits (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
 crt-guest-advanced-fastest,working,ok,"segment 8: 5 passes; PassFeedback field-confirmed (Pass2Feedback, PerfPassFeedback — two new family textures) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
 crt-guest-advanced-hd,working,ok,"segment 8: 12 passes; 12/12 passes disk-cache hit (full chain); F1 mip chain on pass 2; PassFeedback (AfterglowPassFeedback) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
-crt-guest-advanced-ntsc,working,ok,"segment 8: 19 passes; F1 mip chains on passes 8+9 — first multi-pass F1 chain; PassFeedback (AfterglowPassFeedback, AvgLumPassFeedback) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
+crt-guest-advanced-ntsc,working,ok,"segment 8: 19 passes; F1 mip chains on passes 8+9 — first multi-pass F1 chain; PassFeedback (AfterglowPassFeedback, AvgLumPassFeedback) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes) ; round-14 Tier 1b canary re-confirm 2026-10-16 (build e7f213c31): 19 passes / 6 cache hits, F1 mip chains 8+9 + PassFeedback re-confirmed, 0 errors/warnings/fallbacks"
 crt-guest-advanced-pal,working,ok,"segment 8: 19 passes; F1 mip chains on passes 8+9 (multi-pass); 15 cache hits; PassFeedback (AfterglowPassFeedback, AvgLumPassFeedback, PalPass1Feedback — new texture) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
 crt-guest-advanced,working,ok,"segment 8: 12 passes; F1 mip chains on passes 2+3 (multi-pass); PassFeedback (AfterglowPassFeedback, AvgLumPassFeedback) (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"
 crt-hyllian-3d,working,ok,"segment 8: 1 pass (build 98357ffeb, post-r7.5 present-path fixes, pre-round-7-9-fixes)"

@@ -17,7 +17,7 @@
 |---|---|
 | repo tip | **2026-10-16: docs-sync** — round 9 (`Fix round 9: ROB-20, ROB-21`) rebased onto the audit condensation, brief refreshed to 33 closed / 39 open, merge-plan links repaired → `d071ac558` "docs" (audit exec summary condensed to a fix-history pointer; Round 7.6.1 record added to deltas.md; koko-aio-ng BLOCKED on the SDLIMAGE_JPG gap — CMake fix `c4b07281a`) → `319da03c9` CHANGELOG (round-8 entry) → `bbb0a9349` round 8 (ROB-18/19/22) → `8690cc7bb` handoff v2 rewrite (two-track restructure: Track A slang-shaders audit + Track B upstream merge; history stripped, live state kept in the ledger CSVs / audit.md / deltas.md) → prior tip line: `0f9e69324` "Linux CI" (r7.6.2 — `preset_smoke` `RUNTIME_OUTPUT_DIRECTORY` ctest geometry fix, CI green, user-applied) → `2c9a4ddfa` committed merge-plan drafts r1+r2 → `a0cbeccb6` = release **`gpu-shaders-v14`** (preset_smoke corpus green again) → beneath that: codebase-audit rounds 1–7.5 (closure history lives in `docs/deltas.md` — do not re-derive from this file) |
 | release tag | **`gpu-shaders-v14`** (`a0cbeccb6`, tip-most of 14). v8 first shipped `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe; v9 added the Linux helper scripts + `install_git.cmd` |
-| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **76 working / 22 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`; Tier 1b scanlines-Modern + ossc closed 2026-10-16 on r10 build `bbb0a9349`); coverage CSV 231 rows → 226 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** the 22 pending tiered rows in tier order (§6) — koko-aio-ng family is DEFERRED (round 13: loads but renders black; parked pending RetroArch-style shader-parameter support, §6 canary 2) |
+| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **80 working / 18 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`; Tier 1b fully closed 2026-10-16: scanlines-Modern + ossc on r10 build `bbb0a9349`, remaining 4 rows ntsc-adaptive / motion_interpolation / super-2xbr-3d-2p / crt-guest-advanced-ntsc confirmed field round 14 on the post-CMake-fix build `e7f213c31`); coverage CSV 231 rows → 226 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** the 18 pending tiered rows in tier order (§6) — next up the Tier 1c canaries — koko-aio-ng family is DEFERRED (round 13: loads but renders black; parked pending RetroArch-style shader-parameter support, §6 canary 2) |
 | Track B — upstream merge | **Plan-first, reply pending.** r1+r2 sent to diasurgical (AJenbo) 2026-10-16; nothing scaffolded — no `pr/*` branches, no upstream contact — until the maintainers reply AND VTSTech directs. Plans: `docs/merge-plan-draft-r1.md` / `docs/merge-plan-draft-r2.md`. Default fork-side queue meanwhile: Phase 0 audit sweeps **8A → 8B → 8C** (§7) |
 | codebase-audit ledger | **72 findings / 33 closed / 39 open (0 High / 9 Medium / 30 Low)** as of fix round 9 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
 
@@ -149,8 +149,8 @@ maintenance-mode: intentional divergences, reopened only on field evidence.
 
 ### Empirical arm — field sweep
 
-Ledger: `docs/audit/shader-test-list-2026-10-15.csv` (98 tiered rows: **74 working /
-24 pending / 0 crash**) + `docs/audit/vulkan-coverage-2026-10-15.csv` (227 rows: 222
+Ledger: `docs/audit/shader-test-list-2026-10-15.csv` (98 tiered rows: **80 working /
+18 pending / 0 crash**) + `docs/audit/vulkan-coverage-2026-10-15.csv` (231 rows: 226
 working / 3 crash / 1 black-screen / 1 fallback — the non-working rows are retained
 investigation history). Dirs closed clean: `denoisers/` 7/7, `dithering/` 16/16,
 `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped in the
@@ -202,13 +202,18 @@ to date: 0 uncontained failures — the failure contract (§4) held every time.
    `scripts/koko-ng/` (libretro/slang-shaders `bezel/koko-aio`). Revisit only if
    parameter support gets scoped; until then the family stays out of the sweep
    queue.
-3. **Then the 22 pending tiered rows** — ntsc-adaptive,
-   motion_interpolation, super-2xbr-3d-2p, crt-guest-advanced-ntsc,
-   koko-ambi-crt-geom, crt-geom-deluxe-ntsc-adaptive (the Tier 1c pass-feedback
-   canary), Mega_Bezel hsm-custom-fast-sharpen + hsm-interlace-and-linearize,
+3. **Then the 18 pending tiered rows** — koko-ambi-crt-geom,
+   crt-geom-deluxe-ntsc-adaptive (the Tier 1c pass-feedback canary), Mega_Bezel hsm-custom-fast-sharpen + hsm-interlace-and-linearize,
    DSLite-2020, gba-color, gb-palette-dmg, fsr-aa-lv2-median3x3,
    bayer-matrix-dithering, phosphor-persistence, gauss_4tap, 2xBR-lv1-multipass,
    3ds-lcd-grid-v2, effect-border-iq, bicubic, drez_3ds, cleanEdge-rotate, crt-1tap.
+
+Sweep-evidence rider (TEST-08, round 14): the pass line's `textures=[...]` lists
+post-translation sampler names, not file loads, and `LoadLut` logs failures only —
+a successful PNG/JPG LUT load leaves no positive trace, and the digest's
+`PNG textures:` field is constant `none` (its counter can never fire). Treat that
+field as evidence of nothing until the proposed 1-line engine log + digest regex
+land (deltas.md TEST-08).
 
 **Queue after the canaries** (risk buckets from `tools/audit_slang_presets.py` v2;
 per-preset flags in `docs/audit/slang_audit_v2.csv`):

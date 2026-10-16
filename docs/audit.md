@@ -5,7 +5,7 @@
 **Repository:** https://github.com/VTSTech/DevilutionX
 **Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 9)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 33 closed → [deltas.md](deltas.md) | 39 open: **0 High / 9 Medium / 30 Low**
+73 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 33 closed → [deltas.md](deltas.md) | 40 open: **0 High / 9 Medium / 31 Low**
 
 ---
 
@@ -28,7 +28,7 @@
 
 ## Executive Summary
 
-**Fix history (rounds 7.5 → 9, 2026-10-16).** All shipped fix narratives live in the closure records — [deltas.md](deltas.md) is the single record of closures. Round 7.5 closed ROB-14/15/16/17 with riders ROB-24/25, MAINT-16, TEST-07, and the MAINT-03 re-close; round 7.6.1 corrected the round-7.5 clang-format verification record (its own deltas.md section); round 7.6.2 fixed the `preset_smoke_corpus` ctest geometry (TEST-01 fixup addendum); round 8 closed ROB-18/19/22; round 9 closed ROB-20/21 (the `gpu/preset` load path: size caps before every untrusted slurp, a catch-all on `ParsePreset`/`TranslateSlang`, and the `RewriteSamplers` name-dedupe, with regression corpus). Partial fixes stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). **The 39 findings below are open: 0 High / 9 Medium / 30 Low.**
+**Fix history (rounds 7.5 → 9, 2026-10-16).** All shipped fix narratives live in the closure records — [deltas.md](deltas.md) is the single record of closures. Round 7.5 closed ROB-14/15/16/17 with riders ROB-24/25, MAINT-16, TEST-07, and the MAINT-03 re-close; round 7.6.1 corrected the round-7.5 clang-format verification record (its own deltas.md section); round 7.6.2 fixed the `preset_smoke_corpus` ctest geometry (TEST-01 fixup addendum); round 8 closed ROB-18/19/22; round 9 closed ROB-20/21 (the `gpu/preset` load path: size caps before every untrusted slurp, a catch-all on `ParsePreset`/`TranslateSlang`, and the `RewriteSamplers` name-dedupe, with regression corpus). Partial fixes stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). **The 40 findings below are open: 0 High / 9 Medium / 31 Low.**
 
 **Merge-plan alignment (2026-10-16, same day — planning, no code change).** The open set now has a governing sequence: the upstream merge plan (r2, `docs/merge-plan-draft-r2.md`) gates every proposed PR on the findings that share its files, and orders closure into three Phase-0 sweeps — **8A** library surface (ROB-20/21, PERF-06, MAINT-15 plus the SEC/ROB/MAINT/TEST/PERF items on `gpu/preset/*`), **8B** presentation surface (ROB-08/18/19/22, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17, PERF-02) — with first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the 14 open Medium. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/03/04 (deferred). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
 
@@ -95,6 +95,7 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 | ARCH-02 | Low | Architecture | Fork branding and asset-integrity hard aborts are entangled with upstream init |
 | TEST-04 | Low | Testing | Baked-shader drift: regenerated SPIR-V is never diffed against the committed header |
 | TEST-05 | Low | Testing | Fixture-dependent tests silently skip when MPQ assets are absent |
+| TEST-08 | Low | Testing | Successful file-backed texture (LUT) loads are unlogged; the field-log digest's "PNG textures" counter can never fire (constant `none`) |
 
 Severity levels:
 - **High** — Affects correctness, security, or data integrity. Fix soon.

@@ -1162,3 +1162,49 @@ in-process glslang compile is clean (translate-level probe asserted 1 declaratio
 present; smoke run: 6 ok / 9 passes / exit 0). `clang-format 18.1.8` clean; TU recompiles warning-free under the project's Release
 flags (GCC 14.2).
 
+---
+
+## TEST-08 — OPEN: Successful file-backed texture (LUT) loads are never logged; the field-log digest's PNG-texture counter can never fire
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Low |
+| **Category** | Testing |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (`Runner::LoadLut` 901-991, diagnostics loop 586-605) + `tools/audit/field_log_digest.py` |
+
+**Original finding (round 14, 2026-10-16 — user observation on a gameboy-player
+raw excerpt, confirmed by code read + upstream sources).** The pass log line's
+`textures=[...]` field is the post-translation fragment-shader *sampler-name*
+list (`preset_runner.cpp:586-605` — comment: "sampler names surface any
+unresolved texture references"), not a record of file-backed texture loads:
+`Source`/`Original` are pass-chain builtins, and a name like `BORDER` is the
+preset-declared texture. Upstream
+`border/gameboy-player/gameboy-player-crt-easymode.slangp` declares
+`textures = "BORDER"` / `BORDER = "gameboy-player.png"` — a real PNG that
+`LoadLut` resolves and loads via `IMG_Load` at preset-load time — yet nothing
+in the log ever names that file.
+
+Engine side: the only log line on the texture path is the failure string
+(`IMG_Load failed: ...`, `preset_runner.cpp:911` — exactly how the round-12
+`libjpeg-9.dll` gap surfaced). The success path (resolve → `IMG_Load` →
+convert → create → upload, lines 909-990) returns silently. Consequences:
+(a) a successfully loaded JPEG/PNG LUT leaves no positive trace, so round-13's
+"all 6 bezel textures load (PNG+JPG)" was an *inference* (preset loaded ok +
+zero IMG_Load errors), not an observation; (b) the audit tooling reads the
+same logs — `field_log_digest.py` populates its `pngs` set only from `.png`
+substrings inside cache-hit/pass lines (regexes at lines 44/62, adds at
+163/173), and engine log lines never contain texture file paths (cache lines
+carry shader paths, pass lines carry sampler names), so `PNG textures: none`
+is a constant and the "PNG LUTs loaded:" notables branch (lines 282-283) can
+never fire. Note the digest's pass-line branch would even attribute a
+hypothetical `.png` match to the *shader* path basename (`m.group(2)`).
+
+**Proposed fix (2 small changes; not applied code-side per convention).**
+Engine, in `LoadLut` before `return true`:
+`SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GPU scaler preset: texture '%s' = %s (%ux%u)", lut.def.name.c_str(), path.c_str(), lut.width, lut.height);`
+Digest: add
+`RE_TEXLOAD = re.compile(r"GPU scaler preset: texture '([^']+)' = (\S+) \((\d+)x(\d+)")`,
+feed the basename (extension-aware) into the texture set on match, and report
+PNG/JPG separately in the summary line. Until the engine line ships, treat the
+digest's `PNG textures:` field as evidence of nothing — the round-14 ledger
+notes deliberately avoid citing it.
