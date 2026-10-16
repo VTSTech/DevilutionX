@@ -709,6 +709,24 @@ TranslateSlang unit corpora over real packs, headless software-Vulkan runner tes
 backlog scope per the audit; `preset_failure_modes` (37 checks) continues to cover the
 hostile-input layer.
 
+**Fixup (r7.6.2, 2026-10-16, same day).** The ctest geometry above had a flaw the round-5
+verification could not see (it ran the harness standalone with SDL stubbed and the shader
+root pointed at the corpus): the `preset_smoke` executable itself landed at
+`<build>/Source/preset_smoke` — `Source/CMakeLists.txt` never set a `RUNTIME_OUTPUT_DIRECTORY`,
+unlike every other test executable — so on CI `SDL_GetBasePath()` (which follows the exe)
+put the SEC-01 shader root at `<build>/Source/shaders`, and the corpus copied to
+`<build>/shaders/.preset-smoke/` failed `IsPathInsideShaderRoot()`: all five good presets
+died at translate ("cannot open shader file") and `preset_smoke_corpus` went red on its
+first real CI execution, while `preset_smoke_malformed` stayed green (the `--expect-fail`
+contract is "every preset fails with a non-empty error string" — still satisfied). Fix:
+`preset_smoke` now gets `RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}` (same convention as
+`preset_failure_modes_test` and the gtest targets), so the exe sits at the build root, the
+shader root is `<build>/shaders`, and the corpus is inside it. Verified both sides at CI
+parity: pre-fix baseline reproduced (good corpus 0 ok / 5 failed, exit 1; malformed met),
+post-fix good corpus 5 ok / 8 passes / exit 0 with malformed still met, and the generated
+`CTestTestfile.cmake` registers the test against `<build>/preset_smoke`. Corpus, fixtures,
+harness, and the SEC-01 sandbox itself are untouched.
+
 
 ---
 

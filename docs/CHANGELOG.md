@@ -12,6 +12,29 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-a0cbeccb6 (2026-10-15 7:47:42 PM)
+
+Hotfix on top of the round-7 audit patch stack: the Linux CI test job's first
+real execution of the preset smoke corpus (shadowed since it landed by the
+r7.5 compile break, which died before the Test step, and unblocked by the
+r7.6 void-API fix) failed `preset_smoke_corpus`.
+
+### Fixed
+
+#### Tests
+
+- `preset_smoke_corpus` is green again: the `preset_smoke` test binary now
+  builds into the build root (`RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}`),
+  matching the convention of every other test executable. `SDL_GetBasePath()`
+  follows the binary's location, so from `build/Source/` the SEC-01 shader
+  root resolved to `build/Source/shaders` and the corpus copied to
+  `build/shaders/.preset-smoke/` fell outside it — every good-corpus preset
+  failed at translate with "cannot open shader file" (ctest exit 8, one test
+  in the FAILED list). `preset_smoke_malformed` was and stays green: its
+  `--expect-fail` contract is that every preset fails cleanly with a
+  non-empty error, which the sandbox breakage still satisfied. Corpus,
+  fixtures, harness, and the SEC-01 sandbox are unchanged.
+
 ## 1.6.0-dev-98357ff (2026-10-15 7:01:14 PM)
 
 Round 7 of the audit re-walked the entire mod with fresh eyes - scaler/present
