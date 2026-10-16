@@ -850,8 +850,13 @@ void ReinitializeRenderer()
 	    && gpu_scaler::ScalerWanted() && !gpu_scaler::HasFailed();
 	if (!scalerWanted && gpu_scaler::IsActive()) {
 		// Presentation is handed back to the regular renderer (or the
-		// palettized non-upscale path below); shut the scaler down.
-		gpu_scaler::Shutdown();
+		// palettized non-upscale path below). ROB-26: hand the window
+		// back WITHOUT destroying the GPU device on this stack - the
+		// synchronous Vulkan teardown here (right before the window is
+		// recreated and reclaimed by the D3D11 renderer) is the
+		// field-crashing sequence on Windows. The device is parked and
+		// destroyed at a quiescent point (quit / next Shutdown).
+		gpu_scaler::HandbackWindow(ghMainWnd);
 	}
 	if (scalerWanted) {
 		// The GPU scaler replaces the SDL_Renderer presentation path.

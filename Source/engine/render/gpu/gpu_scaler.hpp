@@ -69,6 +69,26 @@ bool Reinit(SDL_Window *window);
 void Shutdown();
 
 /**
+ * @brief Hands the window back to the regular renderer WITHOUT destroying the
+ * GPU device: releases the swapchain claim and every filter/preset resource,
+ * marks the scaler inactive (IsActive() goes false immediately), and PARKS
+ * the device for deferred destruction.
+ *
+ * Used by the presentation hand-back path (Shaders -> Off and fallbacks).
+ * Destroying the device synchronously inside that switch — Vulkan teardown
+ * immediately followed by window recreation and a D3D11 reclaim on Windows —
+ * is the field-crashing call sequence (ROB-26): the GPU backend priority is
+ * D3D12 > Vulkan on Windows, so this stack only ever started running once the
+ * forced-Vulkan retry (ROB-18) made the scaler work there, which is why the
+ * unload path appeared "newly broken" when it had in fact never worked.
+ *
+ * The parked device is destroyed by the next Shutdown() (quit / dx_cleanup),
+ * or transparently reused by the next Reinit() (re-selecting a shader just
+ * re-claims a fresh window on it and reloads filter resources).
+ */
+void HandbackWindow(SDL_Window *window);
+
+/**
  * @brief Presents the given RGBA frame (game resolution) with the active
  * shader filter. Blocks for vsync when configured.
  */

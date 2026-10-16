@@ -959,6 +959,52 @@ void Shutdown()
 	// are never reused, so the stale ID cannot match a future window.
 }
 
+void HandbackWindow(SDL_Window *window)
+{
+	LogFileLine("HandbackWindow: handing the window back to the regular renderer (device teardown deferred)");
+	if (gDevice == nullptr) {
+		gWindow = nullptr;
+		gFilter = ShaderFilter::None;
+		return;
+	}
+	// Release exactly what Shutdown() releases, minus the device itself.
+	// All of these run against a live device while the window is still
+	// alive - well-defined operations, unlike SDL_DestroyGPUDevice landing
+	// in the middle of the switch stack (see gpu_scaler.hpp).
+	ReleaseFrameResources();
+	ReleaseFilterResources();
+	gPresetRunner.Unload();
+	gLoadedPresetPath.clear();
+	gPresetDisplayName.clear();
+	if (gNearestSampler != nullptr) {
+		SDL_ReleaseGPUSampler(gDevice, gNearestSampler);
+		gNearestSampler = nullptr;
+	}
+	if (gLinearSampler != nullptr) {
+		SDL_ReleaseGPUSampler(gDevice, gLinearSampler);
+		gLinearSampler = nullptr;
+	}
+	if (gWindow != nullptr) {
+		// SDL has no window-destroy auto-release for GPU claims (no
+		// WINDOWEVENT hook in SDL_gpu.c): release explicitly while the
+		// window is still alive, BEFORE the caller recreates it.
+		SDL_ReleaseWindowFromGPUDevice(gDevice, gWindow);
+		gWindow = nullptr;
+	}
+	(void)window;
+	gFilter = ShaderFilter::None;
+	gShaderFormat = SDL_GPU_SHADERFORMAT_INVALID;
+	gBlitPipelineFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+	// ROB-26: gDevice intentionally left ALIVE and parked, and
+	// gLastClaimedWindowId intentionally kept (the hand-back flow still
+	// needs WindowHasSwapchainHistory to recreate the DXGI-poisoned
+	// window). The parked device holds no filter/frame/swapchain
+	// resources from here on. Destroyed by the next Shutdown() (quit /
+	// dx_cleanup) or reused by the next Reinit(); IsActive() is already
+	// false (gWindow == nullptr && gFilter == None), so every game path
+	// falls back to the regular renderer immediately.
+}
+
 void PresentFrame(const SDL_Surface &frame)
 {
 	if (!IsActive())

@@ -1229,3 +1229,71 @@ feed the basename (extension-aware) into the texture set on match, and report
 PNG/JPG separately in the summary line. Until the engine line ships, treat the
 digest's `PNG textures:` field as evidence of nothing — the round-14 ledger
 notes deliberately avoid citing it.
+
+## ROB-26 — CLOSED: Synchronous GPU-device teardown inside the Shaders→Off switch — the hand-back stack never worked on Windows (field bisection false negative)
+
+| Property | Value |
+|----------|-------|
+| **Severity** | High |
+| **Category** | Robustness / field regression |
+| **Original location** | `Source/utils/display.cpp` (`ReinitializeRenderer` hand-back branch), `Source/engine/render/gpu/gpu_scaler.cpp` (`Shutdown`), `Source/engine/render/gpu/gpu_scaler.hpp` |
+
+**Field evidence re-interpretation (2026-10-17, after cf4bbd519 still CTD'd).** The
+user's bisection (d5ca0c0 good → b2eabc618 bad) was treated as a code regression in
+the unload path, and ROB-19's hidden-create window transition was shipped as the fix.
+cf4bbd519 (which contains it) still CTDs, which re-opened the window and exposed the
+real mechanism: SDL3-GPU's backend priority is **D3D12 before Vulkan on Windows**
+(`SDL_gpu.c` `backends[]`: METAL → D3D12 → VULKAN). At d5ca0c0 the whitelist in
+`CreateDevice` accepted only `{vulkan, metal}`, so a Windows box auto-selecting d3d12
+hit `LogFailHard("unsupported GPU driver: d3d12")` and **the scaler never activated at
+all** — shaders could not render, and "switching Shaders to Off" exercised nothing but
+the renderer-only path. d5ca0c0's "good" was a **false negative**: the hand-back stack
+(synchronous `SDL_DestroyGPUDevice` → window recreation → D3D11 reclaim, all inside the
+settings-switch call frame) had never once executed on that machine. ROB-18's
+forced-Vulkan retry (b2eabc618) made the scaler work there for the first time, and the
+'Off' switch immediately started crashing — not because the audit broke the switch,
+but because the switch's device-teardown half became reachable. This is consistent
+with the ROB-19 fix being correct for its own finding yet insufficient for the field
+crash, and with the unload-only-when-loaded symptom.
+
+**Mechanism.** On 'Off' with a shader active, `ReinitializeRenderer` ran
+`gpu_scaler::Shutdown()` synchronously: `SDL_ReleaseWindowFromGPUDevice` +
+`SDL_DestroyGPUDevice` (full Vulkan swapchain/device teardown) microseconds before
+`RecreateMainRenderWindow` (window destroy/create) and `SDL_CreateRenderer` (D3D11
+reclaim of a fresh HWND). Whatever the exact faulting frame inside that driver-churn
+stack, it is SDL/driver-internal interplay we do not control; the contract requires
+the switch to degrade gracefully, not to bet on it.
+
+**Resolution (deferred device teardown).** New `gpu_scaler::HandbackWindow(window)`
+does everything `Shutdown()` does **except** `SDL_DestroyGPUDevice`: releases frame
+and filter resources, unloads the preset runner, releases the samplers, releases the
+window claim explicitly **while the window is still alive** (SDL_gpu has no
+window-destroy auto-release hook), nulls `gWindow`/`gFilter`, and leaves
+`gLastClaimedWindowId` intact (the hand-back flow still needs
+`WindowHasSwapchainHistory` to recreate the DXGI-poisoned window). `IsActive()` is
+false immediately (`gWindow == nullptr && gFilter == None`), so every game path falls
+back to the regular renderer at once. The parked, resource-less device is destroyed by
+the next `Shutdown()` (quit / `dx_cleanup` — both call sites verified) or transparently
+**reused** by the next `Reinit()` (re-selecting a shader re-claims a fresh window on
+it and reloads filter resources — the exact Load→Unload→reload lifecycle
+`preset_unload_test` round 2 exercises). `ReinitializeRenderer` now calls
+`HandbackWindow(ghMainWnd)` in the hand-back branch instead of `Shutdown()`. The
+failure-path `Shutdown()` calls inside `Reinit()` are unchanged: they only run on
+filter-resource failures, not on the user-facing switch.
+
+**Cost / residual risk.** While parked, the process holds one idle GPU device with no
+swapchain, pipelines, targets, or sampler state — a few MB at most, freed at quit or
+recycled on the next shader selection. If the crash turns out to live inside
+`SDL_ReleaseWindowFromGPUDevice` itself (the only GPU SDL call remaining on the switch
+stack), the log now brackets it exactly ("HandbackWindow: ..." line); the next
+diagnostic step would be releasing the claim from a deferred point as well.
+
+**Verification.** Static: parked state satisfies `IsActive()==false`,
+`Shutdown()` handles it via its existing null-guards, `Reinit()` re-claims on the
+parked device without `CreateDevice`, and the hand-back window recreation gate
+(`WindowHasSwapchainHistory`) is unaffected. Field: awaiting user CI build — the
+switch should now log `HandbackWindow: ...` → `Recreating the main window ...` and
+continue with a working D3D11 renderer; `gpu-scaler.log` will name the failing frame
+if any remains.
+
+---
