@@ -12,6 +12,115 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)
+
+Round 8 of the audit shipped the three presentation-surface Mediums that opened the
+short-term queue — ROB-18, ROB-19, ROB-22 — as one bounded patch, cutting the open
+ledger from 44 to 41 findings (**0 High / 11 Medium / 30 Low**). The rest of the
+window is planning and documentation: the upstream merge plan went out as drafts r1
+and r2 (8-PR ladder with Phase-0 audit gates, shared with the diasurgical
+maintainers, reply pending), the Vulkan field-sweep coverage landed as a committed
+CSV, and the maintainer handoff was consolidated. The Linux CI test-geometry fix
+(r7.6.2) also landed inside this window and carries its own full entry below
+(`1.6.0-dev-a0cbeccb6`).
+
+### Fixed
+
+#### GPU scaler
+
+- **ROB-18** — an unsupported *auto-selected* GPU backend no longer hard-fails the
+  session: `CreateDevice` now retries once with the explicit `"vulkan"` backend
+  whenever its driver whitelist rejects the runtime's pick (on Windows, SDL's
+  default selection order can yield `d3d12` — a SPIR-V-declaring backend per SDL —
+  which previously left the scaler dead for the whole session unless
+  `DEVILUTIONX_GPU_BACKEND=vulkan` was set by hand). The rejected device is
+  destroyed and the property set rebuilt by a new `BuildDeviceProperties` helper
+  (one shared implementation for both attempts), and the session continues on
+  Vulkan with SPIR-V shaders. An explicit `DEVILUTIONX_GPU_BACKEND` value or
+  forced name is still honored as-is (no auto-retry — the override exists to
+  troubleshoot one specific backend), with a log line saying so, and a
+  belt-and-braces check covers an explicitly named backend ever coming back
+  unlisted. The old double-log is gone: `CreateDevice` no longer calls
+  `LogFailHard`/`Shutdown` itself; only the caller records the hard failure, once.
+  Success-path behavior for vulkan/metal-selected devices is byte-identical.
+
+#### Window / renderer lifecycle
+
+- **ROB-19** — `RecreateMainRenderWindow` creates the replacement window *before*
+  destroying the old one, so a failed `SDL_CreateWindow` on the fallback-of-the-
+  fallback path (GPU-failure fallback in `RenderPresent` → `ReinitializeRenderer`)
+  keeps the existing window alive, logs the SDL error, and returns `false` instead
+  of taking the game down through a fatal `ErrSdl()` — followed, previously, by a
+  second one from `SDL_GetWindowSurface(nullptr)` on the next frame. `ghMainWnd`
+  can therefore never be left null by the function, both callers continue with a
+  live window on the stock renderer path, and the game only dies when it is left
+  with no window at all. The success path is order-swapped but otherwise identical.
+
+#### Virtual gamepad (touch)
+
+- **ROB-22** — the second half of the ROB-14 use-after-free family: virtual-gamepad
+  textures no longer dangle across scaler activation. The scaler-activation branch
+  now calls `FreeVirtualGamepadTextures()` immediately before
+  `SDL_DestroyRenderer(renderer)` (mirroring `dx_cleanup`'s ordering and the ROB-14
+  `texture` handling), so the handles are destroyed while their renderer is still
+  alive instead of the next `FreeVirtualGamepadTextures()` running
+  `SDL_DestroyTexture` on freed memory. And the renderer-creation site in
+  `ReinitializeRenderer` re-runs `InitVirtualGamepadGFX()` +
+  `InitVirtualGamepadTextures(*renderer)` after every fresh renderer, so the
+  GPU-failure fallback renders the gamepad against textures created from the
+  *current* renderer — with the art reload covering the common case where
+  `createTextures` already consumed the source surfaces (the extra calls are no-ops
+  in the steady state). Filter toggles and fallbacks now restore the touch UI
+  instead of leaving dangling handles or a permanently missing gamepad; desktop
+  builds are unaffected (the virtual gamepad is never created there).
+
+### Added
+
+#### Upstream merge track (planning — nothing scaffolded, no PRs opened)
+
+- `docs/merge-plan-draft-r1.md` and `docs/merge-plan-draft-r2.md` (r2 supersedes
+  r1): a plan-first, phased 8-PR ladder for carrying the shader-preset pipeline
+  toward `diasurgical/DevilutionX`, answering AJenbo's merge conditions with facts
+  (no SDL patching — SDL3 core byte-identical; functional PRs one at a time). r2
+  adds the audit-closure gate, per-PR readiness gates, and a noise-control policy:
+  every proposed PR is gated on the open findings that share its files, with
+  closure ordered into three Phase-0 sweeps — **8A** library surface (ROB-20/21,
+  PERF-06, MAINT-15, plus the `gpu/preset/*` cluster), **8B** presentation surface
+  (ROB-08, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03 — ROB-18/19/22 closed
+  this window), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17,
+  PERF-02) — and first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the
+  open Mediums. The plan was shared with the upstream maintainers on October 16,
+  2026 and is awaiting their reply; whether or not any PR ever merges, the
+  long-term goal is unchanged — full audit closure, then a standalone reusable
+  shader-preset library (handoff §14).
+
+#### Field-sweep coverage
+
+- `docs/audit/vulkan-coverage-2026-10-15.csv`: per-preset Vulkan coverage from the
+  field sweep, committed alongside updates to
+  `docs/audit/shader-test-list-2026-10-15.md` — pass counts, load/cache timings,
+  dwell times, and the first mipmap + live `PassFeedback` confirmations
+  (`reshade/magicbloom.slangp`: mip chains on pass outputs 0–10, adapt-ring
+  feedback, 12 passes).
+
+### Changed
+
+#### Audit ledger
+
+- `audit.md` re-headed to round 8; ROB-18/19/22 move from the open Medium list to
+  [deltas.md](deltas.md) with full closure records (verification: both touched TUs
+  clean under `clang-format 18.1.8`, the CI-pinned version, and warning-free under
+  the project's Release flags). Open ledger: **41 findings — 0 High / 11 Medium /
+  30 Low**.
+
+#### Documentation
+
+- `docs/diablo-handoff.md` consolidated (net −728 lines), restructured around the
+  merge track (§14); README and `docs/brief.md` updated for the merge-track
+  addendum; `docs/SLANG_SPEC.md` gap #13 (`#reference` multi-chain order) marked
+  resolved — comment-side fix (`ca02abf856`), last-wins behavior documented, no
+  corpus preset relies on the order.
+
 ## 1.6.0-dev-a0cbeccb6 (2026-10-15 7:47:42 PM)
 
 Hotfix on top of the round-7 audit patch stack: the Linux CI test job's first
