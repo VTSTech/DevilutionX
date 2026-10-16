@@ -48,187 +48,187 @@ int gFailures = 0;
 
 void Check(bool ok, const std::string &what)
 {
-        if (ok) {
-                std::printf("  ok: %s\n", what.c_str());
-        } else {
-                ++gFailures;
-                std::printf("  FAIL: %s\n", what.c_str());
-        }
+	if (ok) {
+		std::printf("  ok: %s\n", what.c_str());
+	} else {
+		++gFailures;
+		std::printf("  FAIL: %s\n", what.c_str());
+	}
 }
 
 struct TestCase {
-        const char *presetName;
-        int frames;
+	const char *presetName;
+	int frames;
 };
 
 /** Loads, runs `frames` frames, unloads. Returns false on any failure. */
 bool LoadRunUnload(SDL_GPUDevice *device, const preset::Preset &parsed, const char *name, int frames)
 {
-        preset::Runner runner;
-        std::string error;
-        if (!runner.Load(device, "vulkan", parsed, error)) {
-                Check(false, std::string(name) + ": Load failed: " + error);
-                return false;
-        }
-        Check(runner.IsLoaded(), std::string(name) + ": loaded");
+	preset::Runner runner;
+	std::string error;
+	if (!runner.Load(device, "vulkan", parsed, error)) {
+		Check(false, std::string(name) + ": Load failed: " + error);
+		return false;
+	}
+	Check(runner.IsLoaded(), std::string(name) + ": loaded");
 
-        bool runOk = true;
-        for (int i = 0; i < frames && runOk; ++i) {
-                // A small synthetic "game frame" source texture.
-                SDL_GPUTextureCreateInfo texInfo {};
-                texInfo.type = SDL_GPU_TEXTURETYPE_2D;
-                texInfo.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-                texInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                texInfo.width = 320;
-                texInfo.height = 240;
-                texInfo.layer_count_or_depth = 1;
-                texInfo.num_levels = 1;
-                SDL_GPUTexture *gameTex = SDL_CreateGPUTexture(device, &texInfo);
-                if (gameTex == nullptr) {
-                        Check(false, std::string(name) + ": source texture creation failed: " + SDL_GetError());
-                        runOk = false;
-                        break;
-                }
-                SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
-                if (cmd == nullptr) {
-                        Check(false, std::string(name) + ": command buffer acquisition failed: " + SDL_GetError());
-                        SDL_ReleaseGPUTexture(device, gameTex);
-                        runOk = false;
-                        break;
-                }
-                SDL_GPUTexture *outTex = nullptr;
-                Uint32 outW = 0;
-                Uint32 outH = 0;
-                const bool frameOk = runner.Run(cmd, gameTex, 320, 240, 640, 480, 16667, &outTex, &outW, &outH);
-                // Fence-submit so the unload below happens with the resources warm
-                // but no longer in flight (the field sequence presents a menu frame
-                // right up to the option switch).
-                SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
-                if (fence != nullptr) {
-                        SDL_WaitForGPUFences(device, true, &fence, 1);
-                        SDL_ReleaseGPUFence(device, fence);
-                } else {
-                        Check(false, std::string(name) + ": SubmitGPUCommandBufferAndAcquireFence failed: " + SDL_GetError());
-                        runOk = false;
-                }
-                // The output texture is owned by the runner; the source is ours.
-                SDL_ReleaseGPUTexture(device, gameTex);
-                if (!frameOk) {
-                        // Soft-fail frames are allowed by the contract but logged; a
-                        // crash would have taken us down before this line.
-                        std::printf("  note: %s frame %d skipped (Run returned false)\n", name, i);
-                }
-        }
-        if (frames > 0)
-                Check(runOk, std::string(name) + ": ran " + std::to_string(frames) + " frames");
+	bool runOk = true;
+	for (int i = 0; i < frames && runOk; ++i) {
+		// A small synthetic "game frame" source texture.
+		SDL_GPUTextureCreateInfo texInfo {};
+		texInfo.type = SDL_GPU_TEXTURETYPE_2D;
+		texInfo.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+		texInfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+		texInfo.width = 320;
+		texInfo.height = 240;
+		texInfo.layer_count_or_depth = 1;
+		texInfo.num_levels = 1;
+		SDL_GPUTexture *gameTex = SDL_CreateGPUTexture(device, &texInfo);
+		if (gameTex == nullptr) {
+			Check(false, std::string(name) + ": source texture creation failed: " + SDL_GetError());
+			runOk = false;
+			break;
+		}
+		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
+		if (cmd == nullptr) {
+			Check(false, std::string(name) + ": command buffer acquisition failed: " + SDL_GetError());
+			SDL_ReleaseGPUTexture(device, gameTex);
+			runOk = false;
+			break;
+		}
+		SDL_GPUTexture *outTex = nullptr;
+		Uint32 outW = 0;
+		Uint32 outH = 0;
+		const bool frameOk = runner.Run(cmd, gameTex, 320, 240, 640, 480, 16667, &outTex, &outW, &outH);
+		// Fence-submit so the unload below happens with the resources warm
+		// but no longer in flight (the field sequence presents a menu frame
+		// right up to the option switch).
+		SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+		if (fence != nullptr) {
+			SDL_WaitForGPUFences(device, true, &fence, 1);
+			SDL_ReleaseGPUFence(device, fence);
+		} else {
+			Check(false, std::string(name) + ": SubmitGPUCommandBufferAndAcquireFence failed: " + SDL_GetError());
+			runOk = false;
+		}
+		// The output texture is owned by the runner; the source is ours.
+		SDL_ReleaseGPUTexture(device, gameTex);
+		if (!frameOk) {
+			// Soft-fail frames are allowed by the contract but logged; a
+			// crash would have taken us down before this line.
+			std::printf("  note: %s frame %d skipped (Run returned false)\n", name, i);
+		}
+	}
+	if (frames > 0)
+		Check(runOk, std::string(name) + ": ran " + std::to_string(frames) + " frames");
 
-        runner.Unload();
-        Check(!runner.IsLoaded(), std::string(name) + ": unloaded");
-        return runOk;
+	runner.Unload();
+	Check(!runner.IsLoaded(), std::string(name) + ": unloaded");
+	return runOk;
 }
 
 } // namespace
 
 int main(int argc, char **argv)
 {
-        std::string root = "shaders/unload-corpus";
-        for (int i = 1; i < argc; ++i) {
-                const std::string arg = argv[i];
-                if (arg == "--root" && i + 1 < argc)
-                        root = argv[++i];
-        }
+	std::string root = "shaders/unload-corpus";
+	for (int i = 1; i < argc; ++i) {
+		const std::string arg = argv[i];
+		if (arg == "--root" && i + 1 < argc)
+			root = argv[++i];
+	}
 
-        std::printf("preset_unload_test: shader root: %s\n", root.c_str());
+	std::printf("preset_unload_test: shader root: %s\n", root.c_str());
 
-        if (!SDL_Init(SDL_INIT_VIDEO)) {
-                // Headless box: SDL3 probed wayland/x11/... and found nothing
-                // usable. SDL3 does NOT fall back to the "dummy" driver on its
-                // own, and the dummy driver could not help anyway - it has no
-                // Vulkan hooks, so SDL_CreateGPUDevice would fail with
-                // "Vulkan support is either not configured or unavailable".
-                // Nothing to exercise here - skip cleanly (exit 0), same
-                // policy as the no-device / no-corpus paths below. CI runs
-                // this under Xvfb + lavapipe for real coverage.
-                std::printf("SKIP: no usable video driver (%s) - this harness needs a display server (e.g. Xvfb) whose video driver has Vulkan hooks\n", SDL_GetError());
-                SDL_Quit();
-                return 0;
-        }
+	if (!SDL_Init(SDL_INIT_VIDEO)) {
+		// Headless box: SDL3 probed wayland/x11/... and found nothing
+		// usable. SDL3 does NOT fall back to the "dummy" driver on its
+		// own, and the dummy driver could not help anyway - it has no
+		// Vulkan hooks, so SDL_CreateGPUDevice would fail with
+		// "Vulkan support is either not configured or unavailable".
+		// Nothing to exercise here - skip cleanly (exit 0), same
+		// policy as the no-device / no-corpus paths below. CI runs
+		// this under Xvfb + lavapipe for real coverage.
+		std::printf("SKIP: no usable video driver (%s) - this harness needs a display server (e.g. Xvfb) whose video driver has Vulkan hooks\n", SDL_GetError());
+		SDL_Quit();
+		return 0;
+	}
 
-        // Same property set the scaler's CreateDevice uses (SPIR-V for Vulkan).
-        SDL_PropertiesID props = SDL_CreateProperties();
-        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
-        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
-        SDL_GPUDevice *device = SDL_CreateGPUDeviceWithProperties(props);
-        SDL_DestroyProperties(props);
-        if (device == nullptr) {
-                // Headless CI boxes have no Vulkan loader/ICD: the device half of the
-                // lifecycle cannot be exercised there. Skip cleanly (exit 0) so the
-                // suite stays green; run on a GPU-enabled (or lavapipe) runner for the
-                // real regression coverage.
-                std::printf("SKIP: no usable Vulkan device (%s)\n", SDL_GetError());
-                SDL_Quit();
-                return 0;
-        }
-        const char *driver = SDL_GetGPUDeviceDriver(device);
-        std::printf("GPU device created, backend=%s\n", driver != nullptr ? driver : "unknown");
+	// Same property set the scaler's CreateDevice uses (SPIR-V for Vulkan).
+	SDL_PropertiesID props = SDL_CreateProperties();
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+	SDL_GPUDevice *device = SDL_CreateGPUDeviceWithProperties(props);
+	SDL_DestroyProperties(props);
+	if (device == nullptr) {
+		// Headless CI boxes have no Vulkan loader/ICD: the device half of the
+		// lifecycle cannot be exercised there. Skip cleanly (exit 0) so the
+		// suite stays green; run on a GPU-enabled (or lavapipe) runner for the
+		// real regression coverage.
+		std::printf("SKIP: no usable Vulkan device (%s)\n", SDL_GetError());
+		SDL_Quit();
+		return 0;
+	}
+	const char *driver = SDL_GetGPUDeviceDriver(device);
+	std::printf("GPU device created, backend=%s\n", driver != nullptr ? driver : "unknown");
 
-        // Parse every good-corpus preset once up front; skip this whole test
-        // cleanly if the corpus is missing (e.g. corpus copy step not run).
-        const char *corpus[] = {
-                "single.slangp",
-                "multipass.slangp",
-                "feedback.slangp",
-                "history.slangp",
-                "lut.slangp",
-        };
-        std::vector<std::pair<const char *, preset::Preset>> parsed;
-        for (const char *name : corpus) {
-                const std::string path = root + "/" + name;
-                preset::Preset p;
-                std::string error;
-                if (!preset::ParsePreset(path, p, error)) {
-                        std::printf("note: corpus preset %s unavailable (%s) - skipping\n", name, error.c_str());
-                        continue;
-                }
-                parsed.emplace_back(name, std::move(p));
-        }
-        if (parsed.empty()) {
-                // Corpus not staged (copy step not run): nothing to exercise here.
-                std::printf("SKIP: no corpus presets parsed from %s\n", root.c_str());
-                SDL_DestroyGPUDevice(device);
-                SDL_Quit();
-                return 0;
-        }
+	// Parse every good-corpus preset once up front; skip this whole test
+	// cleanly if the corpus is missing (e.g. corpus copy step not run).
+	const char *corpus[] = {
+		"single.slangp",
+		"multipass.slangp",
+		"feedback.slangp",
+		"history.slangp",
+		"lut.slangp",
+	};
+	std::vector<std::pair<const char *, preset::Preset>> parsed;
+	for (const char *name : corpus) {
+		const std::string path = root + "/" + name;
+		preset::Preset p;
+		std::string error;
+		if (!preset::ParsePreset(path, p, error)) {
+			std::printf("note: corpus preset %s unavailable (%s) - skipping\n", name, error.c_str());
+			continue;
+		}
+		parsed.emplace_back(name, std::move(p));
+	}
+	if (parsed.empty()) {
+		// Corpus not staged (copy step not run): nothing to exercise here.
+		std::printf("SKIP: no corpus presets parsed from %s\n", root.c_str());
+		SDL_DestroyGPUDevice(device);
+		SDL_Quit();
+		return 0;
+	}
 
-        // Round 1: load / run / unload each preset on the shared device.
-        std::printf("\n-- round 1: load -> frames -> unload, per preset --\n");
-        for (const auto &[name, p] : parsed)
-                LoadRunUnload(device, p, name, 3);
+	// Round 1: load / run / unload each preset on the shared device.
+	std::printf("\n-- round 1: load -> frames -> unload, per preset --\n");
+	for (const auto &[name, p] : parsed)
+		LoadRunUnload(device, p, name, 3);
 
-        // Round 2: reload the first preset on the SAME device after unloads
-        // (the "switch presets / switch back" path), then unload again.
-        std::printf("\n-- round 2: reload after unload on the same device --\n");
-        LoadRunUnload(device, parsed.front().second, parsed.front().first, 1);
+	// Round 2: reload the first preset on the SAME device after unloads
+	// (the "switch presets / switch back" path), then unload again.
+	std::printf("\n-- round 2: reload after unload on the same device --\n");
+	LoadRunUnload(device, parsed.front().second, parsed.front().first, 1);
 
-        // Round 3: load -> unload WITHOUT any frames (the field sequence also
-        // allows unloading before the first present, e.g. a failed menu frame).
-        std::printf("\n-- round 3: load -> unload with zero frames --\n");
-        LoadRunUnload(device, parsed.front().second, parsed.front().first, 0);
+	// Round 3: load -> unload WITHOUT any frames (the field sequence also
+	// allows unloading before the first present, e.g. a failed menu frame).
+	std::printf("\n-- round 3: load -> unload with zero frames --\n");
+	LoadRunUnload(device, parsed.front().second, parsed.front().first, 0);
 
-        // ROB-27 regression: the menu-context gamepad art reload must not
-        // touch the item-cursor CLX (pCursCels is empty outside a game
-        // session). This is the exact call sequence ReinitializeRenderer's
-        // regular-renderer branch performs when Shaders is switched Off in
-        // the main menu; before the fix it dereferenced a null CLX pointer
-        // and killed the process.
-        std::printf("\n-- round 4: menu-context InitVirtualGamepadGFX (ROB-27) --\n");
-        devilution::InitVirtualGamepadGFX();
-        devilution::FreeVirtualGamepadGFX();
-        std::printf("  ok: menu-context gamepad art reload survived\n");
+	// ROB-27 regression: the menu-context gamepad art reload must not
+	// touch the item-cursor CLX (pCursCels is empty outside a game
+	// session). This is the exact call sequence ReinitializeRenderer's
+	// regular-renderer branch performs when Shaders is switched Off in
+	// the main menu; before the fix it dereferenced a null CLX pointer
+	// and killed the process.
+	std::printf("\n-- round 4: menu-context InitVirtualGamepadGFX (ROB-27) --\n");
+	devilution::InitVirtualGamepadGFX();
+	devilution::FreeVirtualGamepadGFX();
+	std::printf("  ok: menu-context gamepad art reload survived\n");
 
-        SDL_DestroyGPUDevice(device);
-        SDL_Quit();
+	SDL_DestroyGPUDevice(device);
+	SDL_Quit();
 
-        std::printf("\n%s (%d failures)\n", gFailures == 0 ? "ALL OK" : "FAILURES", gFailures);
-        return gFailures == 0 ? 0 : 1;
+	std::printf("\n%s (%d failures)\n", gFailures == 0 ? "ALL OK" : "FAILURES", gFailures);
+	return gFailures == 0 ? 0 : 1;
 }

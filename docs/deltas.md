@@ -1238,6 +1238,11 @@ notes deliberately avoid citing it.
 | **Category** | Robustness / field regression |
 | **Original location** | `Source/utils/display.cpp` (`ReinitializeRenderer` hand-back branch), `Source/engine/render/gpu/gpu_scaler.cpp` (`Shutdown`), `Source/engine/render/gpu/gpu_scaler.hpp` |
 
+**ID note (round-10 re-head, 2026-10-17).** This record keeps **ROB-26**, matching the
+code comments shipped at 69be0cad5; the open Low finding that previously shared the
+number in audit.md (hard swapchain-acquire failure vs a minimized-window skip) was
+renumbered **ROB-30** in the same pass.
+
 **Field evidence re-interpretation (2026-10-17, after cf4bbd519 still CTD'd).** The
 user's bisection (d5ca0c0 good → b2eabc618 bad) was treated as a code regression in
 the unload path, and ROB-19's hidden-create window transition was shipped as the fix.

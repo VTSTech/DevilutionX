@@ -138,11 +138,18 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
 
 - [deltas.md](deltas.md) gains the closure records for ROB-20/21 (round 9) and
   the field regressions ROB-26/ROB-27, plus the ROB-19 field-regression addendum
-  (mechanism, fix, plan-B note). The audit.md open-list re-head for the field
-  closures is still pending — and note the field records' ROB-26 ID collides with
-  an existing open Low finding of the same number (the swapchain-acquire vs
-  minimized-window-skip finding); renumber at the next re-head. Open ledger per
-  the round-9 re-head: **40 findings — 0 High / 9 Medium / 31 Low**.
+  (mechanism, fix, plan-B note). At the round-10 re-head (2026-10-17, same docs
+  push as this entry) the ID collision is resolved the low-churn way: the field
+  records keep ROB-26/ROB-27 — matching the code comments shipped in 69be0cad5
+  and b0b4d5e0a — and the open Low finding that shared the number moves to
+  **ROB-30** (audit.md ledger + merge-plan-draft-r2.md's 8B row, with a renumber
+  note on both). Open count unchanged by the re-head: **40 findings — 0 High /
+  9 Medium / 31 Low**. A clang-format 18.1.8 (the CI-pinned version) pass over
+  every TU this window touched found all seven `Source/` TUs clean with line
+  endings and tab conventions byte-intact; the one offender was this window's
+  own `test/preset_unload_test.cpp`, space-indented since it landed — now
+  re-indented to `test/.clang-format` (169 lines, whitespace-only: `git diff -w`
+  is empty) so the CI format gate covers it cleanly.
 - `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
 
 ## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)

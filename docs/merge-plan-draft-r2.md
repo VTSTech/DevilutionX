@@ -135,8 +135,9 @@ TEST-04 (SPV drift diff in CI), PERF-05 (cache pruning + single-read).
 D3D12), ROB-19 (non-fatal `RecreateMainRenderWindow` on the fallback path),
 ROB-22 (virtual-gamepad texture lifecycle — free/re-init pairing designed before
 touching `ReinitializeRenderer`), FEAT-02 (Metal strategy resolved: fail fast with an
-honest message or validate MSL — one decision, one afternoon), ROB-26 (acquire-failure
-classification), MAINT-10 (log fallback to the user dir), PERF-01 (transfer-buffer ring,
+honest message or validate MSL — one decision, one afternoon), ROB-30 (acquire-failure
+classification; numbered ROB-26 when this draft was written — renumbered at the
+audit's round-10 re-head, 2026-10-17), MAINT-10 (log fallback to the user dir), PERF-01 (transfer-buffer ring,
 profile-gated), PERF-03 (dead work in the present path). **Dispositioned:** PERF-04
 (documented ceiling — informational), ROB-13 (known-documented; rides along only if
 display.cpp window math is touched anyway, as the audit pre-authorized).
@@ -282,7 +283,7 @@ Gate: whatever 8A left of ROB-29 lands here if the runtime path is accepted.
 | 2 translator | ROB-21, PERF-06 | ROB-20 (translator half, closed in 8A), MAINT-08, MAINT-09†, ROB-28† | **8A** |
 | 3 AOT + baked pack | MAINT-15 | SEC-03, ROB-29, TEST-04, PERF-05 (cache half) | **8A** |
 | 4 display seam | ROB-19, ROB-22 | ROB-13 (ride-along or stays documented) | **8B** |
-| 5 GPU scaler | ROB-08, ROB-18, FEAT-02 (disposition) | ROB-26, MAINT-10, PERF-01, PERF-03, PERF-04 (disposition) | **8B** |
+| 5 GPU scaler | ROB-08, ROB-18, FEAT-02 (disposition) | ROB-30, MAINT-10, PERF-01, PERF-03, PERF-04 (disposition) | **8B** |
 | 6 runner + smoke | ROB-07, ROB-23, TEST-06 | ROB-10, ROB-11, MAINT-17, PERF-02, SEC-03†, PERF-05† | **8C** |
 | 7 options/UI/docs | — | FEAT-03 (optional rider); MAINT-11 → upstream, never here | ladder order |
 | 8 runtime compile | — | ROB-29† remainder if any | maintainer decision |
