@@ -942,6 +942,31 @@ those three files would silently skip the A/B gate.
 re-runs whenever any part of the WAV diagnostics surface changes.
 ---
 
+## Round 7.6.1 — CI clang-format gate made green; round-7.5 verification record corrected (2026-10-16, no finding ID)
+
+**Original finding.** The round-7.5 summary claimed all five touched C++ files
+were clang-format-clean; that check ran with the wrong style resolution and was
+wrong for `gpu_scaler.cpp`: the batch's python rewrite had left the file with a
+whole-file indentation regression (LF line endings, so it slipped past the CRLF
+tripwire that caught `display.cpp`/`brief.md`), shipping ~870 webkit-style
+violations inside both the r7.5 and r7.6 overlays. A further 12 pre-existing
+violations sat in `soundsample.cpp` (present since the wav-fallback commit).
+
+**Resolution.** `clang-format -i` (18.1.8, `Source/.clang-format`) restored the
+canonical formatting: `gpu_scaler.cpp` is byte-clean and its diff vs master
+collapses from ~1,700 whitespace lines back to the surgical 38-line r7.5/6
+change set, and the 12 `soundsample.cpp` violations are gone. No finding is
+opened or closed by this entry — it corrects the round-7.5 verification record
+and unblocks the CI clang-format gate (round-7.5's partial-fix cross-notes for
+the still-open MAINT-09/MAINT-19 are unaffected).
+
+**Verification.** Both files are token-identical to their pre-format state
+(whitespace-only change, verified after stripping all whitespace), all touched
+TUs recompile, and a full 698-file sweep of both CI check-paths (`Source/`,
+`test/`) reports zero violations.
+
+---
+
 ## ROB-18 — CLOSED: Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it
 
 | Property | Value |
