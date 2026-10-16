@@ -8,6 +8,11 @@
 // The built-in ScaleFX/HQx filters (and their MSL/GLSL ports) were removed;
 // the Shader Filter option loads libretro slang presets instead, so only the
 // shared fullscreen-vertex and blit-fragment programs remain embedded here.
+//
+// FEAT-02 (2026-10-17): unwired. CreateDevice no longer accepts MSL, so this
+// header is not included anywhere; it is kept for a future validated Metal
+// path (see the deltas.md FEAT-02 closure record). Do not re-include it
+// without also re-accepting Metal at the device layer.
 
 #pragma once
 

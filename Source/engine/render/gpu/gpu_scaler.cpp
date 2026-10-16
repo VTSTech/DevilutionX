@@ -28,7 +28,6 @@
 #include "engine/render/gpu/gpu_shader_spv_prebuilt.hpp"
 #endif
 #include "engine/render/gpu/gpu_log_sanitize.hpp"
-#include "engine/render/gpu/gpu_shaders_msl.hpp"
 #include "engine/render/gpu/preset/preset_parser.hpp"
 #include "engine/render/gpu/preset/preset_runner.hpp"
 #include "engine/render/text_render.hpp"
@@ -345,15 +344,6 @@ ShaderCode SpvFor(Program program)
 	return { nullptr, 0 };
 }
 
-const char *MslFor(Program program)
-{
-	switch (program) {
-	case Program::Vertex: return gpu::msl::kVertex;
-	case Program::Blit: return gpu::msl::kBlit;
-	}
-	return nullptr;
-}
-
 int SamplersFor(Program program)
 {
 	switch (program) {
@@ -372,20 +362,11 @@ const char *NameFor(Program program)
 	return "unknown";
 }
 
-const char *MslEntryFor(Program program)
-{
-	switch (program) {
-	case Program::Vertex: return "fullscreenVS";
-	case Program::Blit: return "blitPS";
-	}
-	return "main";
-}
-
 bool CreateShader(Program program, SDL_GPUShaderStage stage, SDL_GPUShader **out)
 {
 	SDL_GPUShaderCreateInfo info {};
 	info.stage = stage;
-	info.entrypoint = (gShaderFormat == SDL_GPU_SHADERFORMAT_MSL) ? MslEntryFor(program) : "main";
+	info.entrypoint = "main";
 	info.num_samplers = (stage == SDL_GPU_SHADERSTAGE_FRAGMENT) ? SamplersFor(program) : 0;
 	info.num_uniform_buffers = (stage == SDL_GPU_SHADERSTAGE_FRAGMENT) ? 1 : 0;
 
@@ -395,12 +376,6 @@ bool CreateShader(Program program, SDL_GPUShaderStage stage, SDL_GPUShader **out
 		info.code = code.data;
 		info.code_size = code.size;
 		info.format = SDL_GPU_SHADERFORMAT_SPIRV;
-	} break;
-	case SDL_GPU_SHADERFORMAT_MSL: {
-		const char *source = MslFor(program);
-		info.code = reinterpret_cast<const uint8_t *>(source);
-		info.code_size = std::strlen(source);
-		info.format = SDL_GPU_SHADERFORMAT_MSL;
 	} break;
 	default:
 		return false;
@@ -739,7 +714,12 @@ static SDL_PropertiesID BuildDeviceProperties(bool debugDevice, const char *back
 	SDL_PropertiesID props = SDL_CreateProperties();
 	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debugDevice);
 	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
-	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+	// FEAT-02: MSL is deliberately not accepted. The hand-ported MSL for the
+	// shared programs (gpu_shaders_msl.hpp) was never field-validated and the
+	// preset runner submits SPIR-V only, so an MSL-capable device produced a
+	// session that deterministically failed at first preset load behind the
+	// generic error. Auto-selected Metal now gets an honest log line plus the
+	// ROB-18 Vulkan retry below (MoltenVK keeps the scaler available).
 	// Ask SDL to log the adapter name and driver version; the log capture
 	// installed below redirects these messages into the diagnostic file.
 	SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VERBOSE_BOOLEAN, true);
@@ -781,9 +761,14 @@ static bool CreateDevice(const char *name)
 	const char *driver = SDL_GetGPUDeviceDriver(gDevice);
 	if (driver != nullptr && std::strcmp(driver, "vulkan") == 0) {
 		gShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
-	} else if (driver != nullptr && std::strcmp(driver, "metal") == 0) {
-		gShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
 	} else {
+		if (driver != nullptr && std::strcmp(driver, "metal") == 0) {
+			// FEAT-02: say why, in the platform's own terms, instead of leaving
+			// the generic unsupported-driver line (or a later generic preset
+			// failure) to speak for all of macOS.
+			LogFileLine("GPU shader mod requires Vulkan; Metal is not yet supported - "
+			            "retrying Vulkan once (MoltenVK), then falling back to the stock renderer");
+		}
 		// ROB-18: the whitelist above is the set of backends the mod can drive,
 		// but SDL's auto-selection can still return something else (typically
 		// d3d12 on Windows, which SDL reports as a SPIR-V-capable backend). That
@@ -810,14 +795,13 @@ static bool CreateDevice(const char *name)
 		if (gDevice == nullptr)
 			return false;
 		driver = SDL_GetGPUDeviceDriver(gDevice);
-		if (driver != nullptr && std::strcmp(driver, "vulkan") == 0)
+		if (driver != nullptr && std::strcmp(driver, "vulkan") == 0) {
 			gShaderFormat = SDL_GPU_SHADERFORMAT_SPIRV;
-		else if (driver != nullptr && std::strcmp(driver, "metal") == 0)
-			gShaderFormat = SDL_GPU_SHADERFORMAT_MSL;
-		else {
+		} else {
 			// Belt and braces: an explicitly named backend should never come back
-			// as an unlisted driver. Same contract as before: the caller records
-			// the hard failure and the session reverts to the stock renderer.
+			// as an unlisted driver (and Metal is no longer accepted - FEAT-02).
+			// Same contract as before: the caller records the hard failure and
+			// the session reverts to the stock renderer.
 			SDL_DestroyGPUDevice(gDevice);
 			gDevice = nullptr;
 			return false;

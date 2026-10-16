@@ -113,10 +113,11 @@ additions with zero engine impact.
 ## 3. Phase 0 — audit-closure gate (new in r2)
 
 Current ledger: **44 open findings — 14 Medium, 30 Low, 0 High.** *(Ledger note,
-2026-10-17: rounds 8 and 9 have since closed five of these Medium — ROB-18/19/22 and
-ROB-20/21 — and added one Low, TEST-08; the live ledger in `audit.md` stands at 40
-open — 0 High / 9 Medium / 31 Low. Of the nine Medium owned by 8A+8B below, four
-remain: ROB-08, PERF-06, MAINT-15, and the FEAT-02 disposition.)* Phase 0 dispositions
+2026-10-17: rounds 8 and 9 closed five of these Medium — ROB-18/19/22 and ROB-20/21 —
+and one Low was added, TEST-08, taking the live ledger to 40; the round-11 sweep then
+closed MAINT-15 and the FEAT-02 disposition, leaving **38 open — 0 High / 7 Medium /
+31 Low** per `audit.md`. Of the nine Medium owned by 8A+8B below, two remain: ROB-08
+and PERF-06.)* Phase 0 dispositions
 all of them before/while the series opens. Nothing here is redesign work: every finding
 in the ledger already carries a concrete fix sketch, so Phase 0 is execution, not
 exploration. Three rounds, each scoped to unblock a specific slice of the ladder.
@@ -125,7 +126,7 @@ exploration. Three rounds, each scoped to unblock a specific slice of the ladder
 
 **Fixed:** ROB-20 (file-size caps + exception catch-all on the load path),
 ROB-21 (sampler name-dedupe), PERF-06 (translator scans made linear),
-MAINT-15 (pin CI glslang or bake with the vendored one), SEC-02 (ini-path containment),
+MAINT-15 (closed r11: CI bakes nothing — the committed header is the shipped blob), SEC-02 (ini-path containment),
 SEC-03 (sidecar `.spv` validation/logging), SEC-05 (byte-exact POSIX sandbox),
 SEC-06 (no pre-sandbox filesystem probe), ROB-12 (honest image-extension set),
 ROB-28 (locale-independent float parsing), ROB-29 (compile-path mutex/contract),
@@ -139,8 +140,8 @@ TEST-04 (SPV drift diff in CI), PERF-05 (cache pruning + single-read).
 **Fixed:** ROB-08 (vsync change callback), ROB-18 (backend retry when SDL auto-selects
 D3D12), ROB-19 (non-fatal `RecreateMainRenderWindow` on the fallback path),
 ROB-22 (virtual-gamepad texture lifecycle — free/re-init pairing designed before
-touching `ReinitializeRenderer`), FEAT-02 (Metal strategy resolved: fail fast with an
-honest message or validate MSL — one decision, one afternoon), ROB-30 (acquire-failure
+touching `ReinitializeRenderer`), FEAT-02 (Metal resolved r11: Vulkan-only
+device, honest Metal message, Vulkan retry kept), ROB-30 (acquire-failure
 classification; numbered ROB-26 when this draft was written — renumbered at the
 audit's round-10 re-head, 2026-10-17), MAINT-10 (log fallback to the user dir), PERF-01 (transfer-buffer ring,
 profile-gated), PERF-03 (dead work in the present path). **Dispositioned:** PERF-04

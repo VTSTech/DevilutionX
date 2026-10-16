@@ -134,8 +134,17 @@ cmake_dependent_option(USE_GPU_SCALER "Enable the SDL_GPU shader scaler (libretr
 if(USE_GPU_SCALER)
   set(GPU_SCALER_SHADER_DIR "${PROJECT_SOURCE_DIR}/Source/engine/render/gpu/shaders/vulkan")
   set(GPU_SCALER_SPV_HEADER "${CMAKE_BINARY_DIR}/Source/engine/render/gpu/gpu_shader_spv.hpp")
+  # MAINT-15: the shipped SPIR-V must be a function of the repo, not of whatever
+  # glslang version the build runner carries. ON = embed the committed
+  # gpu_shader_spv_prebuilt.hpp and skip build-time regeneration entirely (the
+  # CI jobs set this); local development leaves it OFF to iterate on the
+  # .vert/.frag sources with a live glslangValidator.
+  option(GPU_SCALER_SPV_PREBUILT "GPU scaler: embed the committed prebuilt SPIR-V header (skip build-time regeneration)" OFF)
   find_program(GLSLANG_VALIDATOR glslangValidator HINTS "$ENV{GLSLANG_DIR}/bin")
-  if(GLSLANG_VALIDATOR)
+  if(GPU_SCALER_SPV_PREBUILT)
+    set(GPU_SCALER_SPV_GENERATED OFF)
+    message(STATUS "GPU scaler: GPU_SCALER_SPV_PREBUILT is ON - using the committed prebuilt GPU scaler SPIR-V header")
+  elseif(GLSLANG_VALIDATOR)
     add_custom_target(gpu_scaler_spv
       COMMAND ${CMAKE_COMMAND}
           -DGLSLANG=${GLSLANG_VALIDATOR}

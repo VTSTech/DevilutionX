@@ -113,6 +113,11 @@ jobs:
         # (SDL3's "dummy" video driver has NO Vulkan support at all, so there
         # is no driver-less way to create an SDL_GPUDevice), xauth = required
         # by the xvfb-run wrapper.
+        # glslang-tools: source-health canary + spirv-blobs artifact compiler ONLY
+        #   (MAINT-15: the build embeds the committed prebuilt SPIR-V via
+        #   GPU_SCALER_SPV_PREBUILT=ON, so shipped bytes never depend on this
+        #   package's version - the Package step just proves the committed
+        #   .vert/.frag sources still compile).
         apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils ccache \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
@@ -138,6 +143,7 @@ jobs:
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
+        -DGPU_SCALER_SPV_PREBUILT=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DBUILD_TESTING=ON
@@ -235,8 +241,11 @@ jobs:
         CMake line in .github/workflows/gpu-shaders.yml (Linux job).
         EOT
         cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64.zip . && cd ..
-        # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them
-        # (the shipped binaries embed the committed SPIR-V blobs from gpu_shader_spv_prebuilt.hpp)
+        # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them.
+        # MAINT-15: canary only - the shipped binaries embed the committed SPIR-V from
+        # gpu_shader_spv_prebuilt.hpp (GPU_SCALER_SPV_PREBUILT=ON in both jobs), so
+        # this step's output is not what ships; it fails loudly if the committed
+        # .vert/.frag sources ever stop compiling.
         mkdir -p spv && find Source/engine/render/gpu/shaders/vulkan -name '*.frag' -o -name '*.vert' | while read f; do
           glslangValidator -V "$f" -o "spv/$(basename "$f").spv" || exit 1
         done
@@ -292,7 +301,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch glslang-tools ccache
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch ccache
 
     # Configure (exact flags of the verified local build). GIT_COMMIT_HASH is NOT
     # pinned here on purpose: the VM checkout's git works (no container ownership
@@ -313,6 +322,7 @@ jobs:
         -DCROSS_PREFIX=/usr
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
+        -DGPU_SCALER_SPV_PREBUILT=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DDEVILUTIONX_SYSTEM_ZLIB=OFF

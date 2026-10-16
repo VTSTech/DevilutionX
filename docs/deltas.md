@@ -1344,3 +1344,89 @@ exact call sequence of the crashing branch. Before the fix it kills the process
 misses are null-safe, the potion strip is skipped on the zero size).
 
 ---
+
+## MAINT-15 — CLOSED: CI compiles baked shaders with unpinned apt `glslang-tools`; baked SPV is non-reproducible
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Maintainability |
+| **Original location** | `.github/workflows/gpu-shaders.yml` (lines 116, 241, 295), `CMakeLists.txt` (lines 137-151) |
+
+**Original finding.** The Linux (gcc:14-bookworm container) and Windows (ubuntu-24.04
+MinGW cross host) CI jobs installed `glslang-tools` from apt with no version pin;
+`find_program(GLSLANG_VALIDATOR …)` picked it up and the `gpu_scaler_spv` target
+regenerated the shipped `fullscreen.vert`/`blit.frag` blobs with whatever glslang the
+runner image carried that day — Debian 12's glslang 12.x for the Linux binary,
+Ubuntu 24.04's glslang 14.x for the Windows binary, so the two shipped executables
+could embed different SPIR-V for the same shaders. Shipped bytes were a function of
+the runner image, and an apt glslang regression could change or break the baked
+shaders with nothing to bisect. Distinct from TEST-04 (drift detection): this was the
+*source* of drift.
+
+**Resolution.** New CMake option `GPU_SCALER_SPV_PREBUILT` (default OFF): when ON,
+configure skips the glslangValidator probe and never creates the `gpu_scaler_spv`
+target, and the scaler embeds the committed `gpu_shader_spv_prebuilt.hpp` (the same
+`#else` path any glslang-less local build already took). Both CI jobs now configure
+with `-DGPU_SCALER_SPV_PREBUILT=ON`; the Windows job drops its `glslang-tools` install
+entirely, and the Linux job keeps the package purely as the Package step's
+source-health canary and the `spirv-blobs` release artifact compiler, with the step
+comments now stating that its output is informational and not what ships. Local
+development is unaffected: leave the option OFF and the build-time regeneration works
+as before.
+
+**Verification.** Static: the prebuilt path is the same code path every glslang-less
+build already exercised (`gpu_scaler.cpp` `#ifdef GPU_SCALER_SPV_GENERATED` /
+`#else` committed header), and `Source/CMakeLists.txt` only adds the
+`GPU_SCALER_SPV_GENERATED` define plus the target dependency when the variable is
+truthy, so the OFF branch is the long-standing fallback. CI: the Linux job (build +
+gtest suite under Xvfb/lavapipe) and the Windows job (static zero-DLL link +
+portability gates) must both stay green with the option ON; shipped SPIR-V bytes
+become the committed header's bytes on every platform.
+
+---
+
+## FEAT-02 — CLOSED: Resolve the Metal strategy: wire the MSL path or fail fast with a clear message
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`BuildDeviceProperties`, `CreateDevice`, `CreateShader`), `Source/engine/render/gpu/gpu_shaders_msl.hpp`, `docs/diablo-handoff.md` §4 |
+
+**Original finding.** The device layer accepted Metal (`CreateDevice` set both
+`SHADERS_SPIRV` and `SHADERS_MSL`; an auto-selected `metal` driver selected the MSL
+shader format), and the repo carried 437 lines of hand-ported MSL for the shared
+Vertex/Blit programs — but `Runner::Load` hard-rejects every non-Vulkan backend
+("runtime shader presets are not supported on the metal backend"). Net effect on
+macOS: every shader filter choice deterministically failed into the generic "custom
+preset failed to load" path, which neither explained the platform limitation nor
+offered a toggle, while the handoff §4 table separately claimed SDL transpiles SPIR-V
+to MSL at runtime and marked the area "untested" — the doc and the code disagreed.
+
+**Resolution.** Option (a) of the finding's two coherent resolutions: the device
+layer is Vulkan-only until a Metal path is actually validated. `BuildDeviceProperties`
+no longer sets `SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN`; the
+`metal` → `SDL_GPU_SHADERFORMAT_MSL` branches in `CreateDevice`'s driver
+classification and in its retry tail are gone (an explicitly forced Metal backend now
+dies in the belt-and-braces branch); `CreateShader` is SPIR-V-only (entrypoint always
+"main"; the MSL case and the `MslFor`/`MslEntryFor` helpers removed); the
+`gpu_shaders_msl.hpp` include is dropped and the header itself carries an "unwired"
+banner for a future validated path. Auto-selected Metal gets an honest, specific line
+in the diagnostic log — "GPU shader mod requires Vulkan; Metal is not yet
+supported" — and the ROB-18 forced-Vulkan retry still runs, so MoltenVK users keep
+the scaler; without Vulkan the session reverts to the stock renderer per the standing
+failure contract (never `app_fatal`). The runner-level non-Vulkan rejection remains
+as belt and braces, and the handoff §4 row now states the disposition instead of the
+"untested transpilation" claim.
+
+**Verification.** Static: the only remaining `metal` references in `gpu_scaler.cpp`
+are the honest-message branch and the display-name mapping; `gpu::msl::` has no
+referents left outside the (now unincluded) header; `clang-format 18.1.8` (the CI
+pin) passes both touched TUs with tabs and LF byte-intact. The macOS path cannot be
+exercised in CI (Linux + Windows jobs only); expected field behavior is the new log
+line followed by either `device created, backend=vulkan` (MoltenVK) or a clean
+stock-renderer fallback — the same session-sticky `gFailed` contract every other
+device-creation failure uses.
+
+---
