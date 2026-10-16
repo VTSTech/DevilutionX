@@ -14,7 +14,7 @@
 | **Build/Run** | `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_SDL3=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DBUILD_TESTING=OFF && cmake --build build -j$(nproc)` — GPU scaler requires `USE_SDL3=ON`; `USE_GPU_SCALER` auto-defaults ON with SDL3 |
 | **Test Command** | `ctest --test-dir build` (BUILD_TESTING defaults ON; ~60 gtest targets; the headless timedemo regression needs game MPQ assets and silently skips without them) |
 
-**Fork context (important):** branched from upstream `diasurgical/DevilutionX 1.6.0-dev`. Upstream enforces a no-AI policy, so the GPU shader work (originally upstream PR #8737) lives here as an independent mod. **Update 2026-10-16:** a conditional merge track is open — AJenbo (diasurgical) engaged on merge conditions (no SDL patching — SDL3 core byte-identical; no monolith — functional PRs one at a time); merge plan r1+r2 sent, reply pending, nothing scaffolded. See `docs/merge-plan-r2.md` and handoff §14. The fork's entire delta is concentrated in `Source/engine/render/gpu/` (~15K lines incl. generated headers) plus integration points in `dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`, and CI (`gpu-shaders.yml`). It is **not** a general fork of gameplay code — all game logic is stock DevilutionX. Maintainer docs: `docs/diablo-handoff.md` (session log), `docs/GPU_SHADERS.md` (user features), `docs/SLANG_SPEC.md` (**normative** reference for the preset pipeline, incl. a 20-item gap list).
+**Fork context (important):** branched from upstream `diasurgical/DevilutionX 1.6.0-dev`. The GPU shader work (originally upstream PR #8737) lives here as an independent mod (the no-AI policy is libsdl-org's/SDL's, not diasurgical's). **Update 2026-10-16:** a conditional merge track is open — AJenbo (diasurgical) engaged on merge conditions (no SDL patching — SDL3 core byte-identical; no monolith — functional PRs one at a time); merge plan r1+r2 sent, reply pending, nothing scaffolded. See `docs/merge-plan-r2.md` and handoff §14. The fork's entire delta is concentrated in `Source/engine/render/gpu/` (~15K lines incl. generated headers) plus integration points in `dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`, and CI (`gpu-shaders.yml`). It is **not** a general fork of gameplay code — all game logic is stock DevilutionX. Maintainer docs: `docs/diablo-handoff.md` (session log), `docs/GPU_SHADERS.md` (user features), `docs/SLANG_SPEC.md` (**normative** reference for the preset pipeline, incl. a 20-item gap list).
 
 ---
 
@@ -29,7 +29,7 @@ Source/DiabloUI/        → Out-of-game menu framework (own event loop); setting
 Source/controls/        → Input abstraction (keyboard/pad/touch), rebindable keymapper/padmapper
 Source/dvlnet/          → Networking: loopback / TCP / ZeroTier; libsodium secretbox packet encryption (packet.h)
 Source/platform/        → Per-OS shims: android, 3DS, iOS, Switch, Vita, UWP…
-Source/utils/           → ~100 utility TUs: display.cpp (window/renderer lifecycle), ini, paths, audio, utf8
+Source/utils/           � ~100 utility TUs: display.cpp (window/renderer lifecycle), ini, paths, audio, utf8
 Source/lua/             → Sol2 Lua runtime (dev console, mod hooks); Source/mods/ = hf.mpq Hellfire mod tree
 Source/qol/             → Vanilla-plus features (stash, autopickup, xpbar…)
 test/                   → ~60 gtest targets + fixtures (.dun dungeons, timedemo .dmo), benchmarks
@@ -199,3 +199,4 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 5. **When changing `slang_translate.cpp`**, remember it changes every cache key (users must clear `shaders/cache/`); the key is version-salted with the glslang/toolchain version (ROB-04 ✅), so toolchain bumps invalidate the cache automatically.
 6. **Build once with `-DBUILD_TESTING=ON` and run `ctest`** before and after render-path changes; CI already runs ctest on Linux pushes, and the headless timedemo is the only full-state regression net.
 7. Do NOT start by reading every file — use this brief as the map. `docs/diablo-handoff.md` has per-round field history if you need to know *why* something looks defensive.
+
