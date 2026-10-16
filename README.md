@@ -25,7 +25,9 @@
 
 > [!IMPORTANT]
 > **This is a standalone mod, not the official DevilutionX.**
-> The GPU shader work in this repository originally targeted upstream ([PR #8737](https://github.com/diasurgical/DevilutionX/pull/8737)), but the upstream repositories enforce a **no-AI policy**, so it is unlikely these changes will ever be merged there. As of **October 11, 2026**, development therefore continues here as an independent mod, branched from upstream **`1.6.0-dev`**.
+> The GPU shader work in this repository originally targeted upstream ([PR #8737](https://github.com/diasurgical/DevilutionX/pull/8737)). As of **October 11, 2026**, development continues here as an independent mod, branched from upstream **`1.6.0-dev`**.
+>
+> A plan-first **upstream merge track** now exists in parallel: a phased, audit-gated 8-PR plan ([docs/merge-plan.md](docs/merge-plan.md)) was shared with the upstream maintainers on **October 16, 2026** and is awaiting their reply. Nothing has been submitted or accepted as a PR — and whether or not one ever is, the long-term goal is the same: finish the codebase audit, then harden the shader pipeline into a **standalone library any SDL3 project could reuse** (see [docs/diablo-handoff.md](docs/diablo-handoff.md), §14).
 >
 > - Report bugs and request features in **this** repository — please do not send mod-specific reports to upstream.
 > - The official project lives at https://github.com/diasurgical/DevilutionX.
@@ -47,7 +49,7 @@ This mod keeps the stock SDL render path fully intact and layers a GPU shader pi
 - **The full RetroArch shader ecosystem** — CRT simulation, xBR, ScaleFX, HQx, and hundreds more, straight from libretro's `slang-shaders` collection. Unlike the stock renderer's plain stretch, these GPU filters reconstruct pixel-art detail: sharper edges, smoother diagonals, and cleaner corner transitions. Some presets (e.g. the HQx family) load PNG lookup textures at runtime.
 - **Live shader feedback** — the on-screen overlay always shows the active filter and backend (e.g. `Shader: ScaleFX 3x (Vulkan)` or `Shader: Off`). If a shader fails to compile or load, the overlay reports it as `(Unavailable)` — and you can select a new shader right from that state without restarting. Every change is also logged to `gpu-scaler.log`, and the choice persists in `diablo.ini` under the `Shader Filter` key.
 - **Audio fix available** — a standalone fix for decoding Diablo's 1996-era WAV files (zero-length RIFF chunks fail on current SDL3_mixer) is maintained on the [`wav-mixer-fix`](https://github.com/VTSTech/DevilutionX/tree/wav-mixer-fix) branch.
-- **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), and per-preset compatibility audits plus the current field-sweep test list under [docs/audit/](docs/audit/).
+- **Documented and audited** — feature docs in [docs/GPU_SHADERS.md](docs/GPU_SHADERS.md), architecture notes in [docs/diablo-handoff.md](docs/diablo-handoff.md), per-preset compatibility audits plus the current field-sweep test list under [docs/audit/](docs/audit/), and the audit-gated upstream-merge / library roadmap in [docs/merge-plan.md](docs/merge-plan.md).
 
 See it in action: [shader demo video](https://www.youtube.com/watch?v=PHQl0EOa7L8).
 
@@ -120,7 +122,7 @@ Build notes:
 
 # Contributing
 
-This is an independent, standalone mod, so all contributions happen here: issues, pull requests, testing the latest builds, and documentation are all welcome. For engine behavior that this mod does not touch, the upstream [wiki](https://github.com/diasurgical/devilutionX/wiki) and [contributing guide](docs/CONTRIBUTING.md) remain the best references.
+This is an independent, standalone mod, so all contributions happen here: issues, pull requests, testing the latest builds, and documentation are all welcome. The plan-first upstream merge track ([docs/merge-plan.md](docs/merge-plan.md)) is pending a maintainer reply; until anything changes, this repository remains the single place where development happens. For engine behavior that this mod does not touch, the upstream [wiki](https://github.com/diasurgical/devilutionX/wiki) and [contributing guide](docs/CONTRIBUTING.md) remain the best references.
 
 # Credits
 
