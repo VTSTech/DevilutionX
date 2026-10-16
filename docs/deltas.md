@@ -10,7 +10,10 @@ This ledger tracks findings that have been **fixed and verified**. Each entry pr
 original audit finding (title, severity, location) and records the resolution actually shipped:
 what changed, in which files, and how it was verified. Once an entry appears here it is removed
 from `audit.md` entirely — its master table, priority matrix, and counts list only the
-open findings; this ledger is the single record of closures.
+open findings; this ledger is the single record of closures. Since round 12 (2026-10-17) it
+also carries the round-by-round fix history moved out of `audit.md`'s Executive Summary —
+see [Fix History](#fix-history) below — so the audit stays a pure current-state
+snapshot.
 
 | ID | Severity | Category | Title | Closed |
 |----|----------|----------|-------|--------|
@@ -47,11 +50,94 @@ open findings; this ledger is the single record of closures.
 | ROB-22 | Medium | Robustness | Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them | 2026-10-16 |
 | ROB-20 | Medium | Robustness | Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard) | 2026-10-16 |
 | ROB-21 | Medium | Robustness | Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only) | 2026-10-16 |
+| MAINT-15 | Medium | Maintainability | CI compiles baked shaders with unpinned apt `glslang-tools`; baked SPV is non-reproducible | 2026-10-17 |
+| FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message | 2026-10-17 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
 CI's `clang-format-check.yml`), and every fix round ships as a refreshed overlay zip
 (`DevilutionX-<version>-overlay.zip`) in addition to the working tree.
+
+## Fix History
+
+Moved here from audit.md's Executive Summary in round 12 (2026-10-17) so the audit stays a
+current-state snapshot and this ledger carries the full history. Rounds 1–6 enumerated
+the findings; every round after that worked the backlog. This index is chronological; each
+closure's full Original/Resolution/Verification record follows in ID order.
+
+- **Rounds 1–6 (2026-10-15 → 2026-10-16, enumeration).** Examined the fork's
+  entire delta and its integration points, the engine's game loop and options architecture,
+  and the build/CI/packaging layer, down to individual SDL_GPU API invocations — 48
+  findings, of which the first 19 closures were regression-verified before round 7 (one of
+  them, MAINT-03, round 7 reopened). Per-round narrative was condensed when the Executive
+  Summary was rebuilt (`d071ac558`); the records below carry each fix's story.
+- **Round 7 (2026-10-16, fresh-eyes sweep).** Code unchanged since round 6 (`b60356e1a` —
+  the only newer commit, `8341ef99f`, is docs-only). All 19 closures to date were re-verified
+  and hold. The sweep produced **25 new findings — 2 High, 11 Medium, 12 Low** —
+  and **reopened MAINT-03**: the three workflows its closure claimed to delete were never
+  actually removed from any commit and still shipped with the broken `actions/checkout@v7`
+  pin. The round-7 theme was that **the success paths, not the failure paths, carried the
+  sharpest risk**: the two new Highs sat on ordinary, happy flows (ROB-14's use-after-free on
+  filter toggle, ROB-15's one-frame-stale feedback presentation), behind them a cluster of
+  **unchecked SDL_GPU return values** that bypassed the failure contract (ROB-16, ROB-17,
+  ROB-18), plus **closure-integrity** process findings (MAINT-03, TEST-07) and
+  **translator/resource hardening** items (ROB-20, ROB-21, ROB-23). At the close of round 7
+  the open set stood at 53.
+- **Round 7.5 (2026-10-16, quick-fix batch).** Closed ROB-14/15/16/17 with riders ROB-24/25,
+  MAINT-16, TEST-07, and the MAINT-03 re-close — the workflows actually deleted this
+  time, tree-verified. Open set 53 → 44.
+- **Round 7.6.1 (2026-10-16, no finding ID).** Corrected the round-7.5 clang-format
+  verification record — its own section below.
+- **Round 7.6.2 (2026-10-16, no finding ID).** Fixed the `preset_smoke_corpus` ctest geometry
+  (TEST-01 fixup addendum).
+- **Round 8 (2026-10-16).** Closed ROB-18/19/22 — bounded fallback-path changes plus
+  the gamepad free/re-init pairing.
+- **Round 9 (2026-10-16).** Closed ROB-20/21 — the `gpu/preset` load path: size caps
+  before every untrusted slurp, a catch-all on `ParsePreset`/`TranslateSlang`, and the
+  `RewriteSamplers` name-dedupe, with regression corpus.
+- **Merge-plan alignment (2026-10-16, same day — planning, no code change).** The open
+  set gained its governing sequence: the upstream merge plan (r2,
+  `docs/merge-plan-draft-r2.md`) gates every proposed PR on the findings that share its
+  files, and orders closure into three Phase-0 sweeps — **8A** library surface
+  (ROB-20/21, PERF-06, MAINT-15 plus the SEC/ROB/MAINT/TEST/PERF items on `gpu/preset/*`),
+  **8B** presentation surface (ROB-08/18/19/22, FEAT-02 disposition, ROB-30 — was
+  ROB-26, renumbered at the round-10 re-head — MAINT-10, PERF-01/03), **8C** runner
+  surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17, PERF-02) — with first contact
+  (PR 4 + PR 1) barred until 8A+8B complete. Waived out of the PR series: MAINT-11/12/13/14 +
+  TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13
+  (known-documented), FEAT-01/03/04 (deferred). Strategic frame recorded in handoff §14:
+  whether or not any PR merges, the long-term goal is a standalone reusable shader-preset
+  library — every closure in this ledger is a step toward that gate.
+- **Round 10 (2026-10-17, field-regression re-head).** Re-headed the two field-regression
+  closures that ended the Shaders→'Off' CTD — **ROB-26** (synchronous
+  GPU-device teardown inside the switch; resolved by the deferred `HandbackWindow` teardown,
+  69be0cad5) and **ROB-27** (menu-context null item-cursor CLX read in `LoadPotionArt`;
+  resolved by the `GetInvItemSize`/`LoadPotionArt` guards, b0b4d5e0a) — both recorded
+  below and **field-verified on build `1f7d111fd`: switching Shaders to Off with a preset
+  active no longer crashes**. The field closures draw nothing from the open list (ROB-27
+  never carried an open entry, and the old ROB-26 slot was a different finding); to free the
+  ID the field record already shipped under, the open Low swapchain-acquire finding is
+  renumbered **ROB-26 → ROB-30**. The same round re-headed the open list and
+  re-indented `test/preset_unload_test.cpp` to the test clang-format profile.
+- **Bar-arithmetic errata (2026-10-17, docs-only, between rounds 10 and 11 — no round
+  number).** The first-contact bar corrected everywhere to **9 of the 14** Medium open when
+  r2 was measured — ROB-20 had been double-counted across the PR 1/PR 2 gates; dated
+  errata paragraphs live in `merge-plan-draft-r2.md` and audit.md's 8B note.
+- **Round 11 (2026-10-17).** Closed **MAINT-15** (the CI jobs bake no SPIR-V anymore — a
+  new `GPU_SCALER_SPV_PREBUILT` CMake option embeds the committed
+  `gpu_shader_spv_prebuilt.hpp`, so shipped bytes are a function of the repo; the Linux job's
+  glslang stays only as the Package step's source-health canary) and **FEAT-02** (Metal
+  dispositioned: `CreateDevice` no longer accepts MSL, auto-selected Metal logs an honest
+  message and takes the ROB-18 Vulkan retry — MoltenVK stays viable — and the
+  handoff table now matches the code). Open set 40 → 38 (0 High / 7 Medium / 31 Low);
+  first-contact bar down to ROB-08 + PERF-06.
+- **Round 12 (2026-10-17, no finding ID — this restructure).** Fix history moved out of
+  audit.md's Executive Summary into this section; the Executive Summary regenerated as a
+  current-state snapshot; the index table above gained the two round-11 rows it was missing
+  (MAINT-15, FEAT-02); audit.md's header counts corrected to 35 closed / 38 open; the
+  handoff's ledger line updated to the round-11 state and its stale “10 of 14”
+  bar note aligned with the 9-of-14 errata. No findings closed, no code changed; the ledger
+  stands at 38 open (0 High / 7 Medium / 31 Low).
 
 ---
 

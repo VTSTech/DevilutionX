@@ -160,6 +160,24 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
   today's 40 (0 High / 9 Medium / 31 Low).
 - `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
 
+- Round 11 (2026-10-17) closed seven of the nine first-contact-bar Mediums, leaving ROB-08
+  and PERF-06: **MAINT-15** — a new `GPU_SCALER_SPV_PREBUILT` CMake option (default
+  OFF) skips the glslangValidator probe and embeds the committed
+  `gpu_shader_spv_prebuilt.hpp`, so both CI jobs bake no SPIR-V and shipped bytes are a
+  function of the repo (Windows drops apt glslang-tools; Linux keeps it only as the Package
+  step's source-health canary) — and **FEAT-02** — Metal dispositioned:
+  `CreateDevice` no longer accepts MSL, auto-selected Metal logs an honest message and takes
+  the ROB-18 Vulkan retry (MoltenVK stays viable), `CreateShader` is SPIR-V-only,
+  `gpu_shaders_msl.hpp` is unincluded with an unwired banner, and the handoff table matches
+  the code. Ledger 40 → **38 open (0 High / 7 Medium / 31 Low)**.
+- Round 12 (2026-10-17, docs-only): the round-by-round fix history moved out of `audit.md`'s
+  Executive Summary into a new **Fix History** section in [deltas.md](deltas.md) (whose
+  index table also gained the missing round-11 rows, MAINT-15 and FEAT-02), and the
+  Executive Summary was regenerated as a current-state snapshot — 35 closed / 38 open
+  (0 High / 7 Medium / 31 Low), bar = ROB-08 + PERF-06. `diablo-handoff.md`'s ledger line
+  updated to the round-11 state and its stale "10 of 14" bar note aligned with the 9-of-14
+  errata. No findings closed, no code changed.
+
 ## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)
 
 Round 8 of the audit shipped the three presentation-surface Mediums that opened the
