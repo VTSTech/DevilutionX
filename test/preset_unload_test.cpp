@@ -35,6 +35,8 @@
 
 #include <SDL3/SDL.h>
 
+#include "controls/touch/renderers.h"
+
 #include "engine/render/gpu/preset/preset_parser.hpp"
 #include "engine/render/gpu/preset/preset_runner.hpp"
 
@@ -212,6 +214,17 @@ int main(int argc, char **argv)
         // allows unloading before the first present, e.g. a failed menu frame).
         std::printf("\n-- round 3: load -> unload with zero frames --\n");
         LoadRunUnload(device, parsed.front().second, parsed.front().first, 0);
+
+        // ROB-27 regression: the menu-context gamepad art reload must not
+        // touch the item-cursor CLX (pCursCels is empty outside a game
+        // session). This is the exact call sequence ReinitializeRenderer's
+        // regular-renderer branch performs when Shaders is switched Off in
+        // the main menu; before the fix it dereferenced a null CLX pointer
+        // and killed the process.
+        std::printf("\n-- round 4: menu-context InitVirtualGamepadGFX (ROB-27) --\n");
+        devilution::InitVirtualGamepadGFX();
+        devilution::FreeVirtualGamepadGFX();
+        std::printf("  ok: menu-context gamepad art reload survived\n");
 
         SDL_DestroyGPUDevice(device);
         SDL_Quit();

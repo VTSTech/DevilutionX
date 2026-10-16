@@ -1297,3 +1297,45 @@ continue with a working D3D11 renderer; `gpu-scaler.log` will name the failing f
 if any remains.
 
 ---
+
+## ROB-27 - Shaders -> Off in the main menu: null item-cursor CLX read in LoadPotionArt (field CTD at 69be0cad5)
+
+**Symptom.** Build 69be0cad5 (ROB-26 deferred teardown included): loading a preset at
+startup, then switching Shaders to Off in the main menu still kills the process. The
+diagnostic log ends after `Created renderer: direct3d11`; the `osd: (hidden)` line
+that `ShowFilterOsd()` must emit for this switch is absent, pinning the crash to
+`ReinitializeRenderer`'s regular-renderer branch between renderer creation and the
+OSD update.
+
+**Root cause.** That branch calls `InitVirtualGamepadGFX()` (ROB-22 pair) ->
+`VirtualGamepadRenderer::LoadArt()` -> `LoadPotionArt()` ->
+`GetInvItemSize(CURSOR_FIRSTITEM + ICURS_POTION_OF_HEALING)` -> `GetInvItemSprite()` ->
+`pCursCels->numSprites()`. `pCursCels` (data\\inv\\objcurs) is loaded by `InitCursor()`
+in `StartGame()` - i.e. only when a game session starts - and freed by `FreeCursor()`
+in `FreeGame()`. In the main menu it is empty and the read is `LoadLE32(nullptr)`:
+an instant, silent access violation (Release build, asserts compiled out). The
+engine's own `InitVirtualGamepadGFX()` call sites (`LoadAllGFX`, `LoadGameLevel*`)
+all run in-game, after `InitCursor()`; the hand-back branch is the only one that
+runs in menu context, and the shader options are CantChangeInGame - so the menu is
+the ONLY place this path executes. Sessions where the scaler never activated never
+reach it (the startup renderer exists, so the branch is skipped), which is why the
+field crash only appears after a scaler-active session. The to-shader direction
+returns earlier and never touches this code.
+
+**Fix.** Two guards:
+- `Source/cursor.cpp`, `GetInvItemSize()`: return `{0, 0}` when `pCursCels` is not
+  loaded. Zero risk to gameplay (in-game the art is always loaded); every caller
+  either skips on a zero size or is in-game-only.
+- `Source/controls/touch/renderers.cpp`, `LoadPotionArt()`: skip building the potion
+  strip when the reported size is zero. In menus the strip is never rendered
+  (`ControlMode == VirtualGamepad` is required), and the game-load path (`LoadAllGFX`)
+  re-initializes the gamepad art with the item cursors available, restoring the strip
+  exactly where the engine always built it.
+
+**Verification.** `preset_unload_test` gains round 4: menu-context
+`InitVirtualGamepadGFX()` / `FreeVirtualGamepadGFX()` with `pCursCels` empty - the
+exact call sequence of the crashing branch. Before the fix it kills the process
+(caught by the CI coverage guard); after the fix it passes asset-free (LoadPNG
+misses are null-safe, the potion strip is skipped on the zero size).
+
+---
