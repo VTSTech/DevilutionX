@@ -119,6 +119,17 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
   harness also gained round 4: menu-context `InitVirtualGamepadGFX()` /
   `FreeVirtualGamepadGFX()` with `pCursCels` empty — the exact ROB-27 sequence,
   which kills the process pre-fix and passes asset-free post-fix.
+- Linux CI split (2026-10-17): the gtest suite moved out of the Linux build job
+  into its own `linux-tests` job. The Linux job carried the full vendored-dep
+  build AND the headless-GPU test run serially — ~5x the Windows job's wall
+  time; now the binary build (`-DBUILD_TESTING=OFF`: no gtest, no test TUs, no
+  Vulkan/Xvfb stack on its critical path) and the suite (same gcc:14-bookworm
+  image, Xvfb + lavapipe, full ctest plus the preset_unload "ALL OK" coverage
+  guard) run in parallel. Both Linux jobs configure with identical flags and
+  share the `ccache-linux-` cache prefix, so the tests job's tree build is
+  mostly cache hits; all three jobs keep `GPU_SCALER_SPV_PREBUILT=ON`.
+  Trade-off: a suite failure now fails the run red without blocking the Linux
+  artifact upload — tests gate the run, not the package step.
 
 ### Added
 

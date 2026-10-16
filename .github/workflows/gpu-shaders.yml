@@ -1,4 +1,5 @@
-# Fork CI: builds ONLY this fork's GPU shader scaler binaries (Windows x64 + Linux x64).
+# Fork CI: builds ONLY this fork's GPU shader scaler binaries (Windows x64 + Linux x64)
+# and runs the fork's gtest suite headless in its own job (see JOB LAYOUT below).
 #
 # The Windows job reproduces the verified local cross-build (see GPU_SHADERS.md):
 #   - MinGW-w64 cross toolchain (CMake/platforms/mingwcc64.toolchain.cmake), all deps vendored
@@ -36,6 +37,14 @@
 #    vs the pre-lever run; if it did not shrink, delete the 3 flag lines.
 # Both Package steps now print exe size + section table every run, so the
 # next size lever is evaluated from the CI log itself.
+#
+# JOB LAYOUT (2026-10-17): the gtest suite runs in its OWN job (linux-tests),
+# not inside the Linux build job. The Linux job used to carry the full
+# vendored-dep build AND the headless-GPU test run serially and clocked ~5x
+# the Windows job; the split runs them in parallel and drops gtest + the
+# test TUs from the binary build (-DBUILD_TESTING=OFF). Both Linux jobs
+# configure with identical flags (except BUILD_TESTING) and share the
+# ccache-linux- prefix, so the tests job's tree build is mostly cache hits.
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -107,12 +116,6 @@ jobs:
         #   from source every configure; only real source changes should recompile).
         # (no g++ here on purpose: the image's GCC 14 in /usr/local IS the toolchain;
         #  installing bookworm's g++ would put a second, older compiler on disk)
-        # preset_unload (GPU lifecycle harness) additionally needs a real Vulkan
-        # stack: libvulkan1 = the loader, mesa-vulkan-drivers = the lavapipe
-        # software ICD, xvfb = a display server for SDL3's x11 Vulkan hooks
-        # (SDL3's "dummy" video driver has NO Vulkan support at all, so there
-        # is no driver-less way to create an SDL_GPUDevice), xauth = required
-        # by the xvfb-run wrapper.
         # glslang-tools: source-health canary + spirv-blobs artifact compiler ONLY
         #   (MAINT-15: the build embeds the committed prebuilt SPIR-V via
         #   GPU_SCALER_SPV_PREBUILT=ON, so shipped bytes never depend on this
@@ -124,8 +127,7 @@ jobs:
           libxtst-dev \
           libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
           libudev-dev libdbus-1-dev \
-          libbz2-dev libpng-dev \
-          libvulkan1 mesa-vulkan-drivers xvfb xauth
+          libbz2-dev libpng-dev
         # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14),
         # NOT /usr/bin/c++ (bookworm's GCC 12, no <format>)
         g++ --version | head -1
@@ -146,7 +148,7 @@ jobs:
         -DGPU_SCALER_SPV_PREBUILT=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
-        -DBUILD_TESTING=ON
+        -DBUILD_TESTING=OFF
         -DDEVILUTIONX_SYSTEM_GOOGLETEST=OFF
         -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
         -DCMAKE_C_COMPILER=gcc
@@ -160,30 +162,6 @@ jobs:
 
     - name: Build
       run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
-
-    # Headless GPU test support: SDL3 has NO Vulkan under the "dummy" video
-    # driver (no Vulkan hooks), so the GPU lifecycle harness (preset_unload)
-    # needs a REAL video driver: Xvfb gives the x11 driver a display,
-    # mesa-vulkan-drivers provides the lavapipe software ICD (SDL_gpu needs
-    # only Vulkan 1.0 core - 1.2/1.3 features are optional - so bookworm's
-    # mesa 22.3 lvp qualifies). SDL3 never auto-picks a driver on headless
-    # boxes, so the x11 driver is pinned explicitly.
-    - name: Test (gtest suite, headless — Xvfb + lavapipe for the GPU lifecycle test)
-      env:
-        SDL_VIDEODRIVER: x11
-        XDG_RUNTIME_DIR: /tmp
-      run: |
-        xvfb-run -a ctest --test-dir build --output-on-failure -j $(getconf _NPROCESSORS_ONLN)
-        # Coverage guard: preset_unload IS the shader load/unload regression
-        # harness (the field CTD report). If Xvfb/lavapipe broke, it would
-        # skip quietly (exit 0) and the suite would stay green with ZERO GPU
-        # coverage - fail the job instead. A real run ends with "ALL OK".
-        xvfb-run -a ctest --test-dir build -R preset_unload --output-on-failure -V > /tmp/preset_unload_ci.log 2>&1
-        if ! grep -q "ALL OK" /tmp/preset_unload_ci.log; then
-          cat /tmp/preset_unload_ci.log
-          echo '::error::preset_unload did not complete with ALL OK - Xvfb/lavapipe GPU coverage is missing. Check SDL_VIDEODRIVER / XDG_RUNTIME_DIR / mesa-vulkan-drivers.'
-          exit 1
-        fi
 
     - name: Portability gate (glibc 2.36 floor — mirror of the Windows DLL gate)
       run: |
@@ -243,7 +221,7 @@ jobs:
         cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64.zip . && cd ..
         # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them.
         # MAINT-15: canary only - the shipped binaries embed the committed SPIR-V from
-        # gpu_shader_spv_prebuilt.hpp (GPU_SCALER_SPV_PREBUILT=ON in both jobs), so
+        # gpu_shader_spv_prebuilt.hpp (GPU_SCALER_SPV_PREBUILT=ON in all three jobs), so
         # this step's output is not what ships; it fails loudly if the committed
         # .vert/.frag sources ever stop compiling.
         mkdir -p spv && find Source/engine/render/gpu/shaders/vulkan -name '*.frag' -o -name '*.vert' | while read f; do
@@ -273,6 +251,121 @@ jobs:
         files: |
           devilutionx-gpu-shaders-linux-x64.zip
           devilutionx-gpu-shaders-spirv-blobs.zip
+
+  linux-tests:
+    name: Linux x86_64 (gtest suite, headless GPU — Xvfb + lavapipe)
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_SLOPPINESS: time_macros,pch_defines
+    container:
+      # Same image as the build job: same toolchain, same glibc, and identical
+      # compile flags (see Configure) so the shared ccache entries stay valid
+      # for both jobs.
+      image: gcc:14-bookworm
+    # No permissions block and no contents:write — this job ships nothing;
+    # it only runs ctest.
+    steps:
+    - name: Bootstrap container (git for actions/checkout)
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends git ca-certificates
+        # Same dubious-ownership fix as the build job: CMake still calls git
+        # during configure (get_git_commit_hash()).
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-linux-tests-x64-${{ github.sha }}
+        # Shared prefix with the build job: this job warm-starts from either
+        # Linux job's cache of a previous run (identical compile flags make
+        # the entries valid for both).
+        restore-keys: |
+          ccache-linux-
+
+    - name: Install dependencies
+      run: |
+        # Same vendored-SDL3 dev stack as the build job (the X11/Wayland/audio
+        # backends are required to configure; the suite links the same SDL3).
+        # No glslang-tools (MAINT-15: the build embeds the committed prebuilt
+        # SPIR-V via GPU_SCALER_SPV_PREBUILT=ON, and this job runs no Package
+        # canary) and no binutils (objdump was the portability gate's tool).
+        # GPU harness stack: preset_unload (the GPU lifecycle / field-CTD
+        # regression harness) needs a real Vulkan stack: libvulkan1 = the
+        # loader, mesa-vulkan-drivers = the lavapipe software ICD, xvfb = a
+        # display server for SDL3's x11 Vulkan hooks (SDL3's "dummy" video
+        # driver has NO Vulkan support at all, so there is no driver-less way
+        # to create an SDL_GPUDevice), xauth = required by the xvfb-run wrapper.
+        apt-get install -y --no-install-recommends ninja-build gettext smpq zip patch cmake ccache \
+          libasound2-dev libpulse-dev \
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+          libxtst-dev \
+          libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
+          libudev-dev libdbus-1-dev \
+          libbz2-dev libpng-dev \
+          libvulkan1 mesa-vulkan-drivers xvfb xauth
+        # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14)
+        g++ --version | head -1
+
+    # Identical flags to the build job's Configure except BUILD_TESTING=ON —
+    # identical flags are what make the shared ccache entries valid for both
+    # jobs. GCC 14 pin + GIT_COMMIT_HASH pin + shell: bash: same reasons as the
+    # build job (container steps default to dash, which rejects ${GITHUB_SHA:0:7}).
+    - name: Configure (GCC 14, BUILD_TESTING=ON — mirrors the build job)
+      shell: bash
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DUSE_SDL3=ON
+        -DUSE_GPU_SCALER=ON
+        -DGPU_SCALER_SPV_PREBUILT=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DBUILD_TESTING=ON
+        -DDEVILUTIONX_SYSTEM_GOOGLETEST=OFF
+        -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
+        -DCMAKE_C_COMPILER=gcc
+        -DCMAKE_CXX_COMPILER=g++
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
+        -DCMAKE_C_FLAGS='-ffunction-sections -fdata-sections'
+        -DCMAKE_CXX_FLAGS='-ffunction-sections -fdata-sections'
+        -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++ -Wl,--gc-sections'
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    # Headless GPU test support: SDL3 has NO Vulkan under the "dummy" video
+    # driver (no Vulkan hooks), so the GPU lifecycle harness (preset_unload)
+    # needs a REAL video driver: Xvfb gives the x11 driver a display,
+    # mesa-vulkan-drivers provides the lavapipe software ICD (SDL_gpu needs
+    # only Vulkan 1.0 core - 1.2/1.3 features are optional - so bookworm's
+    # mesa 22.3 lvp qualifies). SDL3 never auto-picks a driver on headless
+    # boxes, so the x11 driver is pinned explicitly.
+    - name: Test (gtest suite, headless — Xvfb + lavapipe for the GPU lifecycle test)
+      env:
+        SDL_VIDEODRIVER: x11
+        XDG_RUNTIME_DIR: /tmp
+      run: |
+        xvfb-run -a ctest --test-dir build --output-on-failure -j $(getconf _NPROCESSORS_ONLN)
+        # Coverage guard: preset_unload IS the shader load/unload regression
+        # harness (the field CTD report). If Xvfb/lavapipe broke, it would
+        # skip quietly (exit 0) and the suite would stay green with ZERO GPU
+        # coverage - fail the job instead. A real run ends with "ALL OK".
+        xvfb-run -a ctest --test-dir build -R preset_unload --output-on-failure -V > /tmp/preset_unload_ci.log 2>&1
+        if ! grep -q "ALL OK" /tmp/preset_unload_ci.log; then
+          cat /tmp/preset_unload_ci.log
+          echo '::error::preset_unload did not complete with ALL OK - Xvfb/lavapipe GPU coverage is missing. Check SDL_VIDEODRIVER / XDG_RUNTIME_DIR / mesa-vulkan-drivers.'
+          exit 1
+        fi
 
   windows:
     name: Windows x64 (MinGW cross, SDL3, fully static — launches without extra DLLs)

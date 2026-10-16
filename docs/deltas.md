@@ -1470,6 +1470,15 @@ gtest suite under Xvfb/lavapipe) and the Windows job (static zero-DLL link +
 portability gates) must both stay green with the option ON; shipped SPIR-V bytes
 become the committed header's bytes on every platform.
 
+**Addendum (CI job split, 2026-10-17).** The gtest suite moved out of the Linux build job
+into a dedicated `linux-tests` job — the Linux job ran the full vendored-dep build and
+the headless-GPU test run serially and clocked ~5x the Windows job's wall time. CI is now
+three jobs: `linux` (binary, `-DBUILD_TESTING=OFF`), `linux-tests` (suite under
+Xvfb/lavapipe), and `windows` — all three still configure with
+`-DGPU_SCALER_SPV_PREBUILT=ON`, and only the Linux build job keeps `glslang-tools`
+(Package-step canary). The CI sentence in **Verification** above describes the two-job
+layout this addendum supersedes.
+
 ---
 
 ## FEAT-02 — CLOSED: Resolve the Metal strategy: wire the MSL path or fail fast with a clear message
