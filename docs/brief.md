@@ -1,6 +1,6 @@
 # Codebase Intelligence Brief: DevilutionX (VTSTech GPU Shader Mod)
 
-> Generated: 2026-10-16 (codebase-audit round 7) | Auditor: Super Z (GLM) | Commit: `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (squashed fork history; `VERSION` = `1.6.0-dev`; code byte-identical to audit tip `b60356e1a` — the only newer commit is docs-only) — refreshed after audit rounds 1–7 **+ the round-7.5 quick-fix batch (2026-10-16)**; 28 closures live in `docs/deltas.md` (MAINT-03 re-closed round 7.5), open ledger (44 findings: **0 High / 14 Medium / 30 Low**) in `docs/audit.md`
+> Generated: 2026-10-16 (codebase-audit round 7) | Auditor: Super Z (GLM) | Commit: `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (squashed fork history; `VERSION` = `1.6.0-dev`; code byte-identical to audit tip `b60356e1a` — the only newer commit is docs-only) — refreshed after audit rounds 1–7 **+ the round-7.5 quick-fix batch (2026-10-16)**; 28 closures live in `docs/deltas.md` (MAINT-03 re-closed round 7.5), open ledger (44 findings: **0 High / 14 Medium / 30 Low**) in `docs/audit.md` — **2026-10-16 merge-track addendum:** the upstream merge plan r2 (`docs/merge-plan-r2.md`: 8-PR ladder + Phase-0 audit gates + noise-control policy) is with the diasurgical maintainers, reply pending; VTSTech agrees with r2; long-term goal independent of PR outcome: a standalone reusable shader-preset library after full audit closure (handoff §14)
 
 ---
 
@@ -14,7 +14,7 @@
 | **Build/Run** | `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_SDL3=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DBUILD_TESTING=OFF && cmake --build build -j$(nproc)` — GPU scaler requires `USE_SDL3=ON`; `USE_GPU_SCALER` auto-defaults ON with SDL3 |
 | **Test Command** | `ctest --test-dir build` (BUILD_TESTING defaults ON; ~60 gtest targets; the headless timedemo regression needs game MPQ assets and silently skips without them) |
 
-**Fork context (important):** branched from upstream `diasurgical/DevilutionX 1.6.0-dev`. Upstream enforces a no-AI policy, so the GPU shader work (originally upstream PR #8737) lives here as an independent mod. The fork's entire delta is concentrated in `Source/engine/render/gpu/` (~15K lines incl. generated headers) plus integration points in `dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`, and CI (`gpu-shaders.yml`). It is **not** a general fork of gameplay code — all game logic is stock DevilutionX. Maintainer docs: `docs/diablo-handoff.md` (session log), `docs/GPU_SHADERS.md` (user features), `docs/SLANG_SPEC.md` (**normative** reference for the preset pipeline, incl. a 20-item gap list).
+**Fork context (important):** branched from upstream `diasurgical/DevilutionX 1.6.0-dev`. Upstream enforces a no-AI policy, so the GPU shader work (originally upstream PR #8737) lives here as an independent mod. **Update 2026-10-16:** a conditional merge track is open — AJenbo (diasurgical) engaged on merge conditions (no SDL patching — SDL3 core byte-identical; no monolith — functional PRs one at a time); merge plan r1+r2 sent, reply pending, nothing scaffolded. See `docs/merge-plan-r2.md` and handoff §14. The fork's entire delta is concentrated in `Source/engine/render/gpu/` (~15K lines incl. generated headers) plus integration points in `dx.cpp`, `display.cpp`, `options.cpp`, `scrollrt.cpp`, and CI (`gpu-shaders.yml`). It is **not** a general fork of gameplay code — all game logic is stock DevilutionX. Maintainer docs: `docs/diablo-handoff.md` (session log), `docs/GPU_SHADERS.md` (user features), `docs/SLANG_SPEC.md` (**normative** reference for the preset pipeline, incl. a 20-item gap list).
 
 ---
 
@@ -170,6 +170,7 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 | Failure contract | Any preset/GPU failure → session fallback to stock renderer, game never dies | Core product promise; scatters through gpu_scaler.cpp |
 | Hot reload | None in v1; switching presets live rebuilds the chain | Restart not required for preset switch, only for pack changes |
 | Pass orientation | Y-mirror MVP on intermediates, legacy flip on last pass | Fixes even/odd chain mirroring (`7ea8e6e93`, field-verified) |
+| Upstream merge | Plan-first; nothing scaffolded (2026-10-16) | AJenbo's conditions answered in merge-plan r2; PRs gated on Phase-0 audit sweeps (8A/8B/8C); the audit ledger never travels; long-term: standalone library regardless of PR outcome |
 
 ---
 
@@ -185,6 +186,7 @@ gpu_scaler → gpu-scaler.log (SDL_GetBasePath(), rotating 200KB) + SDL log capt
 - Shader cache: pruning still absent; PNG-only LUT decode vs 6 accepted extensions in `LooksLikeImagePath` (ROB-12, open). Version salt, atomic writes, and self-heal are done (ROB-03/ROB-04 ✅).
 - Per `SLANG_SPEC.md` §8: ~20 spec gaps tracked (clamp_to_border, history cap 8, `#pragma alias`, `feedback_pass` parsed-unused, …).
 - **Open audit backlog (post round-7.5 quick fixes, 2026-10-16)**: **0 High** — ROB-14 and ROB-15 closed by the same-day quick-fix batch — **+ 14 Medium** (ROB-18..23, PERF-06, TEST-06, MAINT-15, ROB-07, ROB-08, FEAT-01..03; MAINT-03 re-closed by actually deleting the three zombie workflows) **+ 30 Low**. The batch closed 9 findings total (ROB-14/15/16/17, ROB-24/25, MAINT-03 re-close, MAINT-16, TEST-07) with MAINT-09/MAINT-19 partially fixed (cross-noted, still open) — full ledger in `docs/audit.md`, closures in `docs/deltas.md`.
+- **Merge-track state (2026-10-16)**: merge plan r2 with the diasurgical maintainers (reply pending); the open-backlog bullet above is sequenced into Phase-0 sweeps 8A/8B/8C per `docs/merge-plan-r2.md` §3 (first-contact bar = 8A+8B, 10 of 14 Medium closed; 8C pipelines with early PR reviews); long-term: extract `Source/engine/render/gpu/` into a standalone library any project can use, gated on full audit closure (handoff §14).
 
 ---
 
