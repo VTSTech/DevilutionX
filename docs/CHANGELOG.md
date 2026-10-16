@@ -150,6 +150,14 @@ upstream sync through a true merge commit (PR #1 from diasurgical/master).
   own `test/preset_unload_test.cpp`, space-indented since it landed — now
   re-indented to `test/.clang-format` (169 lines, whitespace-only: `git diff -w`
   is empty) so the CI format gate covers it cleanly.
+- Merge-plan arithmetic corrected in the same push: the first-contact bar is **9 of
+  the 14** Medium open when r2 was measured — 8A carries four (ROB-20/21, PERF-06,
+  MAINT-15) and 8B five (ROB-08/18/19/22, FEAT-02 disposition), with ROB-20 no longer
+  double-counted across the PR 1/PR 2 gates — not the "10 of 14" r2 originally
+  wrote; rounds 8/9 already shipped five of those nine, leaving ROB-08, PERF-06,
+  MAINT-15, and the FEAT-02 disposition. `merge-plan-draft-r2.md` and `audit.md`
+  carry the fix plus a dated ledger note reconciling r2's 44-open snapshot with
+  today's 40 (0 High / 9 Medium / 31 Low).
 - `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
 
 ## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)

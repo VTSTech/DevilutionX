@@ -23,8 +23,9 @@ the ladder:
    that block it. "More ready today than others" becomes a measurable property:
    PRs 1–3 are one fix-round away, PRs 4–5 are two, PR 6 is three.
 2. **Phase 0 — audit-closure gate (§3).** Three bounded fix rounds (8A/8B/8C)
-   disposition the entire open set. First contact requires 8A+8B (10 of 14 Medium
-   closed; the remaining four live in runner/feature code no early PR touches).
+   disposition the entire open set. First contact requires 8A+8B (9 of 14 Medium
+   closed; the remaining five — three 8C items plus the two FEAT deferrals — live
+   in runner/feature code no early PR touches).
 3. **Noise-control policy (§6).** Six rules keeping the audit/docs cycle fork-side
    forever: no fixup tails on open PRs, no ledger files in branches, upstream-wide
    findings become upstream *issues* instead of riders on shader PRs.
@@ -111,7 +112,11 @@ additions with zero engine impact.
 
 ## 3. Phase 0 — audit-closure gate (new in r2)
 
-Current ledger: **44 open findings — 14 Medium, 30 Low, 0 High.** Phase 0 dispositions
+Current ledger: **44 open findings — 14 Medium, 30 Low, 0 High.** *(Ledger note,
+2026-10-17: rounds 8 and 9 have since closed five of these Medium — ROB-18/19/22 and
+ROB-20/21 — and added one Low, TEST-08; the live ledger in `audit.md` stands at 40
+open — 0 High / 9 Medium / 31 Low. Of the nine Medium owned by 8A+8B below, four
+remain: ROB-08, PERF-06, MAINT-15, and the FEAT-02 disposition.)* Phase 0 dispositions
 all of them before/while the series opens. Nothing here is redesign work: every finding
 in the ledger already carries a concrete fix sketch, so Phase 0 is execution, not
 exploration. Three rounds, each scoped to unblock a specific slice of the ladder.
@@ -181,10 +186,16 @@ Est. 2–3 sessions.
 - **E5** (only on agreement to act — not before): `pr/1…pr/8` branches cut from the
   post-Phase-0 snapshot.
 
-**Bar for first contact = 8A + 8B complete** (10 of 14 Medium closed; the remaining
-four — ROB-07, ROB-23, TEST-06, plus the two FEAT deferrals — live in runner/feature
-code no early PR touches). If maintainers prefer a zero-open-Medium bar before *any*
-PR, run 8C first as well; cost is roughly one week of slip.
+**Bar for first contact = 8A + 8B complete** (9 of 14 Medium closed; the remaining
+five — ROB-07, ROB-23, TEST-06 in 8C, plus the two FEAT deferrals — live in
+runner/feature code no early PR touches). If maintainers prefer a zero-open-Medium
+bar before *any* PR, run 8C first as well; cost is roughly one week of slip.
+
+*(Arithmetic corrected 2026-10-17: this bar was originally written as "10 of 14"
+with "the remaining four" — ROB-20 was counted twice, once under PR 1 and once under
+PR 2's translator-half note. 8A carries four Medium — ROB-20/21, PERF-06, MAINT-15 —
+and 8B five — ROB-08/18/19/22 and the FEAT-02 disposition; 4 + 5 = 9, matching E1's
+"fixed (12) or dispositioned" split.)*
 
 ---
 
@@ -387,7 +398,7 @@ Reading of the table:
 
 **Revised cadence:**
 
-1. **Phase 0** — sweeps 8A + 8B fork-side (the maintainer-agreed bar: 10 of 14 Medium
+1. **Phase 0** — sweeps 8A + 8B fork-side (the maintainer-agreed bar: 9 of 14 Medium
    closed, waivers dispositioned, ledgers reconciled, ARCH-02 consolidated, rebase done).
 2. **First contact** — open **PR 4** (170-line inert seam: deliberately the smallest
    possible first diff on upstream-core files — a trust signal) and **PR 1**
