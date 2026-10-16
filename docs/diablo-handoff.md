@@ -17,7 +17,7 @@
 |---|---|
 | repo tip | **2026-10-16: `8690cc7bb` "docs"** — handoff v2 rewrite (two-track restructure: Track A slang-shaders audit + Track B upstream merge; history stripped, live state kept in the ledger CSVs / audit.md / deltas.md) → prior tip line: `0f9e69324` "Linux CI" (r7.6.2 — `preset_smoke` `RUNTIME_OUTPUT_DIRECTORY` ctest geometry fix, CI green, user-applied) → `2c9a4ddfa` committed merge-plan drafts r1+r2 → `a0cbeccb6` = release **`gpu-shaders-v14`** (preset_smoke corpus green again) → beneath that: codebase-audit rounds 1–7.5 (closure history lives in `docs/deltas.md` — do not re-derive from this file) |
 | release tag | **`gpu-shaders-v14`** (`a0cbeccb6`, tip-most of 14). v8 first shipped `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe; v9 added the Linux helper scripts + `install_git.cmd` |
-| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps 1–6, 12, 15–20 closed; 7 remain, only one actionable (item 13, `#reference` multi-chain order) — the rest are intentional divergences (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **72 working / 24 pending / 2 crash**; coverage CSV 225 rows → 220 working / 3 crash / 1 black-screen / 1 fallback. Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested). **Next:** ds-hybrid ×2 re-test (round-9 build + `DEVILUTIONX_GPU_DEBUG=1` + Integer Scaling ON), koko-aio-ng include-fix re-test, then the 24 pending tiered rows (§6) |
+| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **72 working / 24 pending / 2 crash**; coverage CSV 225 rows → 220 working / 3 crash / 1 black-screen / 1 fallback. Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested). **Next:** ds-hybrid ×2 re-test (round-9 build + `DEVILUTIONX_GPU_DEBUG=1` + Integer Scaling ON), koko-aio-ng include-fix re-test, then the 24 pending tiered rows (§6) |
 | Track B — upstream merge | **Plan-first, reply pending.** r1+r2 sent to diasurgical (AJenbo) 2026-10-16; nothing scaffolded — no `pr/*` branches, no upstream contact — until the maintainers reply AND VTSTech directs. Plans: `docs/merge-plan-draft-r1.md` / `docs/merge-plan-draft-r2.md`. Default fork-side queue meanwhile: Phase 0 audit sweeps **8A → 8B → 8C** (§7) |
 | codebase-audit ledger | **72 findings / 28 closed / 44 open (0 High / 14 Medium / 30 Low)** as of round 7.5 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
 
@@ -57,7 +57,7 @@ its history.
 
 | Ref | State |
 |---|---|
-| fork `master` (what CI builds) | tracks origin/master; tip in §0. Field-verified on Windows (v8/v9-lineage CI builds) and Debian 12 bookworm (`gcc:14-bookworm` container, glibc 2.36 floor, GLIBCXX gate) |
+| fork `master` (what CI builds) | `8690cc7bb` (this handoff revision; live tip + lineage in §0). Tracks origin/master. Field-verified on Windows (v8/v9-lineage CI builds) and Debian 12 bookworm (`gcc:14-bookworm` container, glibc 2.36 floor, GLIBCXX gate) |
 | release tags | 14 total; tip-most **`gpu-shaders-v14`** (`a0cbeccb6`) |
 | PRs #8734/#8736/#8737 | **DEAD — do not pursue.** 18k monoliths (baked filters + SDL patching) violate AJenbo's merge conditions (§7); superseded by the 8-PR ladder. Report bugs and request features **in this repository** (README "IMPORTANT"). Upstream issue #4453 and the demo video remain as history. Never post to upstream by any means other than VTSTech by hand (§7 standing rules) |
 | upstream SDL_mixer PR #906 | OPEN; fixes the zero-length RIFF chunk bug (Diablo's 1996 WAVs fail to decode). Nice-to-have, **not gating** — the mod carries its own vendored `3rdParty/SDL3_mixer` patch + `SDL_LoadWAV_IO` fallback. Watch only |
@@ -93,10 +93,10 @@ travels with the clone.
 | Dir layout | `shaders\` NEXT TO THE EXECUTABLE (recursive scan, subfolders OK), not the in-Source tree |
 | Compile | In-process glslang (FetchContent `3rdParty/glslang`) → SPIR-V; cache in `shaders/cache/`; `<name>.vert.spv`/`.frag.spv` sidecars always win |
 | Multi-pass | Per-pass scale rules, filter/wrap, sRGB & float FBOs, aliases, `Original`/`OriginalHistory#`/feedback, LUT PNGs, `#pragma` params at defaults, `frame_count_mod`, minimal history depth |
-| **Pass orientation** | Every pass rendering into an INTERMEDIATE target gets a Y-mirror MVP (`diag(1,-1,1,1)`); last pass keeps the legacy convention so the present blit cancels — even/odd chain flips fixed (`7ea8e6e93`, field-verified); vertex stages without an MVP uniform keep their own (unknown) orientation — flagged `vertexMvp=no` in the load log, none seen in the field |
+| **Pass orientation** | Every pass rendering into an INTERMEDIATE target gets a Y-mirror MVP (`diag(1,-1,1,1)`); last pass keeps the legacy convention so the present blit cancels — even/odd chain flips fixed, field-verified; vertex stages without an MVP uniform keep their own (unknown) orientation — flagged `vertexMvp=no` in the load log, none seen in the field |
 | **D3D12** | **EXCISED (2026-10-14)** — SPIR-V → SPIRV-Cross → HLSL transpile path and forensics tooling all deleted. Do not revisit; with no Vulkan driver the scaler fails cleanly to the regular renderer (failure contract) |
 | Metal | Accepted on macOS at the device level (`CreateDevice` sets both `SHADERS_SPIRV` + `SHADERS_MSL` props; shared Vertex/Blit programs have MSL in `gpu_shaders_msl.hpp`). Preset passes submit SPIR-V, which SDL's Metal backend transpiles to MSL at runtime — **untested, no field validation yet** |
-| Built-ins | REMOVED (user request, `77c53bf35`): no ScaleFX/HQx pipelines/list entries; `gpu_luts.hpp` is an unreferenced orphan (safe to delete); stale ini values 1–6 sanitize to Off; only shared `Vertex`/`Blit` programs remain baked (the `gpu_scaler_spv` build target still compiles the dead hqx/scalefx sources into the generated header — harmless, trimmable) |
+| Built-ins | REMOVED (user request): no ScaleFX/HQx pipelines/list entries; `gpu_luts.hpp` is an unreferenced orphan (safe to delete); stale ini values 1–6 sanitize to Off; only shared `Vertex`/`Blit` programs remain baked (the `gpu_scaler_spv` build target still compiles the dead hqx/scalefx sources into the generated header — harmless, trimmable) |
 | UI | Shader Filter = Off + folder-browser entries; enum `100+N` is an index into the CURRENT listing; durable selection = stored relative path (`Graphics.shaderFilterPreset.value`, hidden ini); path committed BEFORE the value change |
 | Hot reload | None in v1 (restart to apply); switching presets live DOES rebuild the chain |
 | Failure contract | Any preset load/run failure → session fallback (classic renderer), game never dies; custom-preset failure turns the filter off for the session |
@@ -130,10 +130,13 @@ errors + graceful fallback.
 semantic with the fork's implementation status (supported / partial / extension /
 parsed-unused / unimplemented / divergent), cross-checked against RetroArch's
 `gfx/video_shader_parse.c`, ending in the priority-ordered gap list (its §7).
-Items 1–6, 12, 15–20 are closed (F6 viewport aspect `f87f89d18`, F1 mipmaps,
+Items 1–6, 12, 13, 15–20 are closed (F6 viewport aspect `f87f89d18`, F1 mipmaps,
 param-case quirk, `PassFeedback#Size` crash, `Rotation` semantic, `#pragma format`
-tokens, case asymmetries, and the four field-round-1/2 parser fixes) — each carries a
-regression test under `tools/audit/test_*.cpp`. Do not re-open them. Remaining:
+tokens, case asymmetries, the four field-round-1/2 parser fixes, and item 13's
+comment-side alignment `ca02abf856` — last-wins `#reference` order documented) —
+each code fix carries a regression test under `tools/audit/test_*.cpp`. Do not
+re-open them. **The actionable static queue is empty.** What remains is
+maintenance-mode: intentional divergences, reopened only on field evidence.
 
 | # | Item | Disposition |
 |---|---|---|
@@ -142,7 +145,6 @@ regression test under `tools/audit/test_*.cpp`. Do not re-open them. Remaining:
 | 9 | Hard-error translator paths, zero corpus exposure (T2–T5: vertex-stage samplers, sampler arrays, >1 plain UBO, unsized arrays) | leave as loud errors — they flag genuinely unsupported shaders |
 | 10 | `#pragma alias` / `#pragma include_optional` / `#error` skip | add only if a pack needs them |
 | 11 | `FrameDirection` constant +1 | correct for this game (no rewind) — keep |
-| 13 | `#reference` multi-chain order: code = last non-empty parent wins, comment says first | **the one actionable item** — fix the comment (or make it first-wins) before any preset relies on order |
 | 14 | `feedback_pass` / `histories` parsed-unused (F2) | intentional (demand-driven feedback); re-evaluate only when spec-conformance testing starts |
 
 ### Empirical arm — field sweep
@@ -244,7 +246,7 @@ working / partial / fallback / crash; category from the table below or `ok`) →
 | Missing preset feature (history, feedback, alias, scale rule) | `unresolved texture '<name>'` or silent misrender | `preset_runner.cpp` (binding logic) or `preset_parser.cpp` (spec coverage) |
 | Vulkan validation layer error | `vkCreateGraphicsPipelines` / `vkUpdateDescriptorSets` validation message | `preset_runner.cpp` (pipeline/descriptor setup) |
 | LUT PNG load failure | `Unsupported image format` | `SDLIMAGE_VENDORED` (already fixed) |
-| Vertical flip (even/odd pass parity) | visible flip, no log | Y-mirror MVP on intermediate passes — already fixed (`7ea8e6e93`) |
+| Vertical flip (even/odd pass parity) | visible flip, no log | Y-mirror MVP on intermediate passes — already fixed |
 | Crash (AV / segfault) | `CRASH #N:` in log, or silent death | `preset_runner.cpp`; use `DEVILUTIONX_GPU_DEBUG=1` to name it |
 
 ## 7. Track B — upstream merge track (plan-first — reply pending)
@@ -340,9 +342,8 @@ stand without DevilutionX context.
   libpng+zlib is mandatory (`SDLIMAGE_VENDORED=ON` + `GIT_SUBMODULES` — release
   tarballs lack `external/`).
 - **Vendored-dep target collisions** (CMP0002): SDLIMAGE_VENDORED defines
-  `zlib`/`zlibstatic`; superproject zlib is deferred for SDL3 and reuses SDL_image's
-  (`44307699f`). When adding a vendored dep, grep `3rdParty/` for duplicate targets
-  first.
+  `zlib`/`zlibstatic`; superproject zlib is deferred for SDL3 and reuses SDL_image's.
+  When adding a vendored dep, grep `3rdParty/` for duplicate targets first.
 - Headless-configure escape hatches: `-DSDL_UNIX_CONSOLE_BUILD=ON`,
   `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` (CMake 4), `-DSDL_X11=OFF -DSDL_WAYLAND=OFF …`.
 - FetchContent variables are LOWERCASED (`sdl_image_SOURCE_DIR`) regardless of the
