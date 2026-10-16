@@ -107,13 +107,20 @@ jobs:
         #   from source every configure; only real source changes should recompile).
         # (no g++ here on purpose: the image's GCC 14 in /usr/local IS the toolchain;
         #  installing bookworm's g++ would put a second, older compiler on disk)
+        # preset_unload (GPU lifecycle harness) additionally needs a real Vulkan
+        # stack: libvulkan1 = the loader, mesa-vulkan-drivers = the lavapipe
+        # software ICD, xvfb = a display server for SDL3's x11 Vulkan hooks
+        # (SDL3's "dummy" video driver has NO Vulkan support at all, so there
+        # is no driver-less way to create an SDL_GPUDevice), xauth = required
+        # by the xvfb-run wrapper.
         apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils ccache \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
           libxtst-dev \
           libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
           libudev-dev libdbus-1-dev \
-          libbz2-dev libpng-dev
+          libbz2-dev libpng-dev \
+          libvulkan1 mesa-vulkan-drivers xvfb xauth
         # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14),
         # NOT /usr/bin/c++ (bookworm's GCC 12, no <format>)
         g++ --version | head -1
@@ -148,8 +155,29 @@ jobs:
     - name: Build
       run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
 
-    - name: Test (gtest suite, headless)
-      run: ctest --test-dir build --output-on-failure -j $(getconf _NPROCESSORS_ONLN)
+    # Headless GPU test support: SDL3 has NO Vulkan under the "dummy" video
+    # driver (no Vulkan hooks), so the GPU lifecycle harness (preset_unload)
+    # needs a REAL video driver: Xvfb gives the x11 driver a display,
+    # mesa-vulkan-drivers provides the lavapipe software ICD (SDL_gpu needs
+    # only Vulkan 1.0 core - 1.2/1.3 features are optional - so bookworm's
+    # mesa 22.3 lvp qualifies). SDL3 never auto-picks a driver on headless
+    # boxes, so the x11 driver is pinned explicitly.
+    - name: Test (gtest suite, headless — Xvfb + lavapipe for the GPU lifecycle test)
+      env:
+        SDL_VIDEODRIVER: x11
+        XDG_RUNTIME_DIR: /tmp
+      run: |
+        xvfb-run -a ctest --test-dir build --output-on-failure -j $(getconf _NPROCESSORS_ONLN)
+        # Coverage guard: preset_unload IS the shader load/unload regression
+        # harness (the field CTD report). If Xvfb/lavapipe broke, it would
+        # skip quietly (exit 0) and the suite would stay green with ZERO GPU
+        # coverage - fail the job instead. A real run ends with "ALL OK".
+        xvfb-run -a ctest --test-dir build -R preset_unload --output-on-failure -V > /tmp/preset_unload_ci.log 2>&1
+        if ! grep -q "ALL OK" /tmp/preset_unload_ci.log; then
+          cat /tmp/preset_unload_ci.log
+          echo '::error::preset_unload did not complete with ALL OK - Xvfb/lavapipe GPU coverage is missing. Check SDL_VIDEODRIVER / XDG_RUNTIME_DIR / mesa-vulkan-drivers.'
+          exit 1
+        fi
 
     - name: Portability gate (glibc 2.36 floor — mirror of the Windows DLL gate)
       run: |

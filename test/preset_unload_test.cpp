@@ -18,6 +18,13 @@
  *
  * Contract: no crashes, no aborts; every step returns success. Runs under
  * ASan in CI-style sandboxes.
+ *
+ * Skip policy (exit 0, loud "SKIP:" line): no usable video driver, no
+ * usable Vulkan device, or no corpus. SDL3 never auto-picks a video driver
+ * on headless boxes, and its "dummy" driver has NO Vulkan hooks at all, so
+ * this harness needs a display server whose video driver supports Vulkan
+ * (CI provides Xvfb + the mesa lavapipe ICD and FAILS the job if the
+ * harness skips - a silent skip would mean zero lifecycle coverage).
  */
 
 #include <cstdio>
@@ -132,8 +139,17 @@ int main(int argc, char **argv)
         std::printf("preset_unload_test: shader root: %s\n", root.c_str());
 
         if (!SDL_Init(SDL_INIT_VIDEO)) {
-                std::printf("FAIL: SDL_Init(SDL_INIT_VIDEO): %s\n", SDL_GetError());
-                return 1;
+                // Headless box: SDL3 probed wayland/x11/... and found nothing
+                // usable. SDL3 does NOT fall back to the "dummy" driver on its
+                // own, and the dummy driver could not help anyway - it has no
+                // Vulkan hooks, so SDL_CreateGPUDevice would fail with
+                // "Vulkan support is either not configured or unavailable".
+                // Nothing to exercise here - skip cleanly (exit 0), same
+                // policy as the no-device / no-corpus paths below. CI runs
+                // this under Xvfb + lavapipe for real coverage.
+                std::printf("SKIP: no usable video driver (%s) - this harness needs a display server (e.g. Xvfb) whose video driver has Vulkan hooks\n", SDL_GetError());
+                SDL_Quit();
+                return 0;
         }
 
         // Same property set the scaler's CreateDevice uses (SPIR-V for Vulkan).
