@@ -12,7 +12,7 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
-## 1.6.0-dev-e08c3509c (2026-10-16 6:28:14 PM)
+## 1.6.0-dev-f113268 (2026-10-16 6:28:14 PM)
 
 Round 13 closes the last two first-contact-bar Mediums — **PERF-06** and
 **ROB-08** — completing the 8A+8B bar that gated first upstream contact: all
