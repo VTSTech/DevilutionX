@@ -54,6 +54,11 @@ snapshot.
 | FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message | 2026-10-17 |
 | PERF-06 | Medium | Performance | Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans | 2026-10-17 |
 | ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain | 2026-10-17 |
+| ROB-23 | Medium | Robustness | `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits | 2026-10-17 |
+| TEST-06 | Medium | Testing | `preset_smoke` known-texture set omits `#pragma name` identifiers — diverges from the runner | 2026-10-17 |
+| ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII | 2026-10-17 |
+| FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets | 2026-10-17 |
+| FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log | 2026-10-17 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -153,6 +158,22 @@ closure's full Original/Resolution/Verification record follows in ID order.
   split landed as a MAINT-15 addendum and the changelog gained a consolidated
   `1.6.0-dev-007f3956a` window entry. Ledger 38 → **36 open (0 High / 5 Medium /
   31 Low)**.
+- **Round 14 (2026-10-17).** Closed the entire 8C runner sweep plus its two
+  feature riders — **ROB-23** (uniform fill is type- and size-aware and the
+  parameter lookup now runs before the `<TextureName>Size` branch, so
+  parameter-driven packs like CRT masks get the user's values instead of
+  silent zeros or float bits in int members), **TEST-06** (the smoke harness
+  ports the runner's `#pragma name` pre-scan, byte-identical regex asserted,
+  so cross-referencing packs predict in-game translation), **ROB-07**
+  (`PassRuntime`/`LutRuntime` gained RAII destructors as the single release
+  point for their GPU objects — mid-load failures clean up at scope exit,
+  making the runner genuinely reusable), **FEAT-01** (re-selecting the same
+  preset reloads the chain when the file's mtime/size changed on disk — pack
+  iteration no longer detours through another preset) and **FEAT-03** (a
+  failed preset load surfaces the first line of its error in the filter OSD,
+  full text in the log). **The ledger is Medium-free** — 0 High / 0 Medium —
+  and every Phase-0 sweep (8A/8B/8C) is complete. Ledger 36 → **31 open
+  (0 High / 0 Medium / 31 Low)**.
 
 ---
 
@@ -1636,4 +1657,222 @@ handback and parked-device states no-ops. Failure contract: a rejected present m
 and continues — never fatal. CI: the gtest suite (`linux-tests` job) and the
 clang-format gate stay green.
 
+## ROB-23 — CLOSED: `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (`FillBlockBytes` — the `<TextureName>Size` branch, the `writeVec4` helper, the generic parameter fallback) |
+
+**Original finding.** Three defects shared one function. (a) The
+`<TextureName>Size` branch was checked *before* the shader-parameter lookup,
+so a UBO member named e.g. `MaskSize` backed by `#pragma parameter MaskSize`
+— which the translator explicitly accepts as a parameter — never received its
+value: the size resolver found no texture named `Mask`, wrote zeros, and both
+the pragma default and the preset override were silently dropped. (b)
+`writeVec4` wrote 8+ bytes unconditionally, so for a 4-byte `float`/`int`
+member it scribbled 4 bytes into the next member's storage (transiently
+clobbering an already-written neighbor). (c) The generic parameter fallback
+`WriteFloat(out, member.offset, value)` ignored `member.type` entirely — an
+`int`/`uint`/`bool` member matched to a parameter received IEEE-float bit
+patterns (value 5 read back as ~1.09e9). The builtin semantics did this
+correctly (`WriteUint` for FrameCount/Rotation, `WriteInt` for
+FrameDirection), marking (c) as an oversight in the generic path.
+
+**Resolution.** The finding's prescription, all three parts. The parameter
+lookup (preset overrides, case-insensitive, then the pass's `#pragma
+parameter` defaults) moved ahead of the `<TextureName>Size` branch — a found
+parameter writes and continues, builtins keep priority, unresolved names fall
+through to the size resolver exactly as before. Writes are now type- and
+size-aware through two new helpers: `UniformComponentCount` (std140 component
+count: 1 for scalars/Bool, 2/3/4 for the vector types) and `WriteMemberValue`
+(one component with the member's own bit pattern — Int family → int32
+truncation, Uint family → uint32, Bool → 0/1, Float family → IEEE bits).
+`writeVec4` loops its components through the helpers, clamped to the member's
+declared shape; the unmatched-member tail writes typed zeros. Builtin
+semantics are unchanged; the MVP mat4 writer is untouched.
+
+**Verification.** Shipped-block harness: `UniformType`/`UniformMember` and
+the exact helper + `writeVec4` bodies extracted from the patched tree,
+compiled standalone, 12 probes ALL OK — int/uint members get value 5 as
+integer bits; Bool writes 0/1; a scalar member through `writeVec4` leaves the
+offset+4 sentinel (0xAA) intact where the old code scribbled; vec2/vec3/vec4
+write exactly their own widths; IVec4/IVec2 builtin-size members get int
+bits; component-offset arithmetic verified at a non-zero base. Static: the
+parameter block precedes the `<TextureName>Size` branch in the shipped
+function. Behavior-change surface: parameter-backed `*Size` members now
+receive their values (the finding's own scenario) and int-typed members get
+integer bits. CI: the gtest suite and the clang-format gate stay green.
+
 ---
+
+## TEST-06 — CLOSED: `preset_smoke` known-texture set omits `#pragma name` identifiers — diverges from the runner
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Testing |
+| **Original location** | `Source/engine/render/gpu/preset/preset_smoke.cpp` (the known-name set construction), `Source/engine/render/gpu/preset/preset_runner.cpp` (the step-1 pre-scan it diverged from) |
+
+**Original finding.** The runner built its known-texture-name set from pass
+aliases, `#pragma name` values (pre-scanned in step 1 of `Runner::Load`) and
+LUT names; the smoke harness inserted only texture names and aliases. A pack
+whose later pass sampled an earlier pass by its `#pragma name` — no alias, a
+pattern the runner's own comments cite — translated fine in-game but failed
+in smoke with "unknown texture reference". Verified against the committed
+corpus: every fixture used aliases or builtins, so the pragma-name binding
+path was unexercised, and expanding the corpus with real packs
+(koko-aio-style cross-references) would have tripped false failures that
+don't reproduce in-game — eroding trust in exactly the regression harness
+TEST-01 stood up.
+
+**Resolution.** The smoke harness mirrors the runner's step-1 pre-scan: per
+preset, each pass's shader file is resolved (`ResolvePresetFilePath`) and
+scanned line-by-line with the SAME regex literal the runner uses, first
+`#pragma name` match per pass wins, and every found identifier joins the
+known-name set in both original and lowercased form through the harness's
+existing `insertBoth`. A pass file that cannot be opened is skipped in the
+pre-scan (the pass loop reports the open failure with context), matching the
+runner's resolve-then-fail flow. No corpus fixture changes were needed.
+
+**Verification.** Regex parity asserted programmatically: the regex literals
+extracted from both files are byte-identical. The pre-scan block is a
+structural mirror of `Runner::Load`'s step 1 (same regex, same
+first-match-per-pass semantics, same case-pair insertion). CI: the corpus
+suite (`preset_smoke` / `preset_smoke_corpus`) and the clang-format gate stay
+green — a pack using the pragma-name idiom now smokes exactly as it plays.
+
+---
+
+## ROB-07 — CLOSED: `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/preset_runner.cpp` (`PassRuntime`/`LutRuntime` structs, `Runner::Load` failure paths, `LoadLut`, `Runner::Unload`) |
+
+**Original finding.** `PassRuntime` and `LutRuntime` held raw
+`SDL_GPUShader*`/`SDL_GPUGraphicsPipeline*`/`SDL_GPUTexture*` members with no
+destructor, relying on `Runner::Unload` seeing them via `passes_`. During
+`Load`, per-pass shaders and pipelines were created before ownership transfer
+into `passes_`, and `LoadLut` created the LUT texture before its transfer
+buffer and command buffer succeeded — so any mid-load failure (shader N
+fails, pipeline N fails, LUT transfer fails) left already-created GPU
+resources unreachable when the caller's `unique_ptr` destroyed the runtimes.
+The blast radius was bounded because every `Load` failure path ended in a
+full `Shutdown()` + device destruction, which frees everything; but the
+header's own contract ("Unload is safe to call anytime") was silently false
+mid-load, and any future reuse of `Runner` — hot reload, preset retry — would
+have turned this into a real leak.
+
+**Resolution.** RAII destructors as the single release point. Both runtimes
+gain a `device` member (release context, set at creation in `Load`) and
+destructors that release exactly what they own — `PassRuntime`: vertex and
+fragment shader, pipeline, both output textures; `LutRuntime`: the texture.
+Mid-load failures now clean up automatically at scope exit through the
+staging `unique_ptr`s — no failure-path routing needed. `Unload` delegates:
+the live-device path deletes the runtimes and lets the destructors release
+(`ReleaseTargets` already nulled the pass targets), and the post-teardown
+path (`device_ == nullptr`) clears the release context first so deletion
+stays pure memory cleanup. The ROB-03 self-heal's explicit release-and-retry
+block is untouched (it re-creates in place). Ownership at every instant is
+unambiguous — staged `unique_ptr` → `passes_`/`luts_` raw → destructor — so
+no double release is possible.
+
+**Verification.** Static call-site census on the shipped file:
+`Runner::Unload` contains no shader/pipeline/texture release calls;
+`SDL_ReleaseGPUShader` ×4 (destructor ×2 + ROB-03 self-heal ×2),
+`SDL_ReleaseGPUGraphicsPipeline` ×1 (destructor), `SDL_ReleaseGPUTexture` ×5
+(pass destructor + LUT destructor + `ReleaseTargets` ×3), release context
+set at both creation sites. The FEAT-01 reload shipped in the same round is
+the first consumer that reuses a `Runner` after failures — its safety rests
+on this cleanup. CI: the gtest suite and the clang-format gate stay green.
+
+---
+
+## FEAT-01 — CLOSED: Preset failure retry / hot reload of failed presets
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`EnsurePresetRunner`), `Source/engine/render/gpu/preset/preset_runner.cpp` (`Runner::Load` failure paths — made safe by ROB-07 in the same round) |
+
+**Original finding.** A preset that failed to load disabled the shader filter
+for the entire session; the user had to reopen the folder browser and
+re-select to retry. This was most painful during exactly the workflow the
+mod's own docs recommend — iterating on a preset pack, where a syntax error
+meant restarting the selection flow (or, for cache-related failures,
+potentially restarting the game after clearing the cache). The friction was
+visible in the code structure: `EnsurePresetRunner` already rebuilt "only
+when resolved path changes", so a retry path existed but was gated behind
+path identity — re-selecting the SAME preset with an edited slang file hit
+the loaded fast-path and never re-read the file.
+
+**Resolution.** The finding's minimal version, no new UI. The loaded-chain
+identity gains a file stat snapshot — mtime and size via `SDL_GetPathInfo`,
+recorded when a load succeeds; a failed stat records zeros, meaning "never
+auto-reload". The same-path fast-path now re-stats: a changed mtime or size
+logs "preset file changed on disk; reloading: <path>" and falls through to
+the normal Unload → Parse → Load rebuild; a stat that fails (file briefly
+unavailable) keeps the running chain — a transient unreadable file must not
+kill a working session. Any renderer reinit with the same selection
+(re-selecting the preset, changing related settings) now picks up pack edits;
+re-trying a failed load on re-select already worked and is unchanged.
+Chain-identity clearing is centralized in `ClearLoadedPreset()` (fast-path
+reload, load failure, `Shutdown`, `HandbackWindow`).
+
+**Verification.** Static: the snapshot is recorded on the success path; the
+reload gate fires only on a successful stat whose mtime or size differs from
+the recorded values, and short-circuits to keep-chain when the recorded mtime
+is zero (stat unavailable at load) or the stat fails; `ClearLoadedPreset()`
+census = 4 call sites. Field-verification hook: edit a loaded pack's slang
+file, re-select the preset, watch for the reload log line. CI: the gtest
+suite and the clang-format gate stay green.
+
+---
+
+## FEAT-03 — CLOSED: Surface preset errors in-game instead of only in gpu-scaler.log
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | New Feature |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (`ShowFilterOsd`/`DrawFilterOsd`, `EnsurePresetRunner` failure sites) |
+
+**Original finding.** When a preset failed to load, the entire user-visible
+symptom was that the Shader Filter silently showed `Off` (or the previous
+state) — every diagnostic detail went to gpu-scaler.log next to the
+executable, which most users would never find. The building blocks for
+in-game feedback already existed: the OSD path (`DrawFilterOsd`/
+`ShowFilterOsd`) already rendered status text into the 8-bit frame, the
+failure contract already carried a descriptive `std::string` error from every
+failure site, and the preset display name already flowed to the OSD. The
+`(Unavailable)` convention documented in the README established the pattern;
+load failures just didn't complete it.
+
+**Resolution.** `gPresetLastError` records why the last preset load attempt
+failed, set at all four `EnsurePresetRunner` failure sites (no stored path,
+file not found in the shaders folder, parse failure, `Runner::Load` failure —
+the log lines compose the same text as before), cleared on success, and
+deliberately surviving the failure `Shutdown` so the OSD can still name the
+reason. The OSD's unavailable state upgrades from a bare "(unavailable)" to
+"(failed: <first line>)" for custom filters — e.g. "Shader: crt-royale
+(failed: cannot open shader file: …)" — via a new `OsdErrorLine` helper that
+takes the first line and caps it at 64 characters with an ellipsis so the
+bottom-right label cannot walk off-screen; the full text stays in the log.
+Built-in filters never show a preset error (the failure belongs to the
+preset path). The full-text log line and the existing "(unavailable)"
+fallback (custom filter, no recorded error) are unchanged.
+
+**Verification.** Static: the error is recorded at all four failure sites
+with log output byte-identical to the previous hardcoded strings; the OSD
+branch is gated on `IsCustomFilter` and a non-empty error; the truncation
+cap is enforced in `OsdErrorLine`. The OSD refresh points (every Reinit and
+renderer recreation) already existed. CI: the gtest suite and the
+clang-format gate stay green.
+
+---
+

@@ -217,6 +217,12 @@ struct UniformBlockRuntime {
 struct PassRuntime {
 	PassDef def;
 	SlangTranslation translation;
+	// ROB-07: RAII release of the GPU objects owned below. Runs identically
+	// for staged runtimes destroyed by a mid-load failure (never transferred
+	// into passes_) and for the Unload teardown - one release point each.
+	~PassRuntime();
+	// Release context for the owned objects; set at creation in Load().
+	SDL_GPUDevice *device = nullptr;
 	SDL_GPUShader *vertexShader = nullptr;
 	SDL_GPUShader *fragmentShader = nullptr;
 	SDL_GPUGraphicsPipeline *pipeline = nullptr;
@@ -236,10 +242,46 @@ struct PassRuntime {
 
 struct LutRuntime {
 	TextureDef def;
+	// ROB-07: same single-release-point contract as PassRuntime.
+	~LutRuntime();
+	// Release context for the owned texture; set at creation in Load().
+	SDL_GPUDevice *device = nullptr;
 	SDL_GPUTexture *texture = nullptr;
 	Uint32 width = 0;
 	Uint32 height = 0;
 };
+
+PassRuntime::~PassRuntime()
+{
+	if (device == nullptr)
+		return;
+	if (vertexShader != nullptr) {
+		SDL_ReleaseGPUShader(device, vertexShader);
+		vertexShader = nullptr;
+	}
+	if (fragmentShader != nullptr) {
+		SDL_ReleaseGPUShader(device, fragmentShader);
+		fragmentShader = nullptr;
+	}
+	if (pipeline != nullptr) {
+		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		pipeline = nullptr;
+	}
+	for (SDL_GPUTexture *&tex : outputTex) {
+		if (tex != nullptr) {
+			SDL_ReleaseGPUTexture(device, tex);
+			tex = nullptr;
+		}
+	}
+}
+
+LutRuntime::~LutRuntime()
+{
+	if (device == nullptr || texture == nullptr)
+		return;
+	SDL_ReleaseGPUTexture(device, texture);
+	texture = nullptr;
+}
 
 void WriteFloat(std::vector<uint8_t> &bytes, uint32_t offset, float value)
 {
@@ -254,6 +296,59 @@ void WriteInt(std::vector<uint8_t> &bytes, uint32_t offset, int32_t value)
 void WriteUint(std::vector<uint8_t> &bytes, uint32_t offset, uint32_t value)
 {
 	std::memcpy(bytes.data() + offset, &value, sizeof(uint32_t));
+}
+
+/** @brief std140 component count of a uniform type (ROB-23: writes are
+ *         clamped to the member's own storage - writeVec4 used to write
+ *         8+ bytes into every member). Mat4 is out of scope: the MVP writer
+ *         emits its 16 floats directly. */
+int UniformComponentCount(UniformType type)
+{
+	switch (type) {
+	case UniformType::Vec2:
+	case UniformType::IVec2:
+	case UniformType::UVec2:
+		return 2;
+	case UniformType::Vec3:
+	case UniformType::IVec3:
+	case UniformType::UVec3:
+		return 3;
+	case UniformType::Vec4:
+	case UniformType::IVec4:
+	case UniformType::UVec4:
+		return 4;
+	default:
+		return 1; // Float/Int/Uint/Bool scalars.
+	}
+}
+
+/** @brief Writes one component of a member with the bit pattern its declared
+ *         type expects (ROB-23: int/uint/bool members matched to a float
+ *         parameter used to receive IEEE-float bits - value 5 read back as
+ *         ~1.09e9). Component 0 lands at `offset`, component i at
+ *         offset + 4*i (std140 components are contiguous 4-byte cells). */
+void WriteMemberValue(std::vector<uint8_t> &bytes, UniformType type, uint32_t offset, float value)
+{
+	switch (type) {
+	case UniformType::Int:
+	case UniformType::IVec2:
+	case UniformType::IVec3:
+	case UniformType::IVec4:
+		WriteInt(bytes, offset, static_cast<int32_t>(value));
+		break;
+	case UniformType::Uint:
+	case UniformType::UVec2:
+	case UniformType::UVec3:
+	case UniformType::UVec4:
+		WriteUint(bytes, offset, static_cast<uint32_t>(value));
+		break;
+	case UniformType::Bool:
+		WriteUint(bytes, offset, value != 0.0F ? 1u : 0u);
+		break;
+	default:
+		WriteFloat(bytes, offset, value);
+		break;
+	}
 }
 
 Runner::~Runner()
@@ -334,6 +429,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		PassDef &def = preset_.passes[i];
 		auto pass = std::make_unique<PassRuntime>();
 		pass->def = def;
+		pass->device = device_;
 
 		const std::string slangPath = ResolvePresetFilePath(preset_.dir, def.shaderPath);
 		std::vector<ParamInfo> presetParams;
@@ -562,6 +658,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	for (const TextureDef &texDef : preset_.textures) {
 		auto lut = std::make_unique<LutRuntime>();
 		lut->def = texDef;
+		lut->device = device_;
 		if (!LoadLut(*lut, error)) {
 			error = StrCat("loading lookup texture '", texDef.name, "': ", error);
 			return false;
@@ -1015,13 +1112,15 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	static constexpr float kIdentity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 	static constexpr float kFlipY[16] = { 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
+	// ROB-23: writes are clamped to the member's declared shape (a scalar
+	// or vec2 OutputSize used to receive 8+ bytes, scribbling into the next
+	// member's storage) and every component lands with its own type's bit
+	// pattern (an IVec4 builtin used to get IEEE-float bits).
 	auto writeVec4 = [&](const UniformMember &member, float x, float y, float z, float w) {
-		WriteFloat(out, member.offset, x);
-		WriteFloat(out, member.offset + 4, y);
-		if (member.type == UniformType::Vec4 || member.type == UniformType::IVec4 || member.type == UniformType::UVec4) {
-			WriteFloat(out, member.offset + 8, z);
-			WriteFloat(out, member.offset + 12, w);
-		}
+		const float components[4] = { x, y, z, w };
+		const int count = UniformComponentCount(member.type);
+		for (int i = 0; i < count; ++i)
+			WriteMemberValue(out, member.type, member.offset + 4 * static_cast<uint32_t>(i), components[i]);
 	};
 
 	for (const UniformMember &member : def.members) {
@@ -1101,6 +1200,44 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue;
 		}
 
+		// Shader parameters (defaults from #pragma parameter, overridden by
+		// the preset file's `parameters` list). Checked BEFORE the
+		// <TextureName>Size branch below: the translator accepts a pragma
+		// parameter whose name happens to end in "Size" (MaskSize and
+		// friends), and the old order let the size resolver zero the member
+		// before the parameter lookup ever ran - both the pragma default and
+		// the preset override silently dropped (ROB-23).
+		float value = 0.0F;
+		bool found = false;
+		for (const ParamOverride &override : preset_.parameters) {
+			// Preset keys are lowercased at parse time while #pragma
+			// parameter identifiers keep their original case; an
+			// exact-case compare made every mixed-case override (Mega
+			// Bezel overlays) silently keep defaults (SLANG_SPEC.md
+			// gap #3).
+			if (CaseInsensitiveEqual(override.name, name)) {
+				value = override.value;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			for (const ParamInfo &param : pass->translation.parameters) {
+				if (param.name == name) {
+					value = param.defaultValue;
+					found = true;
+					break;
+				}
+			}
+		}
+		if (found) {
+			// ROB-23: write with the member's own type - an int/uint/bool
+			// member matched to a float parameter used to receive raw
+			// IEEE-float bits.
+			WriteMemberValue(out, member.type, member.offset, value);
+			continue;
+		}
+
 		// <TextureName>Size members.
 		if (name.size() > 4 && name.compare(name.size() - 4, 4, "Size") == 0) {
 			std::string texName = name.substr(0, name.size() - 4);
@@ -1161,32 +1298,10 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue;
 		}
 
-		// Shader parameters (defaults from #pragma parameter, overridden by
-		// the preset file's `parameters` list).
-		float value = 0.0F;
-		bool found = false;
-		for (const ParamOverride &override : preset_.parameters) {
-			// Preset keys are lowercased at parse time while #pragma
-			// parameter identifiers keep their original case; an
-			// exact-case compare made every mixed-case override (Mega
-			// Bezel overlays) silently keep defaults (SLANG_SPEC.md
-			// gap #3).
-			if (CaseInsensitiveEqual(override.name, name)) {
-				value = override.value;
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			for (const ParamInfo &param : pass->translation.parameters) {
-				if (param.name == name) {
-					value = param.defaultValue;
-					found = true;
-					break;
-				}
-			}
-		}
-		WriteFloat(out, member.offset, value);
+		// Unmatched member: not a builtin, not a parameter, not a
+		// <TextureName>Size form - leave it zeroed, written with the
+		// member's own type (ROB-23).
+		WriteMemberValue(out, member.type, member.offset, 0.0F);
 	}
 }
 
@@ -1462,30 +1577,31 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 void Runner::Unload()
 {
 	if (device_ == nullptr) {
-		for (PassRuntime *pass : passes_)
+		// ROB-07: the SDL device is already gone - hand the runtimes to their
+		// destructors with the release context cleared so deletion stays pure
+		// memory cleanup (the reachable state here is empty vectors; this is
+		// defense in depth).
+		for (PassRuntime *pass : passes_) {
+			pass->device = nullptr;
 			delete pass;
+		}
 		passes_.clear();
-		for (LutRuntime *lut : luts_)
+		for (LutRuntime *lut : luts_) {
+			lut->device = nullptr;
 			delete lut;
+		}
 		luts_.clear();
 		return;
 	}
 	ReleaseTargets();
-	for (PassRuntime *pass : passes_) {
-		if (pass->vertexShader != nullptr)
-			SDL_ReleaseGPUShader(device_, pass->vertexShader);
-		if (pass->fragmentShader != nullptr)
-			SDL_ReleaseGPUShader(device_, pass->fragmentShader);
-		if (pass->pipeline != nullptr)
-			SDL_ReleaseGPUGraphicsPipeline(device_, pass->pipeline);
+	// ROB-07: the runtime destructors are the single release point for the
+	// SDL_GPU objects each runtime owns (shaders, pipeline, pass targets,
+	// LUT texture); ReleaseTargets() already nulled the pass targets above.
+	for (PassRuntime *pass : passes_)
 		delete pass;
-	}
 	passes_.clear();
-	for (LutRuntime *lut : luts_) {
-		if (lut->texture != nullptr)
-			SDL_ReleaseGPUTexture(device_, lut->texture);
+	for (LutRuntime *lut : luts_)
 		delete lut;
-	}
 	luts_.clear();
 	if (vertexBuffer_ != nullptr) {
 		SDL_ReleaseGPUBuffer(device_, vertexBuffer_);

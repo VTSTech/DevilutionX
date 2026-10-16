@@ -12,6 +12,74 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-dfd49f09d (2026-10-16 07:56:17 PM)
+
+Round 14 runs the 8C runner sweep and closes the last five Medium findings —
+the audit ledger is Medium-free for the first time (**73 findings / 42 closed
+/ 31 open, 0 High / 0 Medium / 31 Low**), and with the 8A+8B first-contact bar
+already complete as of round 13, every Phase-0 sweep of the merge plan is
+done.
+
+### Fixed
+
+#### GPU scaler presets
+
+- **ROB-23** — uniform blocks fill correctly for parameter-driven packs.
+  Three defects shared one function: the `<TextureName>Size` branch ran
+  before the shader-parameter lookup, so a member named e.g. `MaskSize`
+  backed by `#pragma parameter MaskSize` (which the translator accepts) was
+  zeroed by the size resolver and both the pragma default and the preset
+  override were silently dropped; `writeVec4` wrote 8+ bytes
+  unconditionally, letting a scalar or vec2 member clobber its neighbor's
+  storage; and the generic fallback wrote IEEE-float bits regardless of the
+  member's declared type (value 5 read back as ~1.09e9 in an int member).
+  The parameter lookup now runs first, and every write is type- and
+  size-aware through two new helpers (std140 component count, per-type bit
+  patterns for int/uint/bool members) — CRT-mask strengths, curvature and
+  every other parameter now land as the user set them.
+
+- **ROB-07** — a mid-load preset failure no longer leaks the GPU resources
+  created before the failure. `PassRuntime` and `LutRuntime` held raw
+  SDL_GPU pointers with no destructor, so a shader, pipeline or LUT texture
+  created before a failed step was unreachable once the staging unique_ptrs
+  died — bounded only by the failure contract's full device teardown, and
+  silently false to the header's "Unload is safe to call anytime" contract.
+  Both runtimes now own RAII destructors (release context recorded at
+  creation) as the single release point for their GPU objects: staged
+  runtimes clean up at scope exit on any mid-load failure, `Unload`
+  delegates to the same destructors, and the FEAT-01 reload below is the
+  first reuse-of-Runner consumer to stand on it.
+
+### Added
+
+#### GPU scaler
+
+- **FEAT-01** — re-selecting the same preset now reloads it when the file
+  changed on disk. The loaded-chain identity gains an mtime/size snapshot
+  taken at load; the same-path fast-path re-stats, and a changed file logs
+  "preset file changed on disk; reloading" and rebuilds through the normal
+  flow. Iterating on a preset pack no longer detours through another preset
+  or restart; a stat that fails keeps the running chain.
+
+- **FEAT-03** — failed preset loads name themselves in the filter OSD
+  instead of only in gpu-scaler.log. The last load error is recorded at
+  every failure site (path missing, file not found, parse failure, load
+  failure) and the OSD's unavailable state becomes
+  "Shader: <name> (failed: <first line>)", capped so the label stays
+  on-screen; the full text remains in the log. The top failure causes
+  (missing shader files, wrong LFS pull) become self-diagnosable.
+
+### Changed
+
+#### Audit ledger / documentation
+
+- Ledger riders updated to the round-14 state: audit.md (Medium-free
+  snapshot, five detail sections and table rows removed), deltas.md (five
+  closure records, index rows, Fix History), handoff ledger line + Phase-0
+  note, brief.md backlog and merge-track bullets (the merge-track line still
+  carried the r2 "10 of 14" bar math — corrected to the 9-of-14 errata), and
+  merge-plan r2's ledger note + 8C status annotations.
+
 ## 1.6.0-dev-f113268 (2026-10-16 6:28:14 PM)
 
 Round 13 closes the last two first-contact-bar Mediums — **PERF-06** and

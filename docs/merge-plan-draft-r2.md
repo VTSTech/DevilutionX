@@ -116,8 +116,10 @@ Current ledger: **44 open findings — 14 Medium, 30 Low, 0 High.** *(Ledger not
 2026-10-17: rounds 8 and 9 closed five of these Medium — ROB-18/19/22 and ROB-20/21 —
 and one Low was added, TEST-08, taking the live ledger to 40; the round-11 sweep then
 closed MAINT-15 and the FEAT-02 disposition; round 13 closed the last two, ROB-08 and
-PERF-06, leaving **36 open — 0 High / 5 Medium / 31 Low** per `audit.md`. The nine
-Medium owned by 8A+8B below are all closed — **the first-contact bar is complete**.)*
+PERF-06; the round-14 8C sweep closed ROB-07/23 and TEST-06 with the FEAT-01/FEAT-03
+riders, leaving **31 open — 0 High / 0 Medium / 31 Low** per `audit.md`. The nine
+Medium owned by 8A+8B below are all closed — **the first-contact bar is complete**,
+and Phase 0 is done: every sweep's Medium set is closed.)*
 Phase 0 dispositions
 all of them before/while the series opens. Nothing here is redesign work: every finding
 in the ledger already carries a concrete fix sketch, so Phase 0 is execution, not
@@ -152,9 +154,10 @@ Est. 2–3 sessions.
 
 ### 8C — runner surface (unblocks PR 6; runs while PRs 1–4 are under review)
 
-**Fixed:** ROB-07 (runtime RAII — also the prerequisite for any future FEAT-01),
-ROB-23 (FillBlockBytes semantics: parameter lookup order, type- and size-aware writes),
-TEST-06 (smoke harness honors `#pragma name`), ROB-10 (soft-vs-hard failure contract),
+**Fixed:** ROB-07 (closed r14: runtime RAII — the prerequisite the FEAT-01 reload
+shipped on), ROB-23 (closed r14: FillBlockBytes semantics — parameter lookup order,
+type- and size-aware writes), TEST-06 (closed r14: smoke harness honors `#pragma name`),
+ROB-10 (soft-vs-hard failure contract),
 ROB-11 (size_t arithmetic + LUT dimension ceiling), MAINT-17 (sidecar self-heal),
 PERF-02 (precomputed binding tables, allocation-free frame loop).
 Est. 2–3 sessions.

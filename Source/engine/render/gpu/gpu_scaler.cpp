@@ -75,6 +75,24 @@ preset::Runner gPresetRunner;
 std::string gPresetDisplayName;
 // The preset file the running chain was built from (resolved path).
 std::string gLoadedPresetPath;
+// FEAT-01: the file stat snapshot taken when the chain was built. A non-zero
+// mtime enables the changed-on-disk reload check in EnsurePresetRunner; zero
+// means the file could not be statted at load time and the chain never
+// auto-reloads.
+Uint64 gLoadedPresetMtimeNs = 0;
+Uint64 gLoadedPresetFileSize = 0;
+// FEAT-03: why the last preset load attempt failed (full text; the OSD shows
+// its first line). Deliberately survives the failure Shutdown so the OSD can
+// name the reason; overwritten by the next attempt, cleared on success.
+std::string gPresetLastError;
+
+// FEAT-01: clears the loaded-chain identity wherever the chain goes away.
+void ClearLoadedPreset()
+{
+	gLoadedPresetPath.clear();
+	gLoadedPresetMtimeNs = 0;
+	gLoadedPresetFileSize = 0;
+}
 
 SDL_GPUSampler *gNearestSampler = nullptr;
 SDL_GPUSampler *gLinearSampler = nullptr;
@@ -560,25 +578,40 @@ bool EnsurePresetRunner()
 	if (!storedPath.empty())
 		path = preset::ResolvePresetPath(storedPath);
 	if (path.empty()) {
+		// FEAT-03: remember why the attempt failed so the OSD can surface it.
 		if (storedPath.empty())
-			LogFileLine("preset load failed: no preset path is stored for the selected custom filter");
+			gPresetLastError = "no preset path is stored for the selected custom filter";
 		else
-			LogFileLine(StrCat("preset load failed: preset file not found in the shaders folder: ", storedPath));
+			gPresetLastError = StrCat("preset file not found in the shaders folder: ", storedPath);
+		LogFileLine(StrCat("preset load failed: ", gPresetLastError));
 		return false;
 	}
 	if (gPresetRunner.IsLoaded()) {
-		if (gLoadedPresetPath == path)
-			return true;
-		// The selection moved to a different preset: rebuild the chain from
-		// scratch instead of presenting the previously loaded one.
-		LogFileLine(StrCat("preset changed: ", gLoadedPresetPath, " -> ", path));
+		if (gLoadedPresetPath == path) {
+			// FEAT-01: re-selecting the same preset rechecks the stat snapshot
+			// taken at load time; a changed mtime or size reloads the chain, so
+			// pack edits and failed-load retries land without detouring through
+			// another preset. A stat that fails here (file briefly unavailable)
+			// keeps the running chain.
+			SDL_PathInfo info;
+			if (gLoadedPresetMtimeNs == 0 || !SDL_GetPathInfo(path.c_str(), &info)
+			    || (info.modify_time == static_cast<SDL_Time>(gLoadedPresetMtimeNs)
+			        && info.size == gLoadedPresetFileSize))
+				return true;
+			LogFileLine(StrCat("preset file changed on disk; reloading: ", path));
+		} else {
+			// The selection moved to a different preset: rebuild the chain from
+			// scratch instead of presenting the previously loaded one.
+			LogFileLine(StrCat("preset changed: ", gLoadedPresetPath, " -> ", path));
+		}
 		gPresetRunner.Unload();
-		gLoadedPresetPath.clear();
+		ClearLoadedPreset();
 	}
 
 	preset::Preset preset;
 	std::string error;
 	if (!preset::ParsePreset(path, preset, error)) {
+		gPresetLastError = error;
 		LogFileLine(StrCat("preset parse failed: ", error));
 		return false;
 	}
@@ -586,12 +619,23 @@ bool EnsurePresetRunner()
 
 	const char *driver = SDL_GetGPUDeviceDriver(gDevice);
 	if (!gPresetRunner.Load(gDevice, driver != nullptr ? driver : "", preset, error)) {
+		gPresetLastError = error;
 		LogFileLine(StrCat("preset load failed (", preset.displayName, "): ", error));
 		gPresetRunner.Unload();
-		gLoadedPresetPath.clear();
+		ClearLoadedPreset();
 		return false;
 	}
 	gLoadedPresetPath = path;
+	// FEAT-01: snapshot the file's mtime/size at load time - the anchor the
+	// changed-on-disk reload check compares against.
+	SDL_PathInfo info;
+	gLoadedPresetMtimeNs = 0;
+	gLoadedPresetFileSize = 0;
+	if (SDL_GetPathInfo(path.c_str(), &info)) {
+		gLoadedPresetMtimeNs = static_cast<Uint64>(info.modify_time);
+		gLoadedPresetFileSize = info.size;
+	}
+	gPresetLastError.clear();
 	LogOk(StrCat("preset '", preset.displayName, "' loaded (", preset.passes.size(), " passes)"));
 	return true;
 }
@@ -936,7 +980,7 @@ void Shutdown()
 	ReleaseFrameResources();
 	ReleaseFilterResources();
 	gPresetRunner.Unload();
-	gLoadedPresetPath.clear();
+	ClearLoadedPreset();
 	gPresetDisplayName.clear();
 	if (gNearestSampler != nullptr) {
 		SDL_ReleaseGPUSampler(gDevice, gNearestSampler);
@@ -975,7 +1019,7 @@ void HandbackWindow(SDL_Window *window)
 	ReleaseFrameResources();
 	ReleaseFilterResources();
 	gPresetRunner.Unload();
-	gLoadedPresetPath.clear();
+	ClearLoadedPreset();
 	gPresetDisplayName.clear();
 	if (gNearestSampler != nullptr) {
 		SDL_ReleaseGPUSampler(gDevice, gNearestSampler);
@@ -1309,6 +1353,20 @@ namespace {
 
 std::string gOsdText;
 
+// FEAT-03: the OSD carries the first line of the last preset load failure
+// (the full text stays in gpu-scaler.log), capped so the bottom-right label
+// cannot walk off the screen on long paths.
+std::string OsdErrorLine(const std::string &error)
+{
+	std::string line = error.substr(0, error.find('\n'));
+	constexpr size_t kMaxOsdErrorChars = 64;
+	if (line.size() > kMaxOsdErrorChars) {
+		line.resize(kMaxOsdErrorChars - 3);
+		line += "...";
+	}
+	return line;
+}
+
 const char *FilterDisplayName(ShaderFilter filter)
 {
 	if (IsCustomFilter(filter))
@@ -1337,7 +1395,15 @@ void ShowFilterOsd()
 		// No filter active: show no label at all.
 		text.clear();
 	} else if (!IsActive()) {
-		text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)), " (unavailable)");
+		// FEAT-03: name the failure instead of a bare "(unavailable)" - the
+		// first line of the last preset load error; the full text stays in
+		// gpu-scaler.log. Custom filters only: the error belongs to the
+		// preset path, not to a built-in filter's own failure.
+		if (IsCustomFilter(static_cast<ShaderFilter>(value)) && !gPresetLastError.empty())
+			text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)), " (failed: ",
+			    OsdErrorLine(gPresetLastError), ")");
+		else
+			text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)), " (unavailable)");
 	} else {
 		text = StrCat("Shader: ", FilterDisplayName(static_cast<ShaderFilter>(value)),
 		    " (", PrettyBackendName(SDL_GetGPUDeviceDriver(gDevice)), ")");

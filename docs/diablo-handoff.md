@@ -19,7 +19,7 @@
 | release tag | **`gpu-shaders-v14`** (`a0cbeccb6`, tip-most of 14). v8 first shipped `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe; v9 added the Linux helper scripts + `install_git.cmd` |
 | Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **80 working / 18 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`; Tier 1b fully closed 2026-10-16: scanlines-Modern + ossc on r10 build `bbb0a9349`, remaining 4 rows ntsc-adaptive / motion_interpolation / super-2xbr-3d-2p / crt-guest-advanced-ntsc confirmed field round 14 on the post-CMake-fix build `e7f213c31`); coverage CSV 231 rows → 226 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** the 18 pending tiered rows in tier order (§6) — next up the Tier 1c canaries — koko-aio-ng family is DEFERRED (round 13: loads but renders black; parked pending RetroArch-style shader-parameter support, §6 canary 2) |
 | Track B — upstream merge | **Plan-first, reply pending.** r1+r2 sent to diasurgical (AJenbo) 2026-10-16; nothing scaffolded — no `pr/*` branches, no upstream contact — until the maintainers reply AND VTSTech directs. Plans: `docs/merge-plan-draft-r1.md` / `docs/merge-plan-draft-r2.md`. Default fork-side queue meanwhile: Phase 0 audit sweeps **8A → 8B → 8C** (§7) |
-| codebase-audit ledger | **73 findings / 37 closed / 36 open (0 High / 5 Medium / 31 Low)** as of fix round 13 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
+| codebase-audit ledger | **73 findings / 42 closed / 31 open (0 High / 0 Medium / 31 Low)** as of fix round 14 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
 
 ## 1. Mission (TL;DR)
 
@@ -315,7 +315,9 @@ scaler (~1.6k, 8B) → PR 6 runner + smoke corpus (~1.9k, 8C) → PR 7 options/U
   **8B** (presentation surface → PRs 4–5), **8C** (runner surface → PR 6; pipelines
   with early reviews). First-contact bar = 8A+8B — **complete as of round 13** (all 9
   of the 14 Medium open when r2 was measured are closed: rounds 8/9/11 shipped
-  seven, round 13 closed ROB-08 and PERF-06).
+  seven, round 13 closed ROB-08 and PERF-06). Phase-0 completed round 14: the
+  8C runner sweep (ROB-07/23, TEST-06) and the FEAT-01/FEAT-03 riders closed
+  in the same patch — **no Medium remains open**.
   Waivers: MAINT-11/12/13/14 + TEST-05 → upstream issues; ARCH-02 → fork-only
   Phase-0 item; ROB-13 → known-documented; FEAT-01/04 → post-series; FEAT-03 →
   optional PR-7 rider.

@@ -23,7 +23,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -97,6 +99,32 @@ int main(int argc, char **argv)
 			continue;
 		}
 
+		// TEST-06: the runner also binds pass outputs by their #pragma name
+		// (the step-1 pre-scan in Runner::Load), so a pack whose later pass
+		// samples an earlier pass by name - no alias, a pattern the runner's
+		// own comments cite - translated in-game but failed here with
+		// "unknown texture reference". Mirror the runner's pre-scan so the
+		// smoke verdict matches the in-game translation for that idiom.
+		std::unordered_map<int, std::string> pragmaNames;
+		for (size_t i = 0; i < preset.passes.size(); ++i) {
+			const std::string pragmaPath = preset::ResolvePresetFilePath(preset.dir, preset.passes[i].shaderPath);
+			std::ifstream stream(pragmaPath, std::ios::binary);
+			if (!stream)
+				continue; // The pass loop reports the open failure with context.
+			std::ostringstream ss;
+			ss << stream.rdbuf();
+			static const std::regex nameRe(R"(^\s*#pragma\s+name\s+(\w+)\s*$)");
+			std::istringstream lines(ss.str());
+			std::string line;
+			while (std::getline(lines, line)) {
+				std::smatch match;
+				if (std::regex_match(line, match, nameRe)) {
+					pragmaNames[static_cast<int>(i)] = match[1].str();
+					break;
+				}
+			}
+		}
+
 		bool presetOk = true;
 		std::string presetError;
 		for (size_t p = 0; p < preset.passes.size(); ++p) {
@@ -118,6 +146,8 @@ int main(int argc, char **argv)
 				insertBoth(tex.name);
 			for (const preset::PassDef &pass : preset.passes)
 				insertBoth(pass.alias);
+			for (const auto &[_, pragmaName] : pragmaNames)
+				insertBoth(pragmaName);
 			preset::SlangTranslation translation;
 			std::vector<preset::ParamInfo> presetParams;
 			for (const auto &override_ : preset.parameters) {
