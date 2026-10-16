@@ -303,6 +303,31 @@ void TestLogLineSanitized()
 	Check(scaler::SanitizeLogLine("100%%sure %s %n") == "100%%sure %s %n", "percent signs pass through");
 }
 
+void TestOversizePresetRejected()
+{
+	std::printf("[ROB-20] preset file above the 8 MiB cap fails with a named error\n");
+	const std::string big(8 * 1024 * 1024 + 1, '#');
+	WriteFile(kPresetDir + "/oversize.slangp", big);
+	preset::Preset out;
+	std::string error;
+	Check(!preset::ParsePreset(kPresetDir + "/oversize.slangp", out, error),
+	    "oversize preset fails to load");
+	Check(error.find("preset file too large") != std::string::npos,
+	    "error names the cap: " + error);
+}
+
+void TestOversizeShaderRejected()
+{
+	std::printf("[ROB-20] shader file above the 4 MiB cap fails at translate\n");
+	const std::string big(4 * 1024 * 1024 + 1, '/');
+	WriteFile(kShaderDir + "/oversize.slang", big);
+	preset::SlangTranslation out;
+	Check(!preset::TranslateSlang(kShaderDir + "/oversize.slang", {}, 0, 1, out),
+	    "oversize shader fails to translate");
+	Check(out.error.find("shader file too large") != std::string::npos,
+	    "error names the cap: " + out.error);
+}
+
 } // namespace
 
 int main()
@@ -326,6 +351,8 @@ int main()
 	TestBuiltinNamesStillValid();
 	TestIncludeEscapeRejected();
 	TestIncludeInsideRootStillWorks();
+	TestOversizePresetRejected();
+	TestOversizeShaderRejected();
 	TestReferenceEscapeRejected();
 	TestLogLineSanitized();
 

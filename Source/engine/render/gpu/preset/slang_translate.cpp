@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -81,6 +83,23 @@ std::string StripComments(const std::string &text)
 // scoping mirrors where each line finally lands (shared/vertex/fragment).
 const std::regex kStagePragmaRe(R"(^\s*#pragma\s+stage\s+(vertex|fragment)\s*$)");
 
+// ROB-20: every shader read - the top-level file and every include - is
+// capped. The old slurp (ostringstream << rdbuf + str()) had no bound: a
+// multi-gigabyte planted file threw std::bad_alloc with no handler anywhere
+// on the load path, terminating the process instead of returning the
+// documented error. 4 MiB per file is ~2 orders of magnitude above anything
+// in the libretro corpus; the merged text stays bounded by per-bucket
+// include-once times the per-file cap.
+constexpr std::streamoff kMaxShaderFileBytes = 4 * 1024 * 1024;
+
+/** @brief size_t -> int for the diagnostics fields; clamps instead of
+ * overflowing int past 2 GiB (ROB-20). */
+int DiagSizeToInt(size_t size)
+{
+	constexpr size_t kIntMax = static_cast<size_t>(std::numeric_limits<int>::max());
+	return static_cast<int>(size < kIntMax ? size : kIntMax);
+}
+
 /** @brief Resolves #include directives recursively, relative to the including file.
  *
  * The spec's #include is plain textual inclusion; the corpus deliberately
@@ -118,6 +137,16 @@ bool ResolveIncludes(const std::string &path, int depth, int &stage,
 	if (!stream) {
 		active.pop_back();
 		error = StrCat("slang: cannot open shader file: ", path);
+		return false;
+	}
+	// ROB-20: cap the read before slurping; shaders are regular files, so
+	// an unseekable stream is refused too.
+	stream.seekg(0, std::ios::end);
+	const std::streamoff fileBytes = stream.tellg();
+	stream.seekg(0, std::ios::beg);
+	if (fileBytes < 0 || fileBytes > kMaxShaderFileBytes) {
+		active.pop_back();
+		error = StrCat("slang: shader file too large: ", path, " (limit is 4 MiB)");
 		return false;
 	}
 	std::ostringstream ss;
@@ -946,6 +975,28 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 					return false;
 				}
 			}
+			// ROB-21: include-once is per stage bucket, so a stage-guarded
+			// header included once in the shared region and again in the
+			// fragment region pastes its sampler declaration into this
+			// translation unit twice (split.shared + split.fragment) - valid
+			// input that used to emit two dense bindings for one sampler
+			// (glslang "redefinition" failure with misleading diagnostics, and
+			// stage.textures double-counting into num_samplers). Name-dedupe
+			// the plain rewrite path: first binding wins, the repeat is
+			// dropped (the earlier declaration is visible everywhere below it
+			// in the same TU).
+			bool alreadyDeclared = false;
+			for (const TextureRef &known : stage.textures) {
+				if (known.name == name) {
+					alreadyDeclared = true;
+					break;
+				}
+			}
+			if (alreadyDeclared) {
+				warnings.push_back(StrCat("sampler '", name,
+				    "' is declared more than once in the stage (a stage-guarded header was re-included); keeping the first binding"));
+				continue;
+			}
 			out += StrCat("layout(set = ", texSet, ", binding = ", binding, ") uniform ", precision, "sampler2D ", name, ";\n");
 			stage.textures.push_back({ name, binding });
 			++binding;
@@ -1076,11 +1127,18 @@ unsigned Fnv1a32(const std::string &data)
 	return hash;
 }
 
-/** @brief Whole-file bytes for fingerprinting (binary-safe). */
+/** @brief Whole-file bytes for fingerprinting (binary-safe); capped at
+ * kMaxShaderFileBytes (ROB-20) - oversize files report false and the
+ * fingerprint is skipped. */
 bool ReadWholeFileBytes(const std::string &path, std::string &out)
 {
 	std::ifstream in(path, std::ios::binary);
 	if (!in)
+		return false;
+	in.seekg(0, std::ios::end);
+	const std::streamoff fileBytes = in.tellg();
+	in.seekg(0, std::ios::beg);
+	if (fileBytes < 0 || fileBytes > kMaxShaderFileBytes)
 		return false;
 	std::ostringstream buffer;
 	buffer << in.rdbuf();
@@ -1146,9 +1204,7 @@ bool ProcessStage(std::string glsl, bool isVertex, int passIndex, int passCount,
 	return true;
 }
 
-} // namespace
-
-bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std::string> &knownTextureNames,
+bool TranslateSlangImpl(const std::string &shaderPath, const std::unordered_set<std::string> &knownTextureNames,
     int passIndex, int passCount, SlangTranslation &out, const std::vector<ParamInfo> &presetParameters)
 {
 	out = SlangTranslation {};
@@ -1167,10 +1223,10 @@ bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std:
 	{
 		std::string fileBytes;
 		if (ReadWholeFileBytes(shaderPath, fileBytes)) {
-			out.sourceSize = static_cast<int>(fileBytes.size());
+			out.sourceSize = DiagSizeToInt(fileBytes.size());
 			out.sourceHash = Fnv1a32(fileBytes);
 		}
-		out.mergedSize = static_cast<int>(merged.size());
+		out.mergedSize = DiagSizeToInt(merged.size());
 		out.mergedHash = Fnv1a32(merged);
 	}
 
@@ -1229,6 +1285,25 @@ bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std:
 		return false;
 	}
 	return true;
+}
+
+} // namespace
+
+bool TranslateSlang(const std::string &shaderPath, const std::unordered_set<std::string> &knownTextureNames,
+    int passIndex, int passCount, SlangTranslation &out, const std::vector<ParamInfo> &presetParameters)
+{
+	// ROB-20: the load path's only handler - any exception escaping the
+	// translate (allocation failure, data-driven throw) converts into the
+	// documented failure contract instead of terminating the process.
+	try {
+		return TranslateSlangImpl(shaderPath, knownTextureNames, passIndex, passCount, out, presetParameters);
+	} catch (const std::exception &e) {
+		out.error = StrCat("slang: translation failed for ", shaderPath, ": ", e.what());
+		return false;
+	} catch (...) {
+		out.error = StrCat("slang: translation failed for ", shaderPath, ": unknown exception");
+		return false;
+	}
 }
 
 } // namespace preset

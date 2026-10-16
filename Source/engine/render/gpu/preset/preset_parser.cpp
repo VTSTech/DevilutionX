@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -297,6 +298,11 @@ bool DirContainsPreset(const std::filesystem::path &dir, int maxDepth)
 bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, int depth, bool isReferenceTarget)
 {
 	constexpr int kMaxReferenceDepth = 8;
+	// ROB-20: preset files above this fail with a named error instead of an
+	// uncaught allocation death. 8 MiB is orders of magnitude above the
+	// largest preset in any known pack (presets are key/value text, not
+	// payloads).
+	constexpr std::streamoff kMaxPresetFileBytes = 8 * 1024 * 1024;
 	if (depth > kMaxReferenceDepth) {
 		error = StrCat("preset #reference depth limit exceeded at ", path);
 		return false;
@@ -304,6 +310,23 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
 		error = StrCat("cannot open preset file: ", path);
+		return false;
+	}
+	// ROB-20: cap the preset read before slurping. A multi-gigabyte planted
+	// file used to be pulled in whole (ostringstream << rdbuf, plus a second
+	// full copy via str() and per-line copies below), where the allocation
+	// throws std::bad_alloc with no handler anywhere on the load path -
+	// process death instead of the documented error contract.
+	stream.seekg(0, std::ios::end);
+	const std::streamoff fileBytes = stream.tellg();
+	stream.seekg(0, std::ios::beg);
+	if (fileBytes < 0) {
+		error = StrCat("cannot determine preset file size: ", path);
+		return false;
+	}
+	if (fileBytes > kMaxPresetFileBytes) {
+		error = StrCat("preset file too large: ", path, " (", static_cast<long long>(fileBytes),
+		    " bytes; limit is 8 MiB)");
 		return false;
 	}
 	std::ostringstream ss;
@@ -642,7 +665,18 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 
 bool ParsePreset(const std::string &path, Preset &out, std::string &error)
 {
-	return ParsePresetImpl(path, out, error, 0, /*isReferenceTarget=*/false);
+	// ROB-20: the load path's only handler - any exception escaping the
+	// parse (allocation failure, data-driven throw) converts into the
+	// documented failure contract instead of terminating the process.
+	try {
+		return ParsePresetImpl(path, out, error, 0, /*isReferenceTarget=*/false);
+	} catch (const std::exception &e) {
+		error = StrCat("preset load failed for ", path, ": ", e.what());
+		return false;
+	} catch (...) {
+		error = StrCat("preset load failed for ", path, ": unknown exception");
+		return false;
+	}
 }
 
 std::vector<PresetEntry> ScanPresets(const std::string &rootDir)
