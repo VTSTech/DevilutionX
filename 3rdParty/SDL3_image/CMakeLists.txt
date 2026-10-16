@@ -23,7 +23,7 @@ set(SDLIMAGE_BACKEND_STB OFF)
 set(SDLIMAGE_AVIF OFF)
 set(SDLIMAGE_BMP OFF)
 set(SDLIMAGE_GIF OFF)
-set(SDLIMAGE_JPG OFF)
+set(SDLIMAGE_JPG ON)
 set(SDLIMAGE_JXL OFF)
 set(SDLIMAGE_LBM OFF)
 set(SDLIMAGE_PCX OFF)
@@ -44,6 +44,6 @@ set(SDLIMAGE_PNG_SAVE ON)
 FetchContent_Declare_ExcludeFromAll(SDL_image
   GIT_REPOSITORY https://github.com/libsdl-org/SDL_image.git
   GIT_TAG release-3.2.4
-  GIT_SUBMODULES "external/libpng;external/zlib"
+  GIT_SUBMODULES "external/libpng;external/zlib;external/jpeg"
 )
 FetchContent_MakeAvailable_ExcludeFromAll(SDL_image)
