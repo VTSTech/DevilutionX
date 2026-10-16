@@ -17,7 +17,7 @@
 |---|---|
 | repo tip | **2026-10-16: `8690cc7bb` "docs"** — handoff v2 rewrite (two-track restructure: Track A slang-shaders audit + Track B upstream merge; history stripped, live state kept in the ledger CSVs / audit.md / deltas.md) → prior tip line: `0f9e69324` "Linux CI" (r7.6.2 — `preset_smoke` `RUNTIME_OUTPUT_DIRECTORY` ctest geometry fix, CI green, user-applied) → `2c9a4ddfa` committed merge-plan drafts r1+r2 → `a0cbeccb6` = release **`gpu-shaders-v14`** (preset_smoke corpus green again) → beneath that: codebase-audit rounds 1–7.5 (closure history lives in `docs/deltas.md` — do not re-derive from this file) |
 | release tag | **`gpu-shaders-v14`** (`a0cbeccb6`, tip-most of 14). v8 first shipped `install_shaders.cmd` + `clear_shader_cache.cmd` beside the exe; v9 added the Linux helper scripts + `install_git.cmd` |
-| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **72 working / 24 pending / 2 crash**; coverage CSV 225 rows → 220 working / 3 crash / 1 black-screen / 1 fallback. Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested). **Next:** ds-hybrid ×2 re-test (round-9 build + `DEVILUTIONX_GPU_DEBUG=1` + Integer Scaling ON), koko-aio-ng include-fix re-test, then the 24 pending tiered rows (§6) |
+| Track A — slang-shaders audit | **Static arm:** SLANG_SPEC §7 gaps closed through item 13 (`ca02abf856` comment alignment; spec reconciled 2026-10-16) — remaining items 7–11 + 14 are all intentional divergences / evidence-driven: **the actionable static queue is empty**; reopen an item only when a field fallback needs it (§6). **Empirical arm:** tiered ledger `docs/audit/shader-test-list-2026-10-15.csv` = 98 rows → **74 working / 24 pending / 0 crash** (ds-hybrid ×2 closed 2026-10-16 — round-9 protocol re-test passed on build `98357ffeb`); coverage CSV 227 rows → 222 working / 3 crash / 1 black-screen / 1 fallback (investigation history retained). Dirs closed: `denoisers/` 7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped, untested), `handheld/` ds-hybrid pair. **Next:** koko-aio-ng include-fix re-test (`DEVILUTIONX_GPU_DEBUG=1`), then the 24 pending tiered rows (§6) |
 | Track B — upstream merge | **Plan-first, reply pending.** r1+r2 sent to diasurgical (AJenbo) 2026-10-16; nothing scaffolded — no `pr/*` branches, no upstream contact — until the maintainers reply AND VTSTech directs. Plans: `docs/merge-plan-draft-r1.md` / `docs/merge-plan-draft-r2.md`. Default fork-side queue meanwhile: Phase 0 audit sweeps **8A → 8B → 8C** (§7) |
 | codebase-audit ledger | **72 findings / 28 closed / 44 open (0 High / 14 Medium / 30 Low)** as of round 7.5 — audit work is driven by the **codebase-audit skill**; open set `docs/audit.md`, closure records `docs/deltas.md`, repo brief `docs/brief.md`. The Phase-0 mapping (which open findings gate which merge PRs) lives in `docs/audit.md`. This handoff carries the ledger state only — never its history |
 
@@ -149,30 +149,33 @@ maintenance-mode: intentional divergences, reopened only on field evidence.
 
 ### Empirical arm — field sweep
 
-Ledger: `docs/audit/shader-test-list-2026-10-15.csv` (98 tiered rows: **72 working /
-24 pending / 2 crash**) + `docs/audit/vulkan-coverage-2026-10-15.csv` (225 rows: 220
-working / 3 crash / 1 black-screen / 1 fallback). Dirs closed clean: `denoisers/`
-7/7, `dithering/` 16/16, `deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17
-(slots 110/113 skipped in the browser — untested, not failed); partials: `reshade/`
-8, `sharpen/` 6, `handheld/` swept round 7. All sweeps to date: 0 uncontained
-failures — the failure contract (§4) held every time.
+Ledger: `docs/audit/shader-test-list-2026-10-15.csv` (98 tiered rows: **74 working /
+24 pending / 0 crash**) + `docs/audit/vulkan-coverage-2026-10-15.csv` (227 rows: 222
+working / 3 crash / 1 black-screen / 1 fallback — the non-working rows are retained
+investigation history). Dirs closed clean: `denoisers/` 7/7, `dithering/` 16/16,
+`deinterlacing/` 11/11, `misc/` 38/38, `blurs/` 15/17 (slots 110/113 skipped in the
+browser — untested, not failed); partials: `reshade/` 8, `sharpen/` 6, `handheld/`
+swept rounds 7+9 (ds-hybrid pair closed by the round-9 protocol re-test). All sweeps
+to date: 0 uncontained failures — the failure contract (§4) held every time.
 
 **Immediate re-tests (canaries, in order):**
 
-1. **`handheld/ds-hybrid-{sabr,scalefx}` — the 2 crash rows.** Engine-side root
-   causes are all fixed on master: round 7 = stale SDL `sample_mask` (0xFFFFFFFF → 0,
-   both `preset_runner.cpp` and `gpu_scaler.cpp`); round 8 = cancel-after-acquire
-   (all 6 post-acquire abort sites now `SubmitSkipAfterAcquire`, silent `Run()`/
-   `EnsureTargets()` failures log pass/size/format/`SDL_GetError()`, preset-run
-   failure is hard → session fallback); round 9 = Integer-Scaling floor-to-zero
-   (integer floor only when floored scale ≥ 1; downscale keeps fractional fit;
-   `present skip:` trail + `dest-skipped` heartbeat counter). Content-readback
-   harness (`runner_repro`, sandbox-only) proved both chains render real content on
-   lavapipe; the field GPU never re-tested. **Re-test:** v14+ build,
-   `DEVILUTIONX_GPU_DEBUG=1`, Integer Scaling ON, re-select both presets. Expected:
-   RENDERED (fractional 1/2 and 1/3 fits fill the window) — or a named failure in
-   the log; either way paste the digest. If the process still dies silently, capture
-   the Windows Event Viewer faulting module.
+1. ✅ **`handheld/ds-hybrid-{sabr,scalefx}` — CLOSED 2026-10-16 (round-9 protocol
+   re-test PASSED).** Evidence: `download/gpu-scaler-dshybrid-retest.log`, digest
+   exit 0 (2 loads / 2 unique / 0 fallback / 0 errors / exceptions none). Build
+   `98357ffeb` (contains the round-9 fix `0a39b81c6`), `DEVILUTIONX_GPU_DEBUG=1`
+   (Khronos layer absent — SDL internal validation only), RX 560 / AMD 26.5.2: both
+   chains all-cache-hit, pipelines created in debug mode (r7 `sample_mask` fix
+   live), no cancel assert (r8 fix live), and the exact over-window finals
+   (5760×3240 / 3840×2160) presented with **0 dest-skipped** and no `present skip:`
+   lines (r9 fit guard live). Dwell 39.3 s / 2341 frames (scalefx) + 12.1 s / 657
+   frames (sabr); 5–14 skipped frames per 5 s window (~4%) = the legal
+   unavailable-swapchain-image class, not a contract violation; OSD correct on both
+   hot-switches; clean Shutdown + benign exit-time presentation-path window
+   recreate (DXGI one-flip-per-HWND workaround, fires after `Shutdown`). Ledger
+   flipped to working via `scripts/apply_ds_hybrid_retest.py`. Visual defect check
+   (flip/color) pending explicit user confirmation — reopen as partial if the
+   image ever looked wrong.
 2. **koko-aio-ng family (3 presets)** — the per-stage-bucket include-once fix
    (`c1ee40544`: include walker matches `#pragma stage` buckets, visited set per
    bucket + active-include stack) has never been exercised by a field log.
