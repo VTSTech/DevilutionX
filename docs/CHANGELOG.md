@@ -12,6 +12,139 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-1f7d111fd (2026-10-16 3:39:59 PM)
+
+The window that closes the Shaders → 'Off' field CTD. Five code commits shipped
+between the round-8 patch and this build — the round-9 load-path hardening
+(ROB-20/21), a ROB-19 rider for the first field report, the Linux CI headless-GPU
+fix, and the two fixes that actually ended the crash (ROB-26, ROB-27) — and the
+field now confirms it: switching Shaders to Off with a preset active no longer
+terminates the process (verified on this build, 2026-10-17). The same window gave
+Linux CI its first real headless GPU test coverage, and the fork took its first
+upstream sync through a true merge commit (PR #1 from diasurgical/master).
+
+### Fixed
+
+#### GPU scaler load path (round 9)
+
+- **ROB-20** — every untrusted read on the preset load path is capped *before* the
+  slurp: `ParsePresetImpl` refuses presets above 8 MiB, `ResolveIncludes` refuses
+  the top-level shader and every include above 4 MiB, and the diagnostics
+  fingerprint reader applies the same cap and simply skips the fingerprint on
+  oversize input; unseekable streams are refused with their own message. Both
+  readers previously slurped whole files with no guard anywhere upstream on the
+  load path, so a planted multi-gigabyte file terminated the process via uncaught
+  `bad_alloc` instead of returning the documented error contract. The
+  int-overflow class closes structurally (both diagnostics size casts go through a
+  clamping `DiagSizeToInt` helper), and the missing top-level guard now exists:
+  `ParsePreset`/`TranslateSlang` wrap their bodies in a catch-all that converts
+  any escaping exception — `bad_alloc` included — into the documented failure
+  contract (`false` plus a named error, `out` left in the early-failure state).
+  The caps sit orders of magnitude above the real corpus (the largest known
+  `.slang` is ~130 KiB), so no legitimate pack changes behavior.
+- **ROB-21** — `RewriteSamplers` name-dedupes the plain rewrite path immediately
+  before the emit. Include-once is tracked *per bucket* (shared/vertex/fragment),
+  so a file included once in the shared region and again in the fragment region
+  pasted its stage-guarded sampler declaration into the fragment TU twice — valid
+  input producing two dense bindings for one sampler: a glslang "redefinition"
+  compile failure with misleading diagnostics, plus double-counted
+  `stage.textures` reserving two sampler slots for one texture. The repeat
+  declaration is now dropped (first binding wins — it is visible everywhere below
+  in the same TU) with a named warning recorded; the alias-branch dedupe composes
+  unchanged and every other validation runs as before. The smoke corpus gained
+  `dupinclude.slangp` (+ two shaders) exercising exactly that re-inclusion, and
+  `preset_failure_modes` grew from 37 to 41 checks under the new caps.
+
+#### GPU scaler — Shaders → 'Off' CTD (field-verified closed on this build)
+
+- **ROB-19 rider** — the first field report on the round-8 stack:
+  `RecreateMainRenderWindow`'s create-before-destroy order created the replacement
+  window *visible* while the old one still owned display, focus and mouse grab —
+  a two-visible-windows moment the original destroy-then-create order never had.
+  The replacement is now created `SDL_WINDOW_HIDDEN`, the old window destroyed,
+  then shown and raised — a single visible transition, keeping ROB-19's
+  no-window-loss guarantee. Correct for its own finding, though (per ROB-26's
+  record below) not what the field crash ultimately turned on.
+- **ROB-26** — the hand-back no longer tears the GPU device down inside the
+  settings switch. The field bisection that framed the hunt ("d5ca0c0 good") was a
+  false negative: SDL3-GPU's backend priority on Windows is D3D12 before Vulkan,
+  and at d5ca0c0 the `CreateDevice` whitelist rejected the auto-selected d3d12, so
+  the scaler never activated there and the 'Off' switch exercised nothing but the
+  renderer-only path. ROB-18's forced-Vulkan retry made the scaler work on that
+  machine for the first time — which made the never-once-executed hand-back stack
+  reachable: synchronous `SDL_ReleaseWindowFromGPUDevice` + `SDL_DestroyGPUDevice`
+  (full Vulkan teardown) microseconds before a window recreation and a D3D11
+  reclaim, all inside one call frame. New `gpu_scaler::HandbackWindow(window)` does
+  everything `Shutdown()` does **except** destroy the device: frame/filter
+  resources, the preset runner, the samplers and the window claim are released
+  explicitly while the window is still alive (SDL_gpu has no window-destroy
+  auto-release hook), `IsActive()` flips false immediately so every game path
+  falls back to the regular renderer at once, and the parked, resource-less device
+  is destroyed by the next `Shutdown()` (quit / `dx_cleanup`) or transparently
+  reused by the next `Reinit()` (re-selecting a shader re-claims a fresh window on
+  it). `gpu-scaler.log` brackets the remaining GPU call (`HandbackWindow: ...`) so
+  any residual failure names its frame.
+- **ROB-27** — the crash ROB-26's build still hit: a null item-cursor CLX read
+  when the switch runs in the main menu. The regular-renderer branch of
+  `ReinitializeRenderer` re-runs `InitVirtualGamepadGFX()` (the ROB-22 pair) →
+  `LoadPotionArt()` → `GetInvItemSize(CURSOR_FIRSTITEM + ICURS_POTION_OF_HEALING)`
+  → `pCursCels->numSprites()`, but `pCursCels` (`data\inv\objcurs`) is loaded by
+  `InitCursor()` at game-session start and freed by `FreeCursor()` — empty in the
+  menu, so the read is `LoadLE32(nullptr)`: an instant, silent access violation in
+  Release. Shader options are CantChangeInGame, so the menu is the only context
+  this path executes in, and sessions where the scaler never activated never reach
+  it (the startup renderer exists, so the branch is skipped) — which is why the
+  field crash only appeared once ROB-18 made the scaler work on Windows, and why
+  the diagnostic log stopped exactly after `Created renderer: direct3d11`. Two
+  guards: `GetInvItemSize()` (`Source/cursor.cpp`) returns `{0, 0}` when
+  `pCursCels` is not loaded, and `LoadPotionArt()`
+  (`Source/controls/touch/renderers.cpp`) skips the potion strip on a zero size —
+  the strip is never rendered in menus, and the game-load path (`LoadAllGFX`)
+  rebuilds it exactly where the engine always did. In-game behavior is
+  byte-identical.
+
+#### Tests / CI
+
+- `preset_unload_test` now actually runs on Linux CI instead of failing. Headless
+  containers have no video device, and SDL3 (unlike SDL2) never auto-selects the
+  dummy video driver — whose driver, in turn, has no Vulkan hooks at all, so
+  `SDL_VIDEODRIVER=dummy` is not a viable fallback for `SDL_CreateGPUDevice`. The
+  harness gained a clean skip tier for `SDL_Init(SDL_INIT_VIDEO)` failure (exit 0,
+  loud SKIP line — same tier as the existing no-device/no-corpus skips), and the
+  Linux job runs the suite under `xvfb-run` with `SDL_VIDEODRIVER=x11` plus
+  `libvulkan1`/`mesa-vulkan-drivers` (bookworm's lavapipe ICD qualifies; SDL_gpu
+  requires only Vulkan 1.0 core). A coverage guard re-runs `preset_unload`
+  verbosely and fails the job unless it ends with "ALL OK", so a silently-skipping
+  test can no longer leave the suite green with zero GPU lifecycle coverage. The
+  harness also gained round 4: menu-context `InitVirtualGamepadGFX()` /
+  `FreeVirtualGamepadGFX()` with `pCursCels` empty — the exact ROB-27 sequence,
+  which kills the process pre-fix and passes asset-free post-fix.
+
+### Added
+
+#### Upstream sync (PR #1 — first true merge commit)
+
+- Merged `diasurgical/master` inbound. Upstream was exactly one commit ahead of
+  the 2026-10-11 sync base: 94433061f (staphen, "Free pointer returned by
+  SDL_GetDisplays()"). Net effect on the fork tree is a single line —
+  `SDL_free(displays)` after the desktop display mode is read in
+  `CalculatePreferredWindowSize` — landing cleanly beside the fork's existing
+  `ErrSdl()` handling. `Source/engine/render/gpu/` is untouched and no conflicts
+  surfaced.
+
+### Changed
+
+#### Audit ledger / documentation
+
+- [deltas.md](deltas.md) gains the closure records for ROB-20/21 (round 9) and
+  the field regressions ROB-26/ROB-27, plus the ROB-19 field-regression addendum
+  (mechanism, fix, plan-B note). The audit.md open-list re-head for the field
+  closures is still pending — and note the field records' ROB-26 ID collides with
+  an existing open Low finding of the same number (the swapchain-acquire vs
+  minimized-window-skip finding); renumber at the next re-head. Open ledger per
+  the round-9 re-head: **40 findings — 0 High / 9 Medium / 31 Low**.
+- `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
+
 ## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)
 
 Round 8 of the audit shipped the three presentation-surface Mediums that opened the
