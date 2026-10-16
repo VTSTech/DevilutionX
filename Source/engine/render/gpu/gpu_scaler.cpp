@@ -812,6 +812,22 @@ static bool CreateDevice(const char *name)
 	return true;
 }
 
+/** @brief Applies the current FrameRateControl setting to the live swapchain
+ * (SDR composition, vsync or immediate present) and returns the requested
+ * vsync flag for the caller's log line. A failed SDL_SetGPUSwapchainParameters
+ * is logged and non-fatal: the swapchain keeps its previous present mode.
+ * Shared by the Reinit window-claim paths and the ROB-08 option change
+ * callback (ApplyFrameRateControl). */
+static bool ApplySwapchainPresentMode()
+{
+	const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
+	if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+	        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+		LogFail("SDL_SetGPUSwapchainParameters failed");
+	}
+	return vsync;
+}
+
 bool Reinit(SDL_Window *window)
 {
 	if (gFailed) {
@@ -847,11 +863,7 @@ bool Reinit(SDL_Window *window)
 			return false;
 		}
 		gLastClaimedWindowId = SDL_GetWindowID(gWindow);
-		const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
-		if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-		        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-			LogFail("SDL_SetGPUSwapchainParameters failed");
-		}
+		const bool vsync = ApplySwapchainPresentMode();
 		LogFileLine(StrCat("window claimed, swapchain format=", static_cast<int>(SDL_GetGPUSwapchainTextureFormat(gDevice, gWindow)),
 		    " vsync=", vsync ? "1" : "0"));
 		// The swapchain format may have changed with the new window.
@@ -886,11 +898,7 @@ bool Reinit(SDL_Window *window)
 				gWindow = window;
 				if (SDL_ClaimWindowForGPUDevice(gDevice, gWindow)) {
 					gLastClaimedWindowId = SDL_GetWindowID(gWindow);
-					const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
-					if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-					        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-						LogFail("SDL_SetGPUSwapchainParameters failed");
-					}
+					ApplySwapchainPresentMode();
 					if (EnsureFilterResources(gFilter))
 						return true;
 				} else {
@@ -906,6 +914,15 @@ bool Reinit(SDL_Window *window)
 		return false;
 	}
 	return true;
+}
+
+void ApplyFrameRateControl()
+{
+	if (!IsActive())
+		return;
+	ApplySwapchainPresentMode();
+	LogFileLine(StrCat("FrameRateControl changed: vsync=",
+	    *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync ? "1" : "0"));
 }
 
 void Shutdown()

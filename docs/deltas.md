@@ -52,6 +52,8 @@ snapshot.
 | ROB-21 | Medium | Robustness | Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only) | 2026-10-16 |
 | MAINT-15 | Medium | Maintainability | CI compiles baked shaders with unpinned apt `glslang-tools`; baked SPV is non-reproducible | 2026-10-17 |
 | FEAT-02 | Medium | New Feature | Resolve the Metal strategy: wire the MSL path or fail fast with a clear message | 2026-10-17 |
+| PERF-06 | Medium | Performance | Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans | 2026-10-17 |
+| ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain | 2026-10-17 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -138,6 +140,19 @@ closure's full Original/Resolution/Verification record follows in ID order.
   handoff's ledger line updated to the round-11 state and its stale “10 of 14”
   bar note aligned with the 9-of-14 errata. No findings closed, no code changed; the ledger
   stands at 38 open (0 High / 7 Medium / 31 Low).
+- **Round 13 (2026-10-17).** Closed the last two first-contact-bar Mediums — **PERF-06**
+  (one-pass `SamplerScanIndex` in the translator replaces the five per-declaration
+  full-text rescans; the record carries a measured erratum on the skip-loop half: a
+  probe-counting harness showed the shipped suffix-advance already linear at 0.6×n on
+  the finding's own adversarial shape, so no skip-loop change was needed) and **ROB-08**
+  (a `FrameRateControl` change callback now re-applies `SDL_SetGPUSwapchainParameters`
+  to the live swapchain through the new `gpu_scaler::ApplyFrameRateControl`; both
+  `Reinit` claim sites share the same apply helper). **The 8A+8B first-contact bar is
+  complete** — all nine Medium open at merge-plan r2 are closed; sweep 8C (ROB-07/23,
+  TEST-06) remains. Between rounds 12 and 13 (un-numbered docs actions): the CI gtest
+  split landed as a MAINT-15 addendum and the changelog gained a consolidated
+  `1.6.0-dev-007f3956a` window entry. Ledger 38 → **36 open (0 High / 5 Medium /
+  31 Low)**.
 
 ---
 
@@ -1523,5 +1538,102 @@ exercised in CI (Linux + Windows jobs only); expected field behavior is the new 
 line followed by either `device created, backend=vulkan` (MoltenVK) or a clean
 stock-renderer fallback — the same session-sticky `gFailed` contract every other
 device-creation failure uses.
+
+---
+
+## PERF-06 — CLOSED: Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Performance |
+| **Original location** | `Source/engine/render/gpu/preset/slang_translate.cpp` (`FindUniformBlock`; `RewriteSamplers` + `IsDefineTarget` / `IsTextureSampled` / `IsSamplerNameUsed` / `DefineTargetExpansion` / `IsSamplerDeclared`) |
+
+**Original finding.** Two scan patterns degraded quadratically with large or adversarial
+shader text, both running on the frame path during preset load with no timeout. First,
+`FindUniformBlock`'s skip of `layout(push_constant) uniform X {` hits was read as
+re-probing every position to EOF per skipped block — K push-constant blocks in an n-byte
+shader estimated at O(K·n) `std::regex` position probes per stage (~10¹⁰ for a 1 MB
+shader padded with ~30k such blocks). Second, `RewriteSamplers` called `IsDefineTarget`
+and `IsTextureSampled` — full O(n) walks of the entire stage text — once per unknown
+sampler declaration, so N orphan declarations (Mega Bezel wrapper packs legitimately
+carry many) cost O(N·n), with `IsSamplerNameUsed`/`DefineTargetExpansion` adding more in
+the #defined-away path. Field impact: seconds-to-minutes stalls loading big wrapper packs
+on cold cache. (All 8 translator regexes had been checked for catastrophic backtracking —
+none; the cost was linear-scan multiplication, not blowup.)
+
+**Resolution.** One-pass precomputation — the finding's primary prescription. A new
+`SamplerScanIndex` (`BuildSamplerScanIndex`, two linear passes over the comment-stripped
+stage text) is built once at the top of `RewriteSamplers` (the text is not mutated inside
+the rewrite loop, so the index stays valid) and answers the five per-declaration queries
+by lookup: `defineTargets`/`defineExpansion` record every `#define` directive target
+(with the object-like single-identifier body) walking the keyword occurrences with the
+exact branch logic of the originals; `samplerDecls` records every `sampler2D <name>`
+declaration; `usedNames`/`sampledNames`/`textureSuffixNames` classify every identifier
+token exactly as `IsSamplerNameUsed`/`IsTextureSampled` did (sampling-call arguments,
+directive classification, and the attached-prefix mid-token branch for names that are
+suffixes of texture/texelFetch-prefixed tokens). Five thin 3-arg wrappers keep the call
+sites' names and dispatch on identifier shape — everything the sampler declaration
+grammar yields in practice — falling back to the original full-text scans for
+non-identifier names (invalid GLSL that glslang rejects later) for exact parity. The
+call-site diff is five argument lists.
+
+**Erratum (pattern 1, measured).** A probe-counting harness replicating the shipped
+skip-loop put the audit's own adversarial shape — 1 MB, 30,000 push-constant blocks, one
+plain UBO at the end — at **30,001 `regex_search` calls and 1,710,001 probes = 0.6×n
+(66 ms)**, not the estimated ~10¹⁰: the shipped `searchFrom = match.suffix().first`
+advance already bounds each rescan to the gap before the next head, so the loop was
+linear and needed no change. The finding's O(K·n) arithmetic presumed each
+`regex_search` re-probed from `from` to EOF; it does not. The field stalls were the
+second pattern alone.
+
+**Verification.** Parity harness over the exact shipped block (g++ -O2, clang-format
+18.1.8-clean): **29,590 old-vs-new cross-checks, zero divergences**, across a
+branch-torture text (mid-line `#define`, function-like and empty macros,
+`sampler2DArray`/`isampler2D` skips, call/whitespace/member-access variants), the full
+32-file `preset_smoke` corpus plus the vulkan `.vert`/`.frag` sources, and a 200 KB
+synthetic wrapper pack — querying every identifier token plus every
+texture/texelFetch-token suffix. Timing: 400 orphans on a 195 KB stage = 3.3 ms old vs
+1.7 ms new (index build included); the old side scales O(N·n) while the index is O(n) —
+a multi-megabyte wrapper TU (the ROB-20 caps allow 4 MiB) with a thousand orphans is
+where the field's seconds-to-minutes stalls came from. CI: the corpus suite
+(`preset_smoke` / `preset_smoke_corpus`) and the clang-format gate must stay green.
+
+---
+
+## ROB-08 — CLOSED: Mid-session vsync changes never reach the GPU swapchain
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/gpu_scaler.cpp` (the two `SDL_SetGPUSwapchainParameters` call sites in `Reinit`), `Source/options.cpp` (`FrameRateControl`), `Source/utils/display.cpp` (option change handlers; renderer-path vsync) |
+
+**Original finding.** `SDL_SetGPUSwapchainParameters` — the only way to apply a new
+present mode to a live swapchain — was called solely inside `Reinit`'s window-claim
+branch and the Vulkan-retry path. The `FrameRateControl` option (Vertical Sync) carries
+`RecreateUI` but had no change callback (callbacks were registered only for
+resolution/fullscreen/shaderFilter), so toggling vsync while the scaler was active
+changed nothing until restart or filter change. The SDL_Renderer path honored the change
+on every `ReinitializeRenderer` (`SDL_SetRenderVSync`), so the same toggle behaved
+differently per render path — a "setting did nothing" support class.
+
+**Resolution.** The audit's prescription, mirroring the shaderFilter callback pattern.
+The duplicated 4-line apply block in both `Reinit` claim sites is factored into a shared
+`ApplySwapchainPresentMode()` (same SDR composition and VSYNC/IMMEDIATE parameters, same
+non-fatal `LogFail` on failure — the swapchain keeps its previous present mode); a new
+public `gpu_scaler::ApplyFrameRateControl()` no-ops unless `IsActive()` (the scaler must
+own the present) and re-applies with a `gpu-scaler.log` line naming the new state; and
+`display.cpp` registers the option's change callback beside the existing three handlers
+(`OptionChangeHandlerFrameRateControl`). Success-path behavior of the two refactored
+call sites is byte-identical — same parameters, same combined claim log at the first
+site (via the helper's returned vsync flag), same ordering after the claim.
+
+**Verification.** Static: both former inline blocks now route through the shared helper;
+the callback fires after the option value commits, so the apply reads the new setting;
+`RecreateUI` still covers the SDL_Renderer path untouched; the `IsActive()` guard makes
+handback and parked-device states no-ops. Failure contract: a rejected present mode logs
+and continues — never fatal. CI: the gtest suite (`linux-tests` job) and the
+clang-format gate stay green.
 
 ---

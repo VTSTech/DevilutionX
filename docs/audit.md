@@ -3,9 +3,9 @@
 **DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
 
 **Repository:** https://github.com/VTSTech/DevilutionX
-**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-17 (round 12)
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-17 (round 13)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-73 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 35 closed → [deltas.md](deltas.md) | 38 open: **0 High / 7 Medium / 31 Low**
+73 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 37 closed → [deltas.md](deltas.md) | 36 open: **0 High / 5 Medium / 31 Low**
 
 ---
 
@@ -28,11 +28,11 @@
 
 ## Executive Summary
 
-This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. Rounds 1–6 enumerated the finding set — the fork's entire delta and its integration points, the engine's game loop and options architecture, and the build/CI/packaging layer, down to individual SDL_GPU API invocations; round 7 re-walked the same surface with fresh eyes targeting state-machine ordering, unchecked SDL return values, resource lifetime across renderer hand-off, and translation-layer input handling. Rounds 7.5–11 then worked the backlog those sweeps produced, closing **35 of the 73 findings** — every closure regression-verified in-tree (the two field closures verified on hardware), each with its full Original/Resolution/Verification record in [deltas.md](deltas.md), the single record of closures and, since round 12, also the home of the round-by-round fix history.
+This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. Rounds 1–6 enumerated the finding set — the fork's entire delta and its integration points, the engine's game loop and options architecture, and the build/CI/packaging layer, down to individual SDL_GPU API invocations; round 7 re-walked the same surface with fresh eyes targeting state-machine ordering, unchecked SDL return values, resource lifetime across renderer hand-off, and translation-layer input handling. Rounds 7.5–13 then worked the backlog those sweeps produced, closing **37 of the 73 findings** — every closure regression-verified in-tree (the two field closures verified on hardware), each with its full Original/Resolution/Verification record in [deltas.md](deltas.md), the single record of closures and, since round 12, also the home of the round-by-round fix history.
 
-The ledger stands at **38 open findings: 0 High / 7 Medium / 31 Low** — no High finding has been open since the round-7.5 quick-fix batch closed the round-7 pair. The seven open Mediums are the working queue: **ROB-23** (`FillBlockBytes` semantic bugs that silently zero or corrupt uniform parameter data), **PERF-06** (quadratic scans in the translator), **TEST-06** (`preset_smoke`'s known-texture set omits `#pragma name` identifiers, diverging from the runner), **ROB-07** (`Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII), **ROB-08** (mid-session vsync changes never reach the GPU swapchain), **FEAT-01** (preset failure retry / hot reload — blocked on ROB-07), and **FEAT-03** (surface preset errors in-game instead of only in gpu-scaler.log). Two partially-fixed findings stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer).
+The ledger stands at **36 open findings: 0 High / 5 Medium / 31 Low** — no High finding has been open since the round-7.5 quick-fix batch closed the round-7 pair. The five open Mediums are the working queue: **ROB-23** (`FillBlockBytes` semantic bugs that silently zero or corrupt uniform parameter data), **TEST-06** (`preset_smoke`'s known-texture set omits `#pragma name` identifiers, diverging from the runner), **ROB-07** (`Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII), **FEAT-01** (preset failure retry / hot reload — blocked on ROB-07), and **FEAT-03** (surface preset errors in-game instead of only in gpu-scaler.log). Two partially-fixed findings stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer).
 
-Work is sequenced by the upstream merge plan (`docs/merge-plan-draft-r2.md`), which gates every proposed PR on the findings that share its files and orders the remaining closure into three Phase-0 sweeps — **8A** library surface, **8B** presentation surface, **8C** runner surface. First contact (PR 4 + PR 1) is barred until 8A+8B complete — 9 of the 14 Medium open when r2 was measured (r2's own “10 of 14” over-counted ROB-20, which gates both PR 1 and PR 2's translator half). Rounds 8, 9, and 11 have since closed seven of those nine — ROB-18/19/22/20/21, MAINT-15, and the FEAT-02 Metal disposition — leaving **ROB-08 and PERF-06** as the last two bar items; sweep 8C (ROB-07/23, TEST-06) pipelines with early PR reviews. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/04 (deferred), FEAT-03 (optional PR-7 rider). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
+Work is sequenced by the upstream merge plan (`docs/merge-plan-draft-r2.md`), which gates every proposed PR on the findings that share its files and orders the remaining closure into three Phase-0 sweeps — **8A** library surface, **8B** presentation surface, **8C** runner surface. First contact (PR 4 + PR 1) is barred until 8A+8B complete — 9 of the 14 Medium open when r2 was measured (r2's own “10 of 14” over-counted ROB-20, which gates both PR 1 and PR 2's translator half). Rounds 8, 9, 11, and 13 have since closed all nine — ROB-18/19/22/20/21, MAINT-15, the FEAT-02 Metal disposition, and (round 13) ROB-08 and PERF-06 — so **the 8A+8B first-contact bar is complete**; sweep 8C (ROB-07/23, TEST-06) pipelines with early PR reviews. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/04 (deferred), FEAT-03 (optional PR-7 rider). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
 
 The mod's invariant frames every finding here: any GPU or preset failure must degrade gracefully to the stock renderer — never `app_fatal`, never a crash — and the remaining open set concentrates on exactly that contract's edges (runner failure paths, swapchain state changes, translator input handling) plus the observability that makes silent degradation visible. The Findings Summary below lists every open finding with severity and category; the Detailed Findings sections carry the full analysis per ID; the Priority Matrix orders the queue into Immediate / Short term / Backlog. For how each closure was actually made — and for the round-by-round history this summary used to carry — see [deltas.md](deltas.md).
 
@@ -53,12 +53,10 @@ The mod's invariant frames every finding here: any GPU or preset failure must de
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
 | ROB-23 | Medium | Robustness | `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits |
-| PERF-06 | Medium | Performance | Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans |
 | TEST-06 | Medium | Testing | `preset_smoke` known-texture set omits `#pragma name` identifiers — diverges from the runner |
 | FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets |
 | FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log |
 | ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII |
-| ROB-08 | Medium | Robustness | Mid-session vsync changes never reach the GPU swapchain |
 | SEC-02 | Low | Security | `ResolvePresetPath` joins ini-stored paths without containment |
 | SEC-03 | Low | Security | Sidecar `.spv` files accepted on magic+size check alone |
 | SEC-05 | Low | Security | `IsPathInsideShaderRoot` case-folds on every platform — POSIX case-sibling escape |
@@ -164,18 +162,6 @@ The SEC-01 sandbox helper compares root and candidate with a per-character `tolo
 `PassRuntime` and `LutRuntime` hold raw `SDL_GPUShader*`/`SDL_GPUGraphicsPipeline*`/`SDL_GPUTexture*` members with no destructor, relying on `Runner::Unload` (`:1335-1379`) seeing them via `passes_`. During `Load`, per-pass shaders and pipelines are created before ownership transfer into `passes_` (`:490-492`), and `LoadLut` creates the LUT texture before its transfer buffer and command buffer succeed (`:831-859`) — so any mid-load failure (shader N fails, pipeline N fails, LUT transfer fails) leaves already-created GPU resources unreachable when the caller's `unique_ptr` destroys the runtimes. Today the blast radius is bounded because every `Load` failure path ends in a full `Shutdown()` + device destruction (`gpu_scaler.cpp:781-791, 815-817`), which frees everything; but the header's own contract ("Unload is safe to call anytime") is silently false mid-load, and any future reuse of `Runner` — hot reload, preset retry (see FEAT-01) — turns this into a real leak. Fix: give `PassRuntime`/`LutRuntime` RAII destructors that release owned SDL_GPU objects when the device pointer is set, or route mid-load failures through `Unload()` before returning the error.
 
 **Impact:** The runner becomes genuinely reusable for retry/hot-reload features without leaking GPU memory on partial failures.
-
-#### ROB-08: Mid-session vsync changes never reach the GPU swapchain
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/gpu_scaler.cpp` (lines 766-772, 805-809), `Source/options.cpp` (lines 1035-1055), `Source/utils/display.cpp` (lines 162-166, 887-890) |
-
-`SDL_SetGPUSwapchainParameters` — the only way to apply a new present mode to a live swapchain — is called solely inside `Reinit`'s window-change branch and the Vulkan-retry path. The `FrameRateControl` option (`Vertical Sync`) carries `RecreateUI` but has no change callback (callbacks are registered only for resolution/fullscreen/shaderFilter at `display.cpp:162-166`), so toggling vsync while the scaler is active changes nothing until restart or filter change. The SDL_Renderer path does honor the change on every `ReinitializeRenderer` (`display.cpp:887-890`), so behavior diverges between paths for the same toggle. Fix: register a change callback for the frame-rate control option that calls `SDL_SetGPUSwapchainParameters` with the current vsync setting when `IsActive()`, mirroring the shaderFilter callback pattern.
-
-**Impact:** The Graphics menu behaves identically on both render paths, eliminating a "setting did nothing" support class.
 
 #### ROB-10: `Runner::Run` failure-contract mismatch: header says transient, caller hard-fails
 
@@ -502,21 +488,6 @@ Two cold-path inefficiencies compound on preset load. First, the cache never pru
 
 **Impact:** Cache directories stay proportional to installed presets, and multi-pass pack loading is single-read.
 
-#### PERF-06: Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Performance |
-| **File(s)** | `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 294-303, 871-872, 609-635, 641-681, 688-729, 773-808) |
-
-Two scan patterns in the translator degrade quadratically with adversarial or merely large shader text, and both run on the frame path during preset load with no timeout. First, `FindUniformBlock` skips `layout(push_constant) uniform X {` hits by advancing `searchFrom = match.suffix().first` — but each `regex_search` re-probes every position to EOF, so K push-constant blocks in an n-byte shader cost O(K·n) std::regex position probes per stage (a 1 MB shader padded with ~30k such blocks ⇒ ~10¹⁰ probes). Second, `RewriteSamplers` calls `IsDefineTarget` and `IsTextureSampled` — full O(n) walks of the entire stage text — once per unknown sampler declaration (`:871-872`), so N orphan declarations (Mega Bezel wrapper packs legitimately carry many) cost O(N·n), with `IsSamplerNameUsed`/`DefineTargetExpansion` adding more in the `definedAway` path. (All 8 translator regexes were checked for catastrophic backtracking — none; the cost is linear-scan multiplication, not blowup.) Field impact today: seconds-to-minutes stalls loading big wrapper packs on cold cache.
-
-Fix: precompute per-stage declaration/def offsets in one pass before the rewrite loop, or bound the skip-loop's rescan window.
-
-**Impact:** Preset load time stays linear in shader size and declaration count.
-
----
 ### New Features
 
 #### FEAT-01: Preset failure retry / hot reload of failed presets
@@ -634,12 +605,12 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | Timeline | Findings |
 |----------|----------|
 | **Immediate** (next 1–2 builds) | *(empty — the entire previous Immediate row shipped as the 2026-10-16 quick-fix batch: ROB-14, ROB-15, ROB-16, ROB-17, MAINT-03 re-close; see [deltas.md](deltas.md))* |
-| **Short term** (planned work) | ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
-| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-28, ROB-29, ROB-30, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-06, FEAT-04, ARCH-02, TEST-04, TEST-05 |
+| **Short term** (planned work) | ROB-23 (FillBlockBytes semantics), TEST-06 (smoke pragma-names), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload) |
+| **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-28, ROB-29, ROB-30, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-05, FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
 Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) is dispositioned as of round 11 — the device layer is Vulkan-only, auto-selected Metal gets an honest message plus the ROB-18 Vulkan retry (MoltenVK stays viable) — so the backend policy is decided and the handoff table matches the code.
 
-**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan-draft-r2.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (round 8) + FEAT-02 (round-11 disposition) + ROB-08/30 → **8B**; ROB-20/21 (round 9) + MAINT-15 (round 11) + PERF-06 → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (9 of the original 14 open Medium closed — r2's “10” double-counted ROB-20 across the PR 1/PR 2 gates; rounds 8+9 shipped 5 of those 9 and round 11 closed the other two (MAINT-15, FEAT-02 disposition), leaving 2: ROB-08, PERF-06); sweep 8C pipelines with early PR reviews.
+**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan-draft-r2.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (round 8) + FEAT-02 (round-11 disposition) + ROB-08 (round 13) + ROB-30 → **8B**; ROB-20/21 (round 9) + MAINT-15 (round 11) + PERF-06 (round 13) → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (9 of the original 14 open Medium closed — r2's “10” double-counted ROB-20 across the PR 1/PR 2 gates; rounds 8+9 shipped 5 of those 9, round 11 closed MAINT-15 and the FEAT-02 disposition, and round 13 closed the last two, ROB-08 and PERF-06 — **8A+8B complete as of round 13**); sweep 8C pipelines with early PR reviews.
 
 ---
 

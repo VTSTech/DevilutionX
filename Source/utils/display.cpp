@@ -167,6 +167,7 @@ const auto OptionChangeHandlerResolution = (GetOptions().Graphics.resolution.Set
 const auto OptionChangeHandlerFullscreen = (GetOptions().Graphics.fullscreen.SetValueChangedCallback(SetFullscreenMode), true);
 #ifdef USE_GPU_SCALER
 const auto OptionChangeHandlerShaderFilter = (GetOptions().Graphics.shaderFilter.SetValueChangedCallback(ResizeWindow), true);
+const auto OptionChangeHandlerFrameRateControl = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(gpu_scaler::ApplyFrameRateControl), true);
 #endif
 
 void OptionGrabInputChanged()

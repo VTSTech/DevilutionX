@@ -17,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "utils/parse_int.hpp"
 #include "utils/str_cat.hpp"
@@ -836,6 +837,238 @@ bool IsSamplerNameUsed(const std::string &glsl, const std::string &name)
 	return used;
 }
 
+/** @brief True when the name is a plain GLSL identifier - the only shape the
+ * one-pass sampler scan index (PERF-06) is keyed for. */
+bool IsIdentifier(const std::string &name)
+{
+	if (name.empty())
+		return false;
+	for (const char c : name) {
+		if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '_')
+			return false;
+	}
+	return true;
+}
+
+/** @brief One-pass index over the (comment-stripped) stage text answering the
+ * per-declaration sampler resolution queries — PERF-06. RewriteSamplers used
+ * to walk the entire stage text once per unknown sampler declaration
+ * (IsDefineTarget, IsTextureSampled, then IsSamplerNameUsed /
+ * DefineTargetExpansion / IsSamplerDeclared in the #defined-away path), so a
+ * pack with N orphan declarations cost O(N·n) full-text scans on the frame
+ * path during preset load. The index is built in two linear passes before the
+ * rewrite loop (the text is not mutated inside the loop) and answers the same
+ * five queries by lookup.
+ *
+ * Semantics parity with the five scans, per query:
+ * - defineTargets / defineExpansion / samplerDecls record every "#define"
+ *   directive target (with the object-like single-identifier body when one
+ *   exists) and every "sampler2D <name>" declaration, walking the keyword
+ *   occurrences with the exact branch logic of IsDefineTarget /
+ *   DefineTargetExpansion / IsSamplerDeclared.
+ * - usedNames records every identifier token that IsSamplerNameUsed would
+ *   classify as a use (word-start/end occurrence not preceded — over spaces
+ *   and tabs — by the "sampler2D" or "#define" directive keywords).
+ * - sampledNames records every identifier token IsTextureSampled would accept
+ *   in its standalone branch: preceded, over spaces and tabs, by '(' with a
+ *   texture or texelFetch callee word in front of the paren.
+ * - textureSuffixNames reproduces IsTextureSampled's attached-prefix branch
+ *   for raw mid-token occurrences: a query name that is a suffix of a token
+ *   whose prefix starts with "texture" (offset >= 7) or "texelFetch"
+ *   (offset >= 10) and which extends to the token end classifies as sampled
+ *   ("textureName" containing "Name").
+ * The index only answers identifier-shaped names (everything the sampler
+ * declaration grammar yields in practice); callers keep the original scans
+ * for anything else. */
+struct SamplerScanIndex {
+	std::unordered_set<std::string> defineTargets;
+	std::unordered_map<std::string, std::string> defineExpansion;
+	std::unordered_set<std::string> samplerDecls;
+	std::unordered_set<std::string> sampledNames;
+	std::unordered_set<std::string> textureSuffixNames;
+	std::unordered_set<std::string> usedNames;
+};
+
+SamplerScanIndex BuildSamplerScanIndex(const std::string &glsl)
+{
+	SamplerScanIndex idx;
+	// Pass 1: directive keywords — the walk and branch logic mirror
+	// IsDefineTarget / DefineTargetExpansion / IsSamplerDeclared exactly.
+	{
+		size_t pos = 0;
+		while ((pos = glsl.find("#define", pos)) != std::string::npos) {
+			// The directive must start a line (leading whitespace allowed).
+			const size_t lineStart = glsl.rfind('\n', pos) == std::string::npos ? 0 : glsl.rfind('\n', pos) + 1;
+			bool onlySpace = true;
+			for (size_t i = lineStart; i < pos; ++i) {
+				if (glsl[i] != ' ' && glsl[i] != '\t') {
+					onlySpace = false;
+					break;
+				}
+			}
+			const size_t after = pos + 7;
+			size_t nameStart = after;
+			while (nameStart < glsl.size() && (glsl[nameStart] == ' ' || glsl[nameStart] == '\t'))
+				++nameStart;
+			size_t nameEnd = nameStart;
+			while (nameEnd < glsl.size()
+			    && (std::isalnum(static_cast<unsigned char>(glsl[nameEnd])) != 0 || glsl[nameEnd] == '_'))
+				++nameEnd;
+			if (onlySpace && nameEnd > nameStart) {
+				const char end = nameEnd < glsl.size() ? glsl[nameEnd] : '\0';
+				if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_')
+					idx.defineTargets.insert(glsl.substr(nameStart, nameEnd - nameStart));
+			}
+			// Object-like macro body, for the alias-resolution path.
+			if (onlySpace && nameEnd > nameStart) {
+				const char end = nameEnd < glsl.size() ? glsl[nameEnd] : '\0';
+				if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_' && end != '(') {
+					size_t lineEnd = glsl.find('\n', nameEnd);
+					if (lineEnd == std::string::npos)
+						lineEnd = glsl.size();
+					const std::string body = TrimAll(glsl.substr(nameEnd, lineEnd - nameEnd));
+					bool singleIdent = !body.empty();
+					for (const char c : body) {
+						if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+							singleIdent = false;
+							break;
+						}
+					}
+					if (singleIdent)
+						idx.defineExpansion.emplace(glsl.substr(nameStart, nameEnd - nameStart), body);
+				}
+			}
+			pos = after;
+		}
+	}
+	{
+		size_t pos = 0;
+		while ((pos = glsl.find("sampler2D", pos)) != std::string::npos) {
+			// Skip isampler2D/usampler2D (identifier character right before).
+			if (pos > 0
+			    && (std::isalnum(static_cast<unsigned char>(glsl[pos - 1])) != 0 || glsl[pos - 1] == '_')) {
+				pos += 9;
+				continue;
+			}
+			size_t after = pos + 9;
+			// A plain sampler2D declaration requires whitespace between the
+			// keyword and the name; sampler2DArray/sampler2DShadow etc. skip.
+			if (after >= glsl.size() || (glsl[after] != ' ' && glsl[after] != '\t')) {
+				pos += 9;
+				continue;
+			}
+			while (after < glsl.size() && (glsl[after] == ' ' || glsl[after] == '\t'))
+				++after;
+			size_t nameEnd = after;
+			while (nameEnd < glsl.size()
+			    && (std::isalnum(static_cast<unsigned char>(glsl[nameEnd])) != 0 || glsl[nameEnd] == '_'))
+				++nameEnd;
+			if (nameEnd > after) {
+				const char end = nameEnd < glsl.size() ? glsl[nameEnd] : '\0';
+				if (!std::isalnum(static_cast<unsigned char>(end)) && end != '_')
+					idx.samplerDecls.insert(glsl.substr(after, nameEnd - after));
+			}
+			pos += 9;
+		}
+	}
+	// Pass 2: identifier tokens — one walk classifies every occurrence the
+	// per-name scans would have found.
+	const size_t n = glsl.size();
+	auto isWord = [](char c) {
+		return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+	};
+	size_t i = 0;
+	while (i < n) {
+		if (!isWord(glsl[i])) {
+			++i;
+			continue;
+		}
+		const size_t ts = i;
+		while (i < n && isWord(glsl[i]))
+			++i;
+		const std::string token = glsl.substr(ts, i - ts);
+		// Walk back over spaces and tabs — shared by the IsSamplerNameUsed
+		// directive check and IsTextureSampled's call-argument check.
+		size_t probe = ts;
+		while (probe > 0 && (glsl[probe - 1] == ' ' || glsl[probe - 1] == '\t'))
+			--probe;
+		bool directive = false;
+		for (const char *kw : { "sampler2D", "#define" }) {
+			const size_t len = std::strlen(kw);
+			if (probe >= len && glsl.compare(probe - len, len, kw) == 0
+			    && (probe - len == 0
+			        || (!std::isalnum(static_cast<unsigned char>(glsl[probe - len - 1]))
+			            && glsl[probe - len - 1] != '_'))) {
+				directive = true;
+				break;
+			}
+		}
+		if (!directive)
+			idx.usedNames.insert(token);
+		if (probe > 0 && glsl[probe - 1] == '(') {
+			const size_t paren = probe - 1;
+			size_t wordBegin = paren;
+			while (wordBegin > 0 && isWord(glsl[wordBegin - 1]))
+				--wordBegin;
+			const std::string call = glsl.substr(wordBegin, paren - wordBegin);
+			if (call.compare(0, 7, "texture") == 0 || call.compare(0, 10, "texelFetch") == 0)
+				idx.sampledNames.insert(token);
+		}
+		// Attached-prefix parity: suffixes of texture*/texelFetch*-prefixed
+		// tokens (the raw scan's mid-token occurrences that end the token).
+		if (token.size() > 7 && token.compare(0, 7, "texture") == 0) {
+			for (size_t k = 7; k < token.size(); ++k)
+				idx.textureSuffixNames.insert(token.substr(k));
+		} else if (token.size() > 10 && token.compare(0, 10, "texelFetch") == 0) {
+			for (size_t k = 10; k < token.size(); ++k)
+				idx.textureSuffixNames.insert(token.substr(k));
+		}
+	}
+	return idx;
+}
+
+/** @brief Indexed fast paths for the per-declaration resolution queries
+ * (PERF-06): identifier-shaped names - everything the sampler declaration
+ * grammar yields in practice - answer from the one-pass index; anything else
+ * (invalid GLSL that glslang rejects later) keeps the original full-text scan
+ * for exact parity. */
+bool IsDefineTarget(const SamplerScanIndex &idx, const std::string &glsl, const std::string &name)
+{
+	if (IsIdentifier(name))
+		return idx.defineTargets.count(name) != 0;
+	return IsDefineTarget(glsl, name);
+}
+
+bool IsTextureSampled(const SamplerScanIndex &idx, const std::string &glsl, const std::string &name)
+{
+	if (IsIdentifier(name))
+		return idx.sampledNames.count(name) != 0 || idx.textureSuffixNames.count(name) != 0;
+	return IsTextureSampled(glsl, name);
+}
+
+bool IsSamplerNameUsed(const SamplerScanIndex &idx, const std::string &glsl, const std::string &name)
+{
+	if (IsIdentifier(name))
+		return idx.usedNames.count(name) != 0;
+	return IsSamplerNameUsed(glsl, name);
+}
+
+std::string DefineTargetExpansion(const SamplerScanIndex &idx, const std::string &glsl, const std::string &name)
+{
+	if (IsIdentifier(name)) {
+		const auto it = idx.defineExpansion.find(name);
+		return it != idx.defineExpansion.end() ? it->second : std::string();
+	}
+	return DefineTargetExpansion(glsl, name);
+}
+
+bool IsSamplerDeclared(const SamplerScanIndex &idx, const std::string &glsl, const std::string &name)
+{
+	if (IsIdentifier(name))
+		return idx.samplerDecls.count(name) != 0;
+	return IsSamplerDeclared(glsl, name);
+}
+
 /** @brief Rewrites sampler2D declarations to the SDL3 resource set (0 vertex, 2 fragment) with dense bindings. */
 bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
     const std::unordered_set<std::string> &knownTextureNames, int passIndex, int passCount,
@@ -847,6 +1080,11 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 	std::string line;
 	std::string out;
 	out.reserve(glsl.size() + 64);
+	// PERF-06: one linear pass over the stage text replaces the five full-text
+	// rescans the per-declaration queries below used to make (O(N*n) on wrapper
+	// packs with many orphan declarations). The text is not mutated inside the
+	// rewrite loop, so the index stays valid.
+	const SamplerScanIndex scanIndex = BuildSamplerScanIndex(glsl);
 	const uint32_t texSet = isVertex ? 0U : 2U;
 	uint32_t binding = 0;
 	while (std::getline(lines, line)) {
@@ -897,8 +1135,8 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 					// declaration with a warning when the name is a #define target
 					// or is never sampled. A sampled unknown name still hard-fails:
 					// that is a real missing dependency.
-					const bool definedAway = IsDefineTarget(glsl, name);
-					if (!definedAway && IsTextureSampled(glsl, name)) {
+					const bool definedAway = IsDefineTarget(scanIndex, glsl, name);
+					if (!definedAway && IsTextureSampled(scanIndex, glsl, name)) {
 						error = StrCat("slang: unknown texture reference '", name,
 						    "' (not a builtin, alias or lookup texture)");
 						return false;
@@ -919,9 +1157,9 @@ bool RewriteSamplers(std::string &glsl, bool isVertex, StageTranslation &stage,
 					// PrePass0 Source"), dropping stays correct: the calls expand to
 					// the existing declaration.
 					bool resolved = false;
-					if (definedAway && IsSamplerNameUsed(glsl, name)) {
-						const std::string expansion = DefineTargetExpansion(glsl, name);
-						if (!expansion.empty() && !IsSamplerDeclared(glsl, expansion)) {
+					if (definedAway && IsSamplerNameUsed(scanIndex, glsl, name)) {
+						const std::string expansion = DefineTargetExpansion(scanIndex, glsl, name);
+						if (!expansion.empty() && !IsSamplerDeclared(scanIndex, glsl, expansion)) {
 							bool alreadyEmitted = false;
 							for (const TextureRef &known : stage.textures) {
 								if (known.name == expansion) {

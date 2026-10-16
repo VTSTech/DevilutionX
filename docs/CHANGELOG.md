@@ -12,6 +12,70 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-e08c3509c (2026-10-16 6:28:14 PM)
+
+Round 13 closes the last two first-contact-bar Mediums — **PERF-06** and
+**ROB-08** — completing the 8A+8B bar that gated first upstream contact: all
+nine Medium findings open when merge-plan r2 was measured (ROB-18/19/22/20/21,
+MAINT-15, the FEAT-02 Metal disposition, ROB-08, PERF-06) are now closed, and
+the 8C runner sweep (ROB-07/23, TEST-06) remains, pipelining with early PR
+reviews. Ledger: **73 findings / 37 closed / 36 open (0 High / 5 Medium /
+31 Low)**.
+
+### Fixed
+
+#### GPU scaler presentation
+
+- **ROB-08** — mid-session vsync changes now reach the GPU swapchain. The
+  `FrameRateControl` option (Vertical Sync) carried `RecreateUI` but had no
+  change callback, so toggling vsync while the scaler was active changed
+  nothing until restart or filter change — while the SDL_Renderer path honored
+  the change on every `ReinitializeRenderer` (`SDL_SetRenderVSync`), the same
+  toggle silently did nothing on the GPU path. The duplicated apply block in
+  both `Reinit` window-claim sites is factored into a shared
+  `ApplySwapchainPresentMode()`, and a new public
+  `gpu_scaler::ApplyFrameRateControl()` — registered as the option's change
+  callback beside resolution/fullscreen/shaderFilter — re-applies
+  `SDL_SetGPUSwapchainParameters` (SDR composition, vsync or immediate)
+  whenever the setting changes while `IsActive()`, logging the new present
+  mode to gpu-scaler.log. A rejected present mode logs and keeps the old one —
+  never fatal — and the handback/parked-device states are no-ops. The two
+  refactored claim sites are behavior-identical on the success path.
+
+### Changed
+
+#### Translator performance
+
+- **PERF-06** — preset load is now linear in shader size and declaration
+  count. `RewriteSamplers` used to walk the entire stage text once per unknown
+  sampler declaration — `IsDefineTarget` and `IsTextureSampled` for every
+  orphan (Mega Bezel wrapper packs legitimately carry many), plus
+  `IsSamplerNameUsed`/`DefineTargetExpansion`/`IsSamplerDeclared` in the
+  #defined-away path — O(N·n) full-text scans on the frame path: the field's
+  seconds-to-minutes stalls on big wrapper packs. A one-pass
+  `SamplerScanIndex` — two linear passes over the stage text, built once
+  before the rewrite loop: directive targets and macro bodies, sampler2D
+  declarations, and a per-token classification of use/sampled contexts — now
+  answers all five queries by lookup through thin wrappers that keep the
+  original full-text scans only for non-identifier names (invalid GLSL that
+  glslang rejects later) for exact parity. Parity evidence: 29,590 old-vs-new
+  cross-checks with zero divergences across a branch-torture text, the
+  32-file smoke corpus, and a 200 KB wrapper pack. The perf record also
+  carries a measured erratum: the finding's first pattern (the
+  `FindUniformBlock` push-constant skip loop) never went quadratic — the
+  shipped suffix-advance probes 0.6×n positions on the finding's own
+  1 MB/30k-block adversarial shape (30,001 `regex_search` calls, 66 ms), so
+  that half needed no change.
+
+#### Audit ledger / documentation
+
+- Ledger riders updated to the round-13 state: audit.md (snapshot + bar
+  complete), deltas.md (PERF-06/ROB-08 closure records with the parity and
+  probe-count evidence, index rows, Fix History), handoff ledger line and bar
+  note, brief.md backlog bullet (was still at the round-9 state with the old
+  72-finding count — now corrected), and merge-plan r2's Phase-0 status note.
+  No findings closed by these riders themselves.
+
 ## 1.6.0-dev-007f3956a (2026-10-16 5:55:57 PM)
 
 The window between the field-verified 1f7d111fd build and this one. Engine

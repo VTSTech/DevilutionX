@@ -115,9 +115,10 @@ additions with zero engine impact.
 Current ledger: **44 open findings — 14 Medium, 30 Low, 0 High.** *(Ledger note,
 2026-10-17: rounds 8 and 9 closed five of these Medium — ROB-18/19/22 and ROB-20/21 —
 and one Low was added, TEST-08, taking the live ledger to 40; the round-11 sweep then
-closed MAINT-15 and the FEAT-02 disposition, leaving **38 open — 0 High / 7 Medium /
-31 Low** per `audit.md`. Of the nine Medium owned by 8A+8B below, two remain: ROB-08
-and PERF-06.)* Phase 0 dispositions
+closed MAINT-15 and the FEAT-02 disposition; round 13 closed the last two, ROB-08 and
+PERF-06, leaving **36 open — 0 High / 5 Medium / 31 Low** per `audit.md`. The nine
+Medium owned by 8A+8B below are all closed — **the first-contact bar is complete**.)*
+Phase 0 dispositions
 all of them before/while the series opens. Nothing here is redesign work: every finding
 in the ledger already carries a concrete fix sketch, so Phase 0 is execution, not
 exploration. Three rounds, each scoped to unblock a specific slice of the ladder.

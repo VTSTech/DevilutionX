@@ -89,6 +89,18 @@ void Shutdown();
 void HandbackWindow(SDL_Window *window);
 
 /**
+ * @brief Applies the current FrameRateControl setting (Vertical Sync vs
+ * None) to the live GPU swapchain. ROB-08: the FrameRateControl option had
+ * no change callback, so toggling vsync while the scaler was active
+ * changed nothing until restart or filter change, while the SDL_Renderer
+ * path re-applied it on every ReinitializeRenderer. Registered as the
+ * option's change callback; a no-op unless the scaler is active (owns the
+ * present). A failed SDL_SetGPUSwapchainParameters keeps the old present
+ * mode and is logged, never fatal.
+ */
+void ApplyFrameRateControl();
+
+/**
  * @brief Presents the given RGBA frame (game resolution) with the active
  * shader filter. Blocks for vsync when configured.
  */
