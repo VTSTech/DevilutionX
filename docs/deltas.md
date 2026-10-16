@@ -45,6 +45,8 @@ open findings; this ledger is the single record of closures.
 | ROB-18 | Medium | Robustness | Unsupported auto-selected GPU backend hard-fails the session; the Vulkan retry never applies to it | 2026-10-16 |
 | ROB-19 | Medium | Robustness | `RecreateMainRenderWindow` failure is fatal on the fallback-of-the-fallback path | 2026-10-16 |
 | ROB-22 | Medium | Robustness | Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them | 2026-10-16 |
+| ROB-20 | Medium | Robustness | Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard) | 2026-10-16 |
+| ROB-21 | Medium | Robustness | Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only) | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -1078,3 +1080,83 @@ gamepad UI restored instead of dropped. Desktop CI matrix is unaffected (the vir
 is never created there; the calls compile in for all non-SDL1 builds, matching `dx.cpp`'s
 existing `FreeVirtualGamepadTextures()` usage). `clang-format 18.1.8` clean; both touched TUs
 recompile warning-free under the project's Release flags (GCC 14.2).
+
+---
+
+## ROB-20 — CLOSED: Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard)
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 304-310), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 123-125, 165-168, 1080-1091, 1170, 1173) |
+
+**Original finding.** Both untrusted-input readers slurped entire files into memory with no size cap: the `.slangp` reader
+(`std::ostringstream ss; ss << stream.rdbuf();` plus a second full copy via `ss.str()` and per-line copies), and the `.slang`
+reader for the source *and every include*, with the merged text allowed to reach ~3× the include set (per-bucket
+include-once). A multi-gigabyte planted file made the allocation throw `std::bad_alloc`/`std::length_error`, and no
+try/catch existed anywhere upstream on the load path (verified: `main.cpp`, `scrollrt.cpp`, `gpu_scaler.cpp`,
+`preset_runner.cpp`, `slang_compile.cpp`) — so the process terminated instead of returning the documented error contract.
+This was the ROB-02 class (uncaught allocation death from preset content) with a different trigger: ROB-02's
+`shaders = 2147483647` needed 30 bytes; this needed a large file on disk, which is why it landed at Medium. Same class:
+`out.sourceSize = static_cast<int>(fileBytes.size())` overflows `int` past 2 GiB (`slang_translate.cpp:1170, :1173`).
+
+**Resolution.** Every untrusted read is now capped *before* the slurp: `ParsePresetImpl` refuses presets above 8 MiB
+("preset file too large: <path> (<N> bytes; limit is 8 MiB)"), `ResolveIncludes` refuses the top-level shader and every
+include above 4 MiB ("slang: shader file too large: <path> (limit is 4 MiB)"), and the diagnostics fingerprint reader
+`ReadWholeFileBytes` applies the same shader cap — oversize files simply skip the fingerprint (`sourceSize`/`sourceHash`
+stay at defaults), which is all that field diagnostic ever needed. The caps sit orders of magnitude above the real corpus
+(presets are key/value text; the largest known `.slang` is ~130 KiB), so no legitimate pack changes behavior. The
+int-cast class is closed structurally: both diagnostics casts (`sourceSize`, `mergedSize`) now go through a clamping
+`DiagSizeToInt` helper, so even a hypothetical oversized merged text cannot overflow. And the missing top-level guard now
+exists: `ParsePreset` and `TranslateSlang` wrap their bodies in a catch-all (the translate body moved to an internal
+`TranslateSlangImpl` inside the same TU) that converts any escaping exception — `bad_alloc` included — into the
+documented failure contract: `false` plus a named error ("preset load failed for <path>: …", "slang: translation failed
+for <path>: …"), with `out` left in the same state the early-failure paths leave it. Unseekable streams are refused with
+their own message (both readers require regular files).
+
+**Verification.** `preset_failure_modes` gained two checks (37 → 41): a 8 MiB+1 preset fails `ParsePreset` with "preset
+file too large" and a 4 MiB+1 shader fails `TranslateSlang` with "slang: shader file too large" — both named-error
+contracts assert the full message; the suite runs 41 checks / 0 failures headless (GCC 14.2). The full smoke corpus
+translates and compiles clean under the caps (6 ok / 9 passes / exit 0). All touched TUs are clean under `clang-format 18.1.8`;
+recompile warning-free under the project's Release flags (GCC 14.2).
+
+
+---
+
+## ROB-21 — CLOSED: Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only)
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 896-902, 949-951, 96-97, 165-168, 1212-1218), `Source/engine/render/gpu/preset/preset_runner.cpp` (line 387) |
+
+**Original finding.** `RewriteSamplers` unconditionally emitted `layout(set = N, binding = M) uniform … sampler2D <name>;`
+and appended `{name, binding}` for every declaration found; the only name-dedupe was the macro-alias branch
+(`alreadyEmitted`, `:896-902`). Because include-once is tracked *per bucket* (shared/vertex/fragment), a file included
+once in the shared region and again in the fragment region pasted its `#pragma stage fragment`-guarded sampler
+declaration into the fragment TU twice (`split.shared` + `split.fragment`, `:1212-1218`) — valid input, two declarations
+of the same sampler with bindings B and B+1. Consequences: glslang "redefinition" compile failure with misleading
+diagnostics, and `stage.textures` double-counting so `num_samplers = stage.textures.size()` (`preset_runner.cpp:387`)
+reserved two sampler slots for one texture. The same degradation occurred when `weakly_canonical` errored and the
+visited-key fell back to the uncanonicalized string (`:164-167`).
+
+**Resolution.** `RewriteSamplers` now name-dedupes the plain rewrite path immediately before the emit: if the resolved
+name is already in `stage.textures`, the repeat is dropped (first binding wins — the earlier declaration is visible
+everywhere below it in the same TU) and a warning is recorded ("sampler '<name>' is declared more than once in the stage
+(a stage-guarded header was re-included); keeping the first binding"). The alias-branch dedupe (`alreadyEmitted`) is
+unchanged and the two compose: a macro-alias resolution landing on an already-bound name still takes the alias branch's
+path, and every other validation (unknown-texture tolerance, PassOutput/PassFeedback causality) runs as before — the
+dedupe only intercepts the final emit. Exactly the per-bucket include-once contract the design intends: re-inclusion
+across regions keeps the *code*, but a sampler binds once per stage.
+
+**Verification.** New smoke-corpus entry `dupinclude.slangp` (+ `shaders/dupinclude.slang` +
+`shaders/guarded_texture_header.slang`): the shader re-includes a fragment-guarded header once in the shared region and
+once in the fragment region — on the old code the fragment TU carried two dense bindings for `dup` and glslang failed the
+compile ("redefinition"); now the preset translates with the dedupe warning, exactly one
+`layout(set = 2, binding = 0) uniform sampler2D dup;` in the fragment GLSL, `stage.textures.size() == 1`, and the full
+in-process glslang compile is clean (translate-level probe asserted 1 declaration / binding 0 / textures.size 1 / warning
+present; smoke run: 6 ok / 9 passes / exit 0). `clang-format 18.1.8` clean; TU recompiles warning-free under the project's Release
+flags (GCC 14.2).
+

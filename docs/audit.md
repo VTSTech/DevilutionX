@@ -3,9 +3,9 @@
 **DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
 
 **Repository:** https://github.com/VTSTech/DevilutionX
-**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 8)
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 9)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 31 closed → [deltas.md](deltas.md) | 41 open: **0 High / 11 Medium / 30 Low**
+72 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 33 closed → [deltas.md](deltas.md) | 39 open: **0 High / 9 Medium / 30 Low**
 
 ---
 
@@ -28,9 +28,9 @@
 
 ## Executive Summary
 
-**Fix history (rounds 7.5 → 8, 2026-10-16).** All shipped fix narratives live in the closure records — [deltas.md](deltas.md) is the single record of closures. Round 7.5 closed ROB-14/15/16/17 with riders ROB-24/25, MAINT-16, TEST-07, and the MAINT-03 re-close; round 7.6.1 corrected the round-7.5 clang-format verification record (its own deltas.md section); round 7.6.2 fixed the `preset_smoke_corpus` ctest geometry (TEST-01 fixup addendum); round 8 closed ROB-18/19/22. Partial fixes stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). **The 41 findings below are open: 0 High / 11 Medium / 30 Low.**
+**Fix history (rounds 7.5 → 9, 2026-10-16).** All shipped fix narratives live in the closure records — [deltas.md](deltas.md) is the single record of closures. Round 7.5 closed ROB-14/15/16/17 with riders ROB-24/25, MAINT-16, TEST-07, and the MAINT-03 re-close; round 7.6.1 corrected the round-7.5 clang-format verification record (its own deltas.md section); round 7.6.2 fixed the `preset_smoke_corpus` ctest geometry (TEST-01 fixup addendum); round 8 closed ROB-18/19/22; round 9 closed ROB-20/21 (the `gpu/preset` load path: size caps before every untrusted slurp, a catch-all on `ParsePreset`/`TranslateSlang`, and the `RewriteSamplers` name-dedupe, with regression corpus). Partial fixes stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). **The 39 findings below are open: 0 High / 9 Medium / 30 Low.**
 
-**Merge-plan alignment (2026-10-16, same day — planning, no code change).** The open set now has a governing sequence: the upstream merge plan (r2, `docs/merge-plan.md`) gates every proposed PR on the findings that share its files, and orders closure into three Phase-0 sweeps — **8A** library surface (ROB-20/21, PERF-06, MAINT-15 plus the SEC/ROB/MAINT/TEST/PERF items on `gpu/preset/*`), **8B** presentation surface (ROB-08/18/19/22, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17, PERF-02) — with first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the 14 open Medium. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/03/04 (deferred). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
+**Merge-plan alignment (2026-10-16, same day — planning, no code change).** The open set now has a governing sequence: the upstream merge plan (r2, `docs/merge-plan-draft-r2.md`) gates every proposed PR on the findings that share its files, and orders closure into three Phase-0 sweeps — **8A** library surface (ROB-20/21, PERF-06, MAINT-15 plus the SEC/ROB/MAINT/TEST/PERF items on `gpu/preset/*`), **8B** presentation surface (ROB-08/18/19/22, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17, PERF-02) — with first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the 14 open Medium. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-01/03/04 (deferred). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
 
 **Status:** Round 7 (2026-10-16). Code is unchanged since round 6 (`b60356e1a` — the only newer commit, `8341ef99f`, is docs-only). All 19 remaining closures were regression-verified in-tree and hold. A fresh-eyes full sweep of the mod (scaler/present lifecycle, parser/translator, runner/compiler, tests/CI) produced **25 new findings — 2 High, 11 Medium, 12 Low** — and **reopened MAINT-03**: the three workflows its closure claimed to delete were never actually removed from any commit and still ship with the broken `actions/checkout@v7` pin. Closed-finding resolutions remain in [deltas.md](deltas.md). At the close of round 7 the open set stood at 53.
 
@@ -56,8 +56,6 @@ Two further themes round out the round. **Closure integrity**: MAINT-03's verifi
 
 | ID | Severity | Category | Title |
 |----|----------|----------|-------|
-| ROB-20 | Medium | Robustness | Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard) |
-| ROB-21 | Medium | Robustness | Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only) |
 | ROB-23 | Medium | Robustness | `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits |
 | PERF-06 | Medium | Performance | Quadratic scans in the translator: UBO skip-loop and per-declaration full-text rescans |
 | TEST-06 | Medium | Testing | `preset_smoke` known-texture set omits `#pragma name` identifiers — diverges from the runner |
@@ -231,34 +229,6 @@ The `Runner::Run` header documents a `false` return as "frame must be skipped (t
 Combining the game's own Integer Scaling option with a desktop resolution that is not a whole-number multiple crashes: the integer factor truncates to 0 → divide-by-zero in `CalculatePreferredWindowSize`, and `PresentFrame` has a latent zero-size-fit path honoring the same option. VTSTech explicitly ruled this out of scope on 2026-10-14, and the failure signature is documented for support triage (GPU_SHADERS.md §Troubleshooting) with an abandoned fix diff snapshotted in the mod packaging notes. It is filed here solely so the audit record is complete and so the deliberate-unfixed status is visible next to the other robustness items; if anyone touches window-size math for another reason, the fix is small and should ride along.
 
 **Impact:** Documented as known; closure is opportunistic whenever display.cpp is next modified.
-#### ROB-20: Unbounded preset/shader file slurp → uncaught `bad_alloc` terminates the process (no top-level guard)
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/preset/preset_parser.cpp` (lines 304-310), `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 123-125, 165-168, 1170, 1173) |
-
-Both untrusted-input readers slurp entire files into memory with no size cap: the `.slangp` reader (`std::ostringstream ss; ss << stream.rdbuf();` plus a second full copy via `ss.str()` and per-line copies), and the `.slang` reader for the source *and every include*, with the merged text allowed to reach ~3× the include set (per-bucket include-once). A multi-gigabyte planted file makes the allocation throw `std::bad_alloc`/`std::length_error`, and no try/catch exists anywhere upstream on the load path (verified: `main.cpp`, `scrollrt.cpp`, `gpu_scaler.cpp`, `preset_runner.cpp`, `slang_compile.cpp`) — so the process terminates instead of returning the documented error contract. This is the ROB-02 class (uncaught allocation death from preset content) with a different trigger: ROB-02's `shaders = 2147483647` needed 30 bytes; this needs a large file on disk, which is why it lands at Medium. Same class: `out.sourceSize = static_cast<int>(fileBytes.size())` overflows `int` past 2 GiB (`slang_translate.cpp:1170, :1173`).
-
-Fix: cap preset/source file sizes (e.g. 8 MiB preset, 4 MiB per shader) with a named load error, and wrap the load path in a catch-all that converts exceptions into the failure contract.
-
-**Impact:** Hostile or corrupt shader packs fail with a message instead of terminating the game.
-
-#### ROB-21: Duplicate sampler declarations get duplicate dense bindings (include-once is per-bucket only)
-
-| Property | Value |
-|----------|-------|
-| **Severity** | Medium |
-| **Category** | Robustness |
-| **File(s)** | `Source/engine/render/gpu/preset/slang_translate.cpp` (lines 896-902, 949-951, 96-97, 165-168, 1212-1218), `Source/engine/render/gpu/preset/preset_runner.cpp` (line 387) |
-
-`RewriteSamplers` unconditionally emits `layout(set = N, binding = M) uniform … sampler2D <name>;` and appends `{name, binding}` for every declaration found; the only name-dedupe is the macro-alias branch (`alreadyEmitted`, `:896-902`). Because include-once is tracked *per bucket* (shared/vertex/fragment), a file included once in the shared region and again in the fragment region pastes its `#pragma stage fragment`-guarded sampler declaration into the fragment TU twice (`split.shared` + `split.fragment`, `:1212-1218`) — valid input, two declarations of the same sampler with bindings B and B+1. Consequences: glslang "redefinition" compile failure with misleading diagnostics, and `stage.textures` double-counts so `num_samplers = stage.textures.size()` (preset_runner.cpp:387) reserves two sampler slots for one texture. The same degradation occurs when `weakly_canonical` errors and the visited-key falls back to the uncanonicalized string (`:164-167`).
-
-Fix: name-dedupe the plain rewrite path (first binding wins) in addition to the alias branch.
-
-**Impact:** Real-world packs that include a stage-guarded header twice compile and bind correctly.
-
 #### ROB-23: `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits
 
 | Property | Value |
@@ -667,12 +637,12 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | Timeline | Findings |
 |----------|----------|
 | **Immediate** (next 1–2 builds) | *(empty — the entire previous Immediate row shipped as the 2026-10-16 quick-fix batch: ROB-14, ROB-15, ROB-16, ROB-17, MAINT-03 re-close; see [deltas.md](deltas.md))* |
-| **Short term** (planned work) | ROB-20 (file-size caps + catch-all), ROB-21 (sampler dedupe), ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
+| **Short term** (planned work) | ROB-23 (FillBlockBytes semantics), PERF-06 (translator scans), TEST-06 (smoke pragma-names), MAINT-15 (pin glslang-tools), FEAT-03 (in-game errors — pairs naturally with the new ROB-16/17 observability), ROB-07 → FEAT-01 (RAII then retry/hot-reload), ROB-08 (vsync callback) |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-26, ROB-28, ROB-29, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-06, FEAT-02, FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
-Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), so the short-term queue now opens at ROB-20/ROB-21. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with the ROB-18 backend retry, which now lives at device level — decide the backend policy once, in one change.
+Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) interacts with the ROB-18 backend retry, which now lives at device level — decide the backend policy once, in one change.
 
-**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (closed by the round-8 sweep) + ROB-08/26 → **8B**; ROB-20/21 + PERF-06 + MAINT-15 → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (10 of the original 14 open Medium closed — round 8 shipped 3, leaving 7); sweep 8C pipelines with early PR reviews.
+**Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan-draft-r2.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (closed by the round-8 sweep) + ROB-08/26 → **8B**; ROB-20/21 (closed by the round-9 sweep) + PERF-06 + MAINT-15 → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C**; FEAT-03 → optional PR-7 rider. Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (10 of the original 14 open Medium closed — rounds 8+9 shipped 5, leaving 5); sweep 8C pipelines with early PR reviews.
 
 ---
 
