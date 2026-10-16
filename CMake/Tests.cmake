@@ -311,6 +311,26 @@ if(USE_GPU_SCALER)
     add_test(NAME preset_smoke_malformed
       COMMAND preset_smoke --root "${CMAKE_BINARY_DIR}/shaders/.preset-smoke/malformed" --expect-fail)
   endif()
+
+  # Headless GPU-resource lifecycle harness for the preset runner: load,
+  # run frames on a live device, unload, reload ("Shaders -> Off" CTD
+  # regression harness; requires a Vulkan device - a software ICD such as
+  # lavapipe satisfies it on headless CI boxes). Skips cleanly when no
+  # Vulkan device is available.
+  add_executable(preset_unload_test test/preset_unload_test.cpp)
+  set_target_properties(preset_unload_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+  target_compile_definitions(preset_unload_test PRIVATE USE_GPU_SCALER)
+  if(USE_SDL3)
+    target_compile_definitions(preset_unload_test PRIVATE USE_SDL3)
+  endif()
+  target_link_dependencies(preset_unload_test PRIVATE libdevilutionx)
+  add_custom_target(preset_unload_corpus
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${PROJECT_SOURCE_DIR}/test/fixtures/preset_smoke/good"
+      "${CMAKE_BINARY_DIR}/shaders/unload-corpus"
+    VERBATIM)
+  add_dependencies(preset_unload_test preset_unload_corpus)
+  add_test(NAME preset_unload COMMAND preset_unload_test --root "${CMAKE_BINARY_DIR}/shaders/unload-corpus")
 endif()
 
 # The fork's settings browser (options.cpp, compiled with USE_GPU_SCALER)

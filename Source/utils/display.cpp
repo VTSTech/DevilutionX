@@ -802,7 +802,15 @@ bool RecreateMainRenderWindow()
 	// degrading. Keeping the old window alive on failure lets both callers
 	// continue on the stock renderer path instead; the game only dies when
 	// it is left with no window at all.
-	SDL_Window *newWindow = SDL_CreateWindow(title.c_str(), width, height, flags);
+	// Field regression (Shaders -> Off CTD, b2eabc618): the replacement was created
+	// VISIBLE while the old window still owned the display, focus and mouse grab -
+	// a two-visible-windows moment the original destroy-then-create order never
+	// had. On Windows exclusive-fullscreen (and several WMs) that churns the
+	// display mode mid-switch and the process died at the presentation-path
+	// hand-off. Create the replacement HIDDEN, destroy the old, then show: one
+	// visible transition (the battle-tested old order) while keeping the
+	// no-window-loss guarantee above.
+	SDL_Window *newWindow = SDL_CreateWindow(title.c_str(), width, height, flags | SDL_WINDOW_HIDDEN);
 	if (newWindow == nullptr) {
 		Log("SDL_CreateWindow failed: {}; keeping the existing window", SDL_GetError());
 		SDL_ClearError();
@@ -814,6 +822,9 @@ bool RecreateMainRenderWindow()
 		SDL_SetWindowPosition(ghMainWnd, posX, posY);
 	if (grabbed)
 		SDL_SetWindowMouseGrab(ghMainWnd, true);
+	// One visible transition: the replacement only enters the screen after
+	// the old window (and its swapchain history) is gone.
+	SDL_ShowWindow(ghMainWnd);
 	SDL_RaiseWindow(ghMainWnd);
 	return true;
 }

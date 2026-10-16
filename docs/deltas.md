@@ -1042,6 +1042,27 @@ behavior), and the presentation-path-switch rationale (clean HWND for the new sw
 is unchanged — the new window was never presented to. `clang-format 18.1.8` clean; TU
 recompiles warning-free under the project's Release flags (GCC 14.2).
 
+**Field regression addendum (2026-10-16, Shaders -> Off CTD).** The ROB-19 order swap
+(create replacement *before* destroying the old window) was identified by field
+bisection as a candidate cause of a crash-to-desktop on the Shaders -> 'Off'
+presentation switch: d5ca0c0 (destroy-then-create) did not crash; b2eabc618+ (this
+fix, create-then-destroy) did. Mechanism: creating the replacement *visible* while
+the old window still owns the display/focus/mouse grab introduces a
+two-visible-windows moment the original order never had — and on the 'Off' path this
+lands microseconds after `SDL_ReleaseWindowFromGPUDevice` + `SDL_DestroyGPUDevice`,
+while the driver is still tearing down the old window's swapchain (on Windows, DXGI
+adapter state). The to-shader switch runs the same recreate but from a
+renderer-owned window with no GPU device alive, which is consistent with it surviving
+in the field. Resolution: the replacement is now created `SDL_WINDOW_HIDDEN`,
+the old window is destroyed, and only then is the replacement shown/raised — one
+visible transition (the battle-tested destroy-then-create semantics) while keeping
+ROB-19's no-window-loss guarantee (a failed create still keeps the old window and
+returns false, never fatal). Note the second in-window change on this path, ROB-22's
+`InitVirtualGamepadGFX`/`InitVirtualGamepadTextures` after the fresh renderer create,
+was audited line-by-line for this report (LoadArt/createTextures are re-callable and
+null-safe) and stays as-is; if a field crash ever recurs on this path, revert that
+pair next.
+
 ---
 
 ## ROB-22 — CLOSED: Virtual-gamepad textures dangle across scaler activation; fallback renderer never re-initializes them
