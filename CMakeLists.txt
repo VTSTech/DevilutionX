@@ -157,6 +157,18 @@ if(USE_GPU_SCALER)
   if(GPU_SCALER_SHARED)
     set(SLANGVK_BUILD_SHARED ON CACHE BOOL "" FORCE)
     set(SLANGVK_LINK_TARGET slangvk::shared)
+    if(UNIX AND NOT APPLE)
+      # Linux nonstatic packaging: devilutionx and libslangvk.so are zipped
+      # FLAT beside each other, together with the build image's libstdc++.so.6
+      # and libgcc_s.so.1 (Debian 12's stock copies are too old for this C++23
+      # tree). Linux does not search the executable's own folder for shared
+      # objects (Windows does), and DT_RUNPATH is not inherited transitively,
+      # so BOTH the exe and libslangvk.so need $ORIGIN in their build RUNPATH:
+      # the exe resolves libslangvk.so/libstdc++/libgcc, the .so resolves its
+      # own libstdc++/libgcc. CMake also keeps the automatic _deps build-tree
+      # RPATH entries, so running from build/ still works (CI smoke test).
+      set(CMAKE_BUILD_RPATH "$ORIGIN")
+    endif()
   else()
     set(SLANGVK_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(SLANGVK_LINK_TARGET slangvk::slangvk)
@@ -164,7 +176,7 @@ if(USE_GPU_SCALER)
   include(FetchContent)
   FetchContent_Declare(libslang-vk
     GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git
-    GIT_TAG 969feadabbf24f7da43c86dc5c3d7f782d50e98d # M4 + cmake floor + push-block runner fix
+    GIT_TAG e693b94b530e5f3a1d8b92c0afaefef748f73a9b # M4 + cmake floor + push-block runner fix
     )
   FetchContent_MakeAvailable(libslang-vk)
 endif()
