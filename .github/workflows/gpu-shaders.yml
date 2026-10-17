@@ -62,6 +62,11 @@
 # when -fstack-protector-strong is on); all three ship in the
 # gcc-mingw-w64-*-posix-runtime / mingw-w64-x86-64-dev packages, and
 # `x86_64-w64-mingw32-g++ -print-file-name=<dll>` resolves each one.
+# 2026-10-18 first CI run: the allowlist needed HID.DLL (SDL3/hidapi gamepad
+# input) and MSWSOCK.dll (Winsock2 extension provider reached via ws2_32).
+# Both are OS components in System32 on every clean Windows install, so the
+# gate's system-DLL list gained them instead of the gate being skipped - it
+# still catches vendored deps going dynamic (the bug it was built for).
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -551,7 +556,10 @@ jobs:
           name="$(printf '%s' "$imp" | tr '[:upper:]' '[:lower:]')"
           case "$name" in
             # Windows system DLLs / API sets: present on every Windows install.
-            api-ms-win-*|ext-ms-*|ntdll.dll|kernel32.dll|kernelbase.dll|user32.dll|gdi32.dll|gdi32full.dll|win32u.dll|shell32.dll|advapi32.dll|ole32.dll|oleaut32.dll|uuid.dll|ws2_32.dll|wsock32.dll|msvcrt.dll|ucrtbase.dll|vcruntime140*.dll|winmm.dll|imm32.dll|setupapi.dll|version.dll|dinput8.dll|xinput*.dll|shlwapi.dll|rpcrt4.dll|sechost.dll|bcrypt*.dll|userenv.dll|dbghelp.dll|d3d11.dll|dxgi.dll|opengl32.dll|glu32.dll|iphlpapi.dll|wintrust.dll|crypt32.dll|normaliz.dll|dnsapi.dll|cfgmgr32.dll|powrprof.dll|comctl32.dll|comdlg32.dll|uxtheme.dll|dwmapi.dll|msimg32.dll|shcore.dll)
+            # hid.dll = HID client API (SDL3/hidapi imports it for gamepads);
+            # mswsock.dll = Winsock2 extension provider (ConnectEx/AcceptEx),
+            # pulled in through the ws2_32 chain. Both live in System32.
+            api-ms-win-*|ext-ms-*|ntdll.dll|kernel32.dll|kernelbase.dll|user32.dll|gdi32.dll|gdi32full.dll|hid.dll|win32u.dll|shell32.dll|advapi32.dll|ole32.dll|oleaut32.dll|uuid.dll|ws2_32.dll|wsock32.dll|msvcrt.dll|mswsock.dll|ucrtbase.dll|vcruntime140*.dll|winmm.dll|imm32.dll|setupapi.dll|version.dll|dinput8.dll|xinput*.dll|shlwapi.dll|rpcrt4.dll|sechost.dll|bcrypt*.dll|userenv.dll|dbghelp.dll|d3d11.dll|dxgi.dll|opengl32.dll|glu32.dll|iphlpapi.dll|wintrust.dll|crypt32.dll|normaliz.dll|dnsapi.dll|cfgmgr32.dll|powrprof.dll|comctl32.dll|comdlg32.dll|uxtheme.dll|dwmapi.dll|msimg32.dll|shcore.dll)
               echo "system DLL (ok, not shipped): $imp" ;;
             *)
               p="$(resolve_dll "$name" || true)"
