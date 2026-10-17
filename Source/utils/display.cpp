@@ -44,9 +44,6 @@
 #include "controls/devices/kbcontroller.h"
 #include "controls/game_controls.h"
 #include "controls/touch/gamepad.h"
-#ifndef USE_SDL1
-#include "controls/touch/renderers.h"
-#endif
 #include "engine/backbuffer_state.hpp"
 #include "engine/dx.h"
 #include "headless_mode.hpp"
@@ -112,7 +109,6 @@ void CalculatePreferredWindowSize(int &width, int &height)
 	SDL_DisplayID *displays = SDL_GetDisplays(&numDisplays);
 	if (numDisplays <= 0 || displays == nullptr) ErrSdl();
 	const SDL_DisplayMode *modePtr = SDL_GetDesktopDisplayMode(displays[0]);
-	SDL_free(displays);
 	if (modePtr == nullptr) ErrSdl();
 	mode = *modePtr;
 #else
@@ -336,26 +332,7 @@ const auto OptionChangeHandlerFitToScreen = (GetOptions().Graphics.fitToScreen.S
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 const auto OptionChangeHandlerScaleQuality = (GetOptions().Graphics.scaleQuality.SetValueChangedCallback(ReinitializeTexture), true);
 const auto OptionChangeHandlerIntegerScaling = (GetOptions().Graphics.integerScaling.SetValueChangedCallback(ReinitializeIntegerScale), true);
-/** @brief ROB-31: the FrameRateControl option has a single change-callback
- * slot, and a later registration silently overwrites an earlier one, so the
- * round-13 scaler registration was dead on arrival: the stock recreate
- * handler below always won the slot. A vsync toggle with the GPU scaler
- * active therefore changed nothing while the frame loop stopped limiting
- * (the option now reads VerticalSync) - an unthrottled IMMEDIATE present
- * flood that field-crashed. Dispatch explicitly: while the scaler owns the
- * window the option re-applies the present mode in place; the stock
- * renderer keeps the upstream recreate path. */
-void OptionFrameRateControlChanged()
-{
-#ifdef USE_GPU_SCALER
-	if (gpu_scaler::IsActive()) {
-		gpu_scaler::ApplyFrameRateControl();
-		return;
-	}
-#endif
-	ReinitializeRenderer();
-}
-const auto OptionChangeHandlerVSync = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(OptionFrameRateControlChanged), true);
+const auto OptionChangeHandlerVSync = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(ReinitializeRenderer), true);
 
 struct DisplayModeComparator {
 	Size size;
@@ -657,6 +634,12 @@ bool SpawnWindow(const char *lpWindowName)
 	}
 
 #ifdef USE_SDL3
+	if (gpu_scaler::WantsVulkanWindow()) {
+		// The experimental "slangvk" backend creates its own Vulkan surface
+		// on this window; SDL_Vulkan_CreateSurface requires the window to
+		// have been created with the Vulkan flag.
+		flags |= SDL_WINDOW_VULKAN;
+	}
 	if (*GetOptions().Graphics.upscale) {
 #ifdef USE_GPU_SCALER
 		if (gpu_scaler::ScalerWanted()) {
@@ -808,43 +791,30 @@ bool RecreateMainRenderWindow()
 	const bool grabbed = (oldFlags & SDL_WINDOW_MOUSE_GRABBED) != 0;
 	Log("Recreating the main window for the presentation path switch");
 
+	SDL_DestroyWindow(ghMainWnd);
 	SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#ifdef USE_GPU_SCALER
+	if (gpu_scaler::WantsVulkanWindow()) {
+		// Keep the window Vulkan-capable when the "slangvk" backend is
+		// selected (see SpawnWindow).
+		flags |= SDL_WINDOW_VULKAN;
+	}
+#endif
 	if (fullscreen)
 		flags |= SDL_WINDOW_FULLSCREEN;
 	if (resizable)
 		flags |= SDL_WINDOW_RESIZABLE;
 	if (maximized)
 		flags |= SDL_WINDOW_MAXIMIZED;
-	// ROB-19: create the replacement window BEFORE destroying the old one.
-	// A failed create used to be fatal here (ErrSdl) on the fallback-of-the-
-	// fallback path - the exact path that exists to save the session - so a
-	// transient SDL_CreateWindow failure aborted the game instead of
-	// degrading. Keeping the old window alive on failure lets both callers
-	// continue on the stock renderer path instead; the game only dies when
-	// it is left with no window at all.
-	// Field regression (Shaders -> Off CTD, b2eabc618): the replacement was created
-	// VISIBLE while the old window still owned the display, focus and mouse grab -
-	// a two-visible-windows moment the original destroy-then-create order never
-	// had. On Windows exclusive-fullscreen (and several WMs) that churns the
-	// display mode mid-switch and the process died at the presentation-path
-	// hand-off. Create the replacement HIDDEN, destroy the old, then show: one
-	// visible transition (the battle-tested old order) while keeping the
-	// no-window-loss guarantee above.
-	SDL_Window *newWindow = SDL_CreateWindow(title.c_str(), width, height, flags | SDL_WINDOW_HIDDEN);
-	if (newWindow == nullptr) {
-		Log("SDL_CreateWindow failed: {}; keeping the existing window", SDL_GetError());
-		SDL_ClearError();
+	ghMainWnd = SDL_CreateWindow(title.c_str(), width, height, flags);
+	if (ghMainWnd == nullptr) {
+		ErrSdl();
 		return false;
 	}
-	SDL_DestroyWindow(ghMainWnd);
-	ghMainWnd = newWindow;
 	if (!fullscreen && !maximized)
 		SDL_SetWindowPosition(ghMainWnd, posX, posY);
 	if (grabbed)
 		SDL_SetWindowMouseGrab(ghMainWnd, true);
-	// One visible transition: the replacement only enters the screen after
-	// the old window (and its swapchain history) is gone.
-	SDL_ShowWindow(ghMainWnd);
 	SDL_RaiseWindow(ghMainWnd);
 	return true;
 }
@@ -870,28 +840,12 @@ void ReinitializeRenderer()
 	    && gpu_scaler::ScalerWanted() && !gpu_scaler::HasFailed();
 	if (!scalerWanted && gpu_scaler::IsActive()) {
 		// Presentation is handed back to the regular renderer (or the
-		// palettized non-upscale path below). ROB-26: hand the window
-		// back WITHOUT destroying the GPU device on this stack - the
-		// synchronous Vulkan teardown here (right before the window is
-		// recreated and reclaimed by the D3D11 renderer) is the
-		// field-crashing sequence on Windows. The device is parked and
-		// destroyed at a quiescent point (quit / next Shutdown).
-		gpu_scaler::HandbackWindow(ghMainWnd);
+		// palettized non-upscale path below); shut the scaler down.
+		gpu_scaler::Shutdown();
 	}
 	if (scalerWanted) {
 		// The GPU scaler replaces the SDL_Renderer presentation path.
 		if (renderer != nullptr) {
-			// ROB-14: SDL_DestroyRenderer destroys every texture created from the
-			// renderer. Drop our handle to the display texture first (mirroring
-			// dx_cleanup) - otherwise the next ReinitializeTexture() destroys an
-			// already-freed texture through this stale unique_ptr.
-			texture = nullptr;
-			// ROB-22: the virtual gamepad's textures were created from this
-			// renderer too; free them before it dies (mirroring dx_cleanup) or the
-			// next FreeVirtualGamepadTextures()/RenderVirtualGamepad() runs on freed
-			// memory. The re-initialization half lives where the replacement
-			// renderer is created, further down in this function.
-			FreeVirtualGamepadTextures();
 			SDL_DestroyRenderer(renderer);
 			renderer = nullptr;
 			// The window has been presented to by the SDL_Renderer's
@@ -940,13 +894,6 @@ void ReinitializeRenderer()
 			if (renderer == nullptr) {
 				ErrSdl();
 			}
-			// ROB-22: recreate the virtual gamepad textures against the new
-			// renderer: whichever path destroyed the previous one (the scaler
-			// hand-off above, or the GPU-failure fallback in dx.cpp) destroyed
-			// them with it. Reload the art first because its source surfaces
-			// were already consumed by an earlier createTextures pass in-game.
-			InitVirtualGamepadGFX();
-			InitVirtualGamepadTextures(*renderer);
 		}
 
 #ifdef USE_SDL3

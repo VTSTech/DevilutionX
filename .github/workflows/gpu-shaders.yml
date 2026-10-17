@@ -1,5 +1,4 @@
-# Fork CI: builds ONLY this fork's GPU shader scaler binaries (Windows x64 + Linux x64)
-# and runs the fork's gtest suite headless in its own job (see JOB LAYOUT below).
+# Fork CI: builds ONLY this fork's GPU shader scaler binaries (Windows x64 + Linux x64).
 #
 # The Windows job reproduces the verified local cross-build (see GPU_SHADERS.md):
 #   - MinGW-w64 cross toolchain (CMake/platforms/mingwcc64.toolchain.cmake), all deps vendored
@@ -8,52 +7,11 @@
 #     clean Windows install with NO MinGW runtime DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll,
 #     libwinpthread-1.dll). Without these flags the exe does not launch ("DLL errors").
 #     The Package step FAILS the job if a MinGW runtime DLL ever sneaks back in.
-# The Linux job is the mirror image for glibc portability (field report 2026-10-15: the
-# ubuntu-24.04-built binary died on Debian 12 with "GLIBC_2.38 not found"):
-#   - build inside a gcc:14-bookworm container — Debian 12 BASE (glibc 2.36 floor) with
-#     GCC 14 in /usr/local. Plain debian:bookworm is NOT buildable: its GCC 12 has no
-#     C++23 <format> header (dies at Source/utils/log.hpp:11 / format.hpp:3) and
-#     gcc-13+ is not in the bookworm repos. The -bookworm suffix pins the base, so the
-#     artifact still runs on Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
-#   - -static-libgcc -static-libstdc++ so no GLIBCXX_/CXXABI_ symbol versions are
-#     required (full -static glibc is NOT viable: NSS breaks, Vulkan loader dlopens)
-#   - Portability gate FAILS the job if the max GLIBC_ requirement exceeds 2.36 or any
-#     GLIBCXX_/CXXABI_ requirement sneaks back in; ./devilutionx --version smoke-runs
-#     the loader exactly as it would run on a Debian 12 box.
 # Do NOT remove the CMAKE_C_FLAGS / CMAKE_EXE_LINKER_FLAGS lines below.
-#
-# SIZE LEVER (gc-sections) FIELD RESULT 2026-10-15: LOST on Windows.
-#   0a39b81 (pre-lever)   devilutionx.exe 15,051,264 bytes
-#   4b3071f (with flags)  devilutionx.exe 16,377,856 bytes  (+1.27 MB)
-# PE/COFF mechanism: -ffunction-sections gives every function/data its own
-# section; PE stores section NAMES in the COFF string table, and tens of
-# thousands of long C++ mangled names (glslang worst) cost MBs that `strip`
-# CANNOT remove (section headers reference them). Meanwhile PE --gc-sections
-# is far weaker than ELF (no identical-code folding; .refptr indirections
-# blunt the reachability walk), so savings never covered the overhead.
-# => Windows job: flags REVERTED below.
-# => Linux job: flags KEPT pending measurement - ELF GC is strong, so the
-#    same lever may still win there. Judge from the linux-x64 artifact size
-#    vs the pre-lever run; if it did not shrink, delete the 3 flag lines.
-# Both Package steps now print exe size + section table every run, so the
-# next size lever is evaluated from the CI log itself.
-#
-# JOB LAYOUT (2026-10-17): the gtest suite runs in its OWN job (linux-tests),
-# not inside the Linux build job. The Linux job used to carry the full
-# vendored-dep build AND the headless-GPU test run serially and clocked ~5x
-# the Windows job; the split runs them in parallel and drops gtest + the
-# test TUs from the binary build (-DBUILD_TESTING=OFF). Both Linux jobs
-# configure with identical flags (except BUILD_TESTING) and share the
-# ccache-linux- prefix, so the tests job's tree build is mostly cache hits.
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
   push:
-    # Docs/markdown-only commits cannot change a binary; don't burn a full
-    # vendored-dep build on them.
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
   release:
     types: [published]
@@ -64,166 +22,51 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux x86_64 (SDL3 + GPU shader scaler, glibc 2.36 floor)
+    name: Linux x86_64 (SDL3 + GPU shader scaler)
     runs-on: ubuntu-24.04
-    # MAINT-04: attaching the built zips to the published GitHub Release needs
-    # contents:write on the default GITHUB_TOKEN.
-    permissions:
-      contents: write
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_SLOPPINESS: time_macros,pch_defines
-    container:
-      # Debian 12 bookworm BASE (glibc 2.36 = the artifact's floor) + GCC 14 in
-      # /usr/local. Plain debian:bookworm ships GCC 12, which has no C++23 <format>
-      # and cannot compile this tree; GCC 13+ is not in the bookworm repos either.
-      # The -static-libstdc++ link below keeps the artifact runnable against Debian
-      # 12's stock GCC-12 libstdc++ (GLIBCXX_3.4.30).
-      image: gcc:14-bookworm
     steps:
-    - name: Bootstrap container (git for actions/checkout)
-      run: |
-        apt-get update
-        apt-get install -y --no-install-recommends git ca-certificates
-        # CMake's get_git_commit_hash() runs `git log` inside the workspace. In
-        # container jobs the checkout dir is owned by the runner user while the
-        # steps run as root, so git refuses with "dubious ownership" and the exe
-        # silently builds WITHOUT the commit in its version string (the
-        # field-reported "Linux title footer has no commit").
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
     - name: Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Restore ccache
-      uses: actions/cache@v4
-      with:
-        path: .ccache
-        key: ccache-linux-x64-${{ github.sha }}
-        restore-keys: |
-          ccache-linux-x64-
-
     - name: Install dependencies
       run: |
+        sudo apt-get update
         # The lib*-dev stack is required by the VENDORED SDL3's X11/Wayland/audio
         # backends. Without it, configure aborts with:
         #   "Couldn't find dependency package for XCURSOR"
-        # binutils = objdump for the portability gate below.
-        # ccache: compiler cache across pushes (the vendored dep tree is rebuilt
-        #   from source every configure; only real source changes should recompile).
-        # (no g++ here on purpose: the image's GCC 14 in /usr/local IS the toolchain;
-        #  installing bookworm's g++ would put a second, older compiler on disk)
-        # glslang-tools: source-health canary + spirv-blobs artifact compiler ONLY
-        #   (MAINT-15: the build embeds the committed prebuilt SPIR-V via
-        #   GPU_SCALER_SPV_PREBUILT=ON, so shipped bytes never depend on this
-        #   package's version - the Package step just proves the committed
-        #   .vert/.frag sources still compile).
-        apt-get install -y --no-install-recommends ninja-build glslang-tools gettext smpq zip patch cmake binutils ccache \
+        # (the runner image has libx11/libxext but not the rest; upstream devilutionx
+        # CI gets the same stack transitively via libsdl2-dev).
+        sudo apt-get install -y ninja-build glslang-tools gettext smpq zip patch \
           libasound2-dev libpulse-dev \
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
           libxtst-dev \
           libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
           libudev-dev libdbus-1-dev \
           libbz2-dev libpng-dev
-        # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14),
-        # NOT /usr/bin/c++ (bookworm's GCC 12, no <format>)
-        g++ --version | head -1
 
-    # gcc/g++ pinned explicitly: PATH resolves /usr/local/bin (GCC 14 from the image);
-    # without pins CMake could probe /usr/bin/c++ = bookworm's GCC 12 (no <format>).
-    # GIT_COMMIT_HASH pin: GITHUB_SHA is authoritative even if the in-container git
-    # state is unusable (see Bootstrap). shell: bash is REQUIRED — container steps run
-    # under sh (dash) by default and dash rejects the ${GITHUB_SHA:0:7} substring
-    # expansion ("Bad substitution"); every other step here is POSIX-clean on purpose.
-    # NOTE: no '#' comments inside the folded command — YAML joins it into one line.
-    - name: Configure (GCC 14 from /usr/local, bookworm glibc 2.36 base)
-      shell: bash
+    - name: Configure
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
-        -DGPU_SCALER_SPV_PREBUILT=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DBUILD_TESTING=OFF
-        -DDEVILUTIONX_SYSTEM_GOOGLETEST=OFF
-        -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
-        -DCMAKE_C_COMPILER=gcc
-        -DCMAKE_CXX_COMPILER=g++
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
-        -DCMAKE_C_FLAGS='-ffunction-sections -fdata-sections'
-        -DCMAKE_CXX_FLAGS='-ffunction-sections -fdata-sections'
-        -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++ -Wl,--gc-sections'
 
     - name: Build
       run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
 
-    - name: Portability gate (glibc 2.36 floor — mirror of the Windows DLL gate)
-      run: |
-        # 1) static libstdc++/libgcc: NO GLIBCXX_/CXXABI_ symbol versions may remain
-        if objdump -T build/devilutionx | grep -qE 'GLIBCXX_|CXXABI_'; then
-          echo '::error::devilutionx still requires libstdc++ symbol versions - the -static-libstdc++ linker flag was lost. Debian 12 would reject this binary (GLIBCXX_3.4.31 not found).'
-          exit 1
-        fi
-        # 2) max GLIBC_ requirement must be <= 2.36 (bookworm base of the gcc:14 image)
-        MAX_GLIBC=$(objdump -T build/devilutionx | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
-        echo "max GLIBC_ symbol requirement: ${MAX_GLIBC#GLIBC_} (floor: 2.36)"
-        if [ "$(printf '%s\n2.36\n' "${MAX_GLIBC#GLIBC_}" | sort -V | tail -1)" != "2.36" ]; then
-          echo '::error::devilutionx requires a GLIBC newer than 2.36 - the bookworm build base was lost. Debian 12 would reject this binary.'
-          exit 1
-        fi
-        # 3) smoke test: the loader resolves every DT_NEEDED / symbol version exactly
-        #    as it did on the field-reported Debian 12 failure; --version exits cleanly.
-        ./build/devilutionx --version
-        # 4) the version string must carry the git commit: the title-screen footer
-        #    and gpu-scaler.log session headers identify the build with it.
-        VER=$(./build/devilutionx --version 2>&1)
-        echo "embedded version: ${VER}"
-        if ! printf '%s' "${VER}" | grep -qE '[0-9a-f]{7}'; then
-          echo '::error::devilutionx --version carries no git commit - GIT_COMMIT_HASH was not embedded (title footer and gpu-scaler.log cannot identify this build).'
-          exit 1
-        fi
-
     - name: Package
       run: |
-        # size telemetry (permanent): exe bytes + per-section breakdown land in
-        # the CI log on every build, so size levers are judged with data.
-        ls -l build/devilutionx
-        size -A build/devilutionx | head -30
         mkdir -p pkg
         cp build/devilutionx pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
-        # Hellfire: ship the expansion MPQ the build produces (BUILD_ASSETS_MPQ
-        # + smpq). Without it the zip cannot run Hellfire even for users who own it.
-        if [ -f build/mods/hf.mpq ]; then
-          mkdir -p pkg/mods
-          cp build/mods/hf.mpq pkg/mods/
-        fi
-        # shader helper scripts ship beside the binary (corpus download / cache wipe)
-        install -m 0755 Packaging/linux/install_shaders.sh Packaging/linux/clear_shader_cache.sh pkg/
         cp Packaging/resources/COPYING.legend.txt pkg/ 2>/dev/null || true
-        cat > pkg/LINUX-REQUIREMENTS.txt <<'EOT'
-        devilutionx (GPU shader scaler build) - Linux x86_64
-        Built on gcc:14-bookworm (Debian 12 base, glibc 2.36); static libstdc++/libgcc; SDL3 vendored/static.
-
-        Requires:
-          glibc >= 2.36            Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
-          libvulkan.so.1           (e.g. Debian/Ubuntu: mesa-vulkan-drivers or the NVIDIA driver)
-          X11 or Wayland session   SDL3 backends load at runtime
-        Older glibc systems (Ubuntu 22.04, Debian 11): build from source with the
-        CMake line in .github/workflows/gpu-shaders.yml (Linux job).
-        EOT
         cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64.zip . && cd ..
-        # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them.
-        # MAINT-15: canary only - the shipped binaries embed the committed SPIR-V from
-        # gpu_shader_spv_prebuilt.hpp (GPU_SCALER_SPV_PREBUILT=ON in all three jobs), so
-        # this step's output is not what ships; it fails loudly if the committed
-        # .vert/.frag sources ever stop compiling.
+        # sanity: recompile the GLSL shader sources and confirm the toolchain accepts them
+        # (the shipped binaries embed the committed SPIR-V blobs from gpu_shader_spv_prebuilt.hpp)
         mkdir -p spv && find Source/engine/render/gpu/shaders/vulkan -name '*.frag' -o -name '*.vert' | while read f; do
           glslangValidator -V "$f" -o "spv/$(basename "$f").spv" || exit 1
         done
@@ -241,173 +84,20 @@ jobs:
         name: devilutionx-gpu-shaders-spirv-blobs
         path: devilutionx-gpu-shaders-spirv-blobs.zip
 
-    # MAINT-04: release builds must land on the release page, not only in
-    # 90-day workflow artifacts. Attaches the same zips staged above to the
-    # GitHub Release that triggered the run; skipped for push/dispatch runs.
-    - name: Attach builds to the GitHub Release
-      if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          devilutionx-gpu-shaders-linux-x64.zip
-          devilutionx-gpu-shaders-spirv-blobs.zip
-
-  linux-tests:
-    name: Linux x86_64 (gtest suite, headless GPU — Xvfb + lavapipe)
-    runs-on: ubuntu-24.04
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_SLOPPINESS: time_macros,pch_defines
-    container:
-      # Same image as the build job: same toolchain, same glibc, and identical
-      # compile flags (see Configure) so the shared ccache entries stay valid
-      # for both jobs.
-      image: gcc:14-bookworm
-    # No permissions block and no contents:write — this job ships nothing;
-    # it only runs ctest.
-    steps:
-    - name: Bootstrap container (git for actions/checkout)
-      run: |
-        apt-get update
-        apt-get install -y --no-install-recommends git ca-certificates
-        # Same dubious-ownership fix as the build job: CMake still calls git
-        # during configure (get_git_commit_hash()).
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Restore ccache
-      uses: actions/cache@v4
-      with:
-        path: .ccache
-        key: ccache-linux-tests-x64-${{ github.sha }}
-        # Shared prefix with the build job: this job warm-starts from either
-        # Linux job's cache of a previous run (identical compile flags make
-        # the entries valid for both).
-        restore-keys: |
-          ccache-linux-
-
-    - name: Install dependencies
-      run: |
-        # Same vendored-SDL3 dev stack as the build job (the X11/Wayland/audio
-        # backends are required to configure; the suite links the same SDL3).
-        # No glslang-tools (MAINT-15: the build embeds the committed prebuilt
-        # SPIR-V via GPU_SCALER_SPV_PREBUILT=ON, and this job runs no Package
-        # canary) and no binutils (objdump was the portability gate's tool).
-        # GPU harness stack: preset_unload (the GPU lifecycle / field-CTD
-        # regression harness) needs a real Vulkan stack: libvulkan1 = the
-        # loader, mesa-vulkan-drivers = the lavapipe software ICD, xvfb = a
-        # display server for SDL3's x11 Vulkan hooks (SDL3's "dummy" video
-        # driver has NO Vulkan support at all, so there is no driver-less way
-        # to create an SDL_GPUDevice), xauth = required by the xvfb-run wrapper.
-        apt-get install -y --no-install-recommends ninja-build gettext smpq zip patch cmake ccache \
-          libasound2-dev libpulse-dev \
-          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
-          libxtst-dev \
-          libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
-          libudev-dev libdbus-1-dev \
-          libbz2-dev libpng-dev \
-          libvulkan1 mesa-vulkan-drivers xvfb xauth
-        # toolchain sanity in the log: must resolve /usr/local/bin/g++ (GCC 14)
-        g++ --version | head -1
-
-    # Identical flags to the build job's Configure except BUILD_TESTING=ON —
-    # identical flags are what make the shared ccache entries valid for both
-    # jobs. GCC 14 pin + GIT_COMMIT_HASH pin + shell: bash: same reasons as the
-    # build job (container steps default to dash, which rejects ${GITHUB_SHA:0:7}).
-    - name: Configure (GCC 14, BUILD_TESTING=ON — mirrors the build job)
-      shell: bash
-      run: >
-        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
-        -DUSE_SDL3=ON
-        -DUSE_GPU_SCALER=ON
-        -DGPU_SCALER_SPV_PREBUILT=ON
-        -DDEVILUTIONX_SYSTEM_SDL3=OFF
-        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
-        -DBUILD_TESTING=ON
-        -DDEVILUTIONX_SYSTEM_GOOGLETEST=OFF
-        -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
-        -DCMAKE_C_COMPILER=gcc
-        -DCMAKE_CXX_COMPILER=g++
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        -DGIT_COMMIT_HASH=${GITHUB_SHA:0:7}
-        -DCMAKE_C_FLAGS='-ffunction-sections -fdata-sections'
-        -DCMAKE_CXX_FLAGS='-ffunction-sections -fdata-sections'
-        -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++ -Wl,--gc-sections'
-
-    - name: Build
-      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
-
-    # Headless GPU test support: SDL3 has NO Vulkan under the "dummy" video
-    # driver (no Vulkan hooks), so the GPU lifecycle harness (preset_unload)
-    # needs a REAL video driver: Xvfb gives the x11 driver a display,
-    # mesa-vulkan-drivers provides the lavapipe software ICD (SDL_gpu needs
-    # only Vulkan 1.0 core - 1.2/1.3 features are optional - so bookworm's
-    # mesa 22.3 lvp qualifies). SDL3 never auto-picks a driver on headless
-    # boxes, so the x11 driver is pinned explicitly.
-    - name: Test (gtest suite, headless — Xvfb + lavapipe for the GPU lifecycle test)
-      env:
-        SDL_VIDEODRIVER: x11
-        XDG_RUNTIME_DIR: /tmp
-      run: |
-        xvfb-run -a ctest --test-dir build --output-on-failure -j $(getconf _NPROCESSORS_ONLN)
-        # Coverage guard: preset_unload IS the shader load/unload regression
-        # harness (the field CTD report). If Xvfb/lavapipe broke, it would
-        # skip quietly (exit 0) and the suite would stay green with ZERO GPU
-        # coverage - fail the job instead. A real run ends with "ALL OK".
-        xvfb-run -a ctest --test-dir build -R preset_unload --output-on-failure -V > /tmp/preset_unload_ci.log 2>&1
-        if ! grep -q "ALL OK" /tmp/preset_unload_ci.log; then
-          cat /tmp/preset_unload_ci.log
-          echo '::error::preset_unload did not complete with ALL OK - Xvfb/lavapipe GPU coverage is missing. Check SDL_VIDEODRIVER / XDG_RUNTIME_DIR / mesa-vulkan-drivers.'
-          exit 1
-        fi
-
   windows:
     name: Windows x64 (MinGW cross, SDL3, fully static — launches without extra DLLs)
     runs-on: ubuntu-24.04
-    # MAINT-04: see the Linux job — release uploads need contents:write.
-    permissions:
-      contents: write
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_SLOPPINESS: time_macros,pch_defines
     steps:
     - name: Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-
-    - name: Restore ccache
-      uses: actions/cache@v4
-      with:
-        path: .ccache
-        key: ccache-windows-x64-${{ github.sha }}
-        restore-keys: |
-          ccache-windows-x64-
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch ccache
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch glslang-tools
 
-    # Configure (exact flags of the verified local build). GIT_COMMIT_HASH is NOT
-    # pinned here on purpose: the VM checkout's git works (no container ownership
-    # issue), so CMake falls back to `git log -1 --format=%h` and the footer carries
-    # the hash. (The ${GITHUB_SHA:0:7} bashism from round 6 is a no-op under pwsh —
-    # removed; only the Linux container needs the explicit pin + shell: bash.)
-    #
-    # Windows: size lever REVERTED (measured +1.27 MB, see header note).
-    # Keep the two flag lines below exactly as the verified zero-DLL build had them.
-    # NOTE: no '#' comments inside the folded command — YAML folds them into the
-    # shell line where '#' starts a comment and silently truncates every argument
-    # after it (this exact bug once dropped -DCMAKE_EXE_LINKER_FLAGS and the
-    # -static link with it; the DLL gate caught it).
     - name: Configure (exact flags of the verified local build)
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -415,15 +105,12 @@ jobs:
         -DCROSS_PREFIX=/usr
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
-        -DGPU_SCALER_SPV_PREBUILT=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DDEVILUTIONX_SYSTEM_ZLIB=OFF
         -DDEVILUTIONX_SYSTEM_BZIP2=OFF
         -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
         -DBUILD_TESTING=OFF
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
         -DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'
 
@@ -432,21 +119,9 @@ jobs:
 
     - name: Package
       run: |
-        # size telemetry (permanent): exe bytes + per-section breakdown land in
-        # the CI log on every build, so size levers are judged with data.
-        ls -l build/devilutionx.exe
-        x86_64-w64-mingw32-size -A build/devilutionx.exe | head -30
         mkdir -p pkg
         cp build/devilutionx.exe pkg/
         if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
-        # Hellfire: ship the expansion MPQ the build produces (BUILD_ASSETS_MPQ
-        # + smpq). Without it the zip cannot run Hellfire even for users who own it.
-        if [ -f build/mods/hf.mpq ]; then
-          mkdir -p pkg/mods
-          cp build/mods/hf.mpq pkg/mods/
-        fi
-        # shader helper scripts ship beside the exe (corpus download / cache wipe)
-        cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/clear_gpu-scaler.log.cmd Packaging/windows/install_git.cmd pkg/
         # gate: the exe must stay fully static — Windows system DLLs ONLY.
         x86_64-w64-mingw32-objdump -p build/devilutionx.exe | grep 'DLL Name' | sort -u | tee dlls.txt
         if grep -qiE 'DLL Name:.*(libstdc|libgcc|libwinpthread|libssp|zlib1|liblzma|libpng|libjpeg|freetype|SDL)' dlls.txt; then
@@ -460,10 +135,3 @@ jobs:
       with:
         name: devilutionx-gpu-shaders-windows-x64
         path: devilutionx-gpu-shaders-windows-x64.zip
-
-    # MAINT-04: attach the Windows zip to the release that triggered the run.
-    - name: Attach build to the GitHub Release
-      if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v2
-      with:
-        files: devilutionx-gpu-shaders-windows-x64.zip

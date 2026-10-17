@@ -13,21 +13,13 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
-#include "engine/render/gpu/gpu_scaler.hpp"
-#include "engine/render/gpu/preset/preset_parser.hpp"
-#include "engine/render/gpu/preset/slang_compile.hpp"
-#include "engine/render/gpu/preset/slang_translate.hpp"
-#include "utils/log.hpp"
-#include "utils/parse_int.hpp"
-#include "utils/str_cat.hpp"
+#include "engine/render/gpu/gpu_d3dcompile.hpp"
 
 namespace {
 /** @brief ASCII case-insensitive string equality for preset/shader names. */
@@ -40,44 +32,6 @@ bool CaseInsensitiveEqual(const std::string &a, const std::string &b)
 			return false;
 	}
 	return true;
-}
-
-/** @brief F6: the aspect-corrected viewport - the game image rect fitted
- *         inside the swapchain (letterbox fit, half-up rounding). This is
- *         what RetroArch resolves `viewport` scale (and FinalViewportSize)
- *         against. Degenerate sizes fall back to the raw swapchain. */
-void DeriveViewportSize(Uint32 swapchainWidth, Uint32 swapchainHeight, int gameWidth, int gameHeight,
-    Uint32 &outViewportWidth, Uint32 &outViewportHeight)
-{
-	outViewportWidth = swapchainWidth;
-	outViewportHeight = swapchainHeight;
-	if (swapchainWidth == 0 || swapchainHeight == 0 || gameWidth <= 0 || gameHeight <= 0)
-		return;
-	const float gameAspect = static_cast<float>(gameWidth) / static_cast<float>(gameHeight);
-	if (gameAspect > static_cast<float>(swapchainWidth) / static_cast<float>(swapchainHeight))
-		outViewportHeight = static_cast<Uint32>(std::max(1.0F,
-		    std::floor(static_cast<float>(swapchainWidth) / gameAspect + 0.5F)));
-	else
-		outViewportWidth = static_cast<Uint32>(std::max(1.0F,
-		    std::floor(static_cast<float>(swapchainHeight) * gameAspect + 0.5F)));
-}
-
-/** @brief ROB-05: clamps one resolved pass-target dimension to [1, 16384].
- *
- * Pass scale factors are unclamped preset floats (scale0 = 1e30 parses fine)
- * and the float-to-Uint32 cast of an out-of-range value is undefined behavior
- * that in practice yields garbage FBO sizes. 16384 sits below every real
- * device maximum (Vulkan guarantees only 4096, desktop GPUs report 16384+)
- * while remaining generous for legitimate libretro chains. NaN falls to 1
- * (`!(value >= 1.0F)` is true for NaN). */
-float ClampPassTargetDim(float value)
-{
-	constexpr float kMaxPassTargetDim = 16384.0F;
-	if (!(value >= 1.0F))
-		return 1.0F;
-	if (value > kMaxPassTargetDim)
-		return kMaxPassTargetDim;
-	return value;
 }
 
 /** @brief Context for a failed IMG_Load: resolved path, file size, and
@@ -110,6 +64,16 @@ std::string DescribeImageLoadFailure(const std::string &path)
 }
 } // namespace
 
+#include "engine/render/gpu/gpu_scaler.hpp"
+#include "engine/render/gpu/preset/preset_parser.hpp"
+#include "engine/render/gpu/preset/slang_compile.hpp"
+#include "engine/render/gpu/preset/slang_translate.hpp"
+#include "utils/log.hpp"
+#include "utils/str_cat.hpp"
+
+#include <spirv_cross.hpp>
+#include <spirv_hlsl.hpp>
+
 namespace devilution {
 namespace gpu_scaler {
 namespace preset {
@@ -128,10 +92,8 @@ SDL_GPUTextureFormat FormatForPass(const PassDef &pass, std::string &warning)
 	}
 
 	// #pragma format mapping. Formats the SDL GPU backend guarantees for
-	// color targets map directly; the only token left unmapped is
-	// A2B10G10R10_UINT_PACK32 (no SDL GPU UINT form of the packed 10-bit
-	// layout), which falls back to RGBA8 with a warning instead of
-	// failing the whole preset.
+	// color targets map directly; anything exotic falls back to RGBA8 with
+	// a warning instead of failing the whole preset.
 	static const std::unordered_map<std::string, SDL_GPUTextureFormat> kFormats = {
 		{ "R8_UNORM", SDL_GPU_TEXTUREFORMAT_R8_UNORM },
 		{ "R8G8_UNORM", SDL_GPU_TEXTUREFORMAT_R8G8_UNORM },
@@ -155,18 +117,6 @@ SDL_GPUTextureFormat FormatForPass(const PassDef &pass, std::string &warning)
 		{ "R16G16B16A16_SINT", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_INT },
 		{ "R32_SINT", SDL_GPU_TEXTUREFORMAT_R32_INT },
 		{ "R32G32B32A32_SINT", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_INT },
-		{ "R8G8_UINT", SDL_GPU_TEXTUREFORMAT_R8G8_UINT },
-		{ "R8G8_SINT", SDL_GPU_TEXTUREFORMAT_R8G8_INT },
-		{ "R16G16_UINT", SDL_GPU_TEXTUREFORMAT_R16G16_UINT },
-		{ "R16G16_SINT", SDL_GPU_TEXTUREFORMAT_R16G16_INT },
-		{ "R32G32_UINT", SDL_GPU_TEXTUREFORMAT_R32G32_UINT },
-		{ "R32G32_SINT", SDL_GPU_TEXTUREFORMAT_R32G32_INT },
-		// Vulkan's packed 10-bit UNORM; SDL names the same layout
-		// R10G10B10A2_UNORM and its Vulkan backend maps it back to
-		// VK_FORMAT_A2B10G10R10_UNORM_PACK32 (18 corpus shaders request
-		// it, e.g. crt-effects curvature). The _UINT_PACK32 variant stays
-		// unsupported: SDL GPU has no UINT form of the packed 10-bit layout.
-		{ "A2B10G10R10_UNORM_PACK32", SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM },
 	};
 	const auto it = kFormats.find(formatName);
 	if (it == kFormats.end()) {
@@ -187,27 +137,6 @@ Uint32 MipLevelsFor(Uint32 width, Uint32 height)
 	return levels;
 }
 
-/** @brief Parses the numeric suffix of a builtin texture binding name
- *         ("OriginalHistory#", "PassOutput#", "PassFeedback#", "User#")
- *         without throwing (ROB-01).
- *
- *         Binding names come straight from preset files: a bare prefix
- *         ("User"), a non-numeric suffix ("PassOutputx" via an alias) or a
- *         20-digit index all previously reached std::stoi and terminated the
- *         process through the uncaught std::invalid_argument/
- *         std::out_of_range. Returns nullopt for missing, malformed or
- *         out-of-range suffixes; every call site falls back to a valid
- *         binding instead of throwing. */
-std::optional<int> ParseTextureIndex(const std::string &name, size_t prefixLen)
-{
-	if (name.size() <= prefixLen)
-		return std::nullopt;
-	const ParseIntResult<int> parsed = ParseInt<int>(std::string_view { name.data() + prefixLen, name.size() - prefixLen });
-	if (!parsed.has_value())
-		return std::nullopt;
-	return *parsed;
-}
-
 } // namespace
 
 struct UniformBlockRuntime {
@@ -217,12 +146,6 @@ struct UniformBlockRuntime {
 struct PassRuntime {
 	PassDef def;
 	SlangTranslation translation;
-	// ROB-07: RAII release of the GPU objects owned below. Runs identically
-	// for staged runtimes destroyed by a mid-load failure (never transferred
-	// into passes_) and for the Unload teardown - one release point each.
-	~PassRuntime();
-	// Release context for the owned objects; set at creation in Load().
-	SDL_GPUDevice *device = nullptr;
 	SDL_GPUShader *vertexShader = nullptr;
 	SDL_GPUShader *fragmentShader = nullptr;
 	SDL_GPUGraphicsPipeline *pipeline = nullptr;
@@ -242,46 +165,10 @@ struct PassRuntime {
 
 struct LutRuntime {
 	TextureDef def;
-	// ROB-07: same single-release-point contract as PassRuntime.
-	~LutRuntime();
-	// Release context for the owned texture; set at creation in Load().
-	SDL_GPUDevice *device = nullptr;
 	SDL_GPUTexture *texture = nullptr;
 	Uint32 width = 0;
 	Uint32 height = 0;
 };
-
-PassRuntime::~PassRuntime()
-{
-	if (device == nullptr)
-		return;
-	if (vertexShader != nullptr) {
-		SDL_ReleaseGPUShader(device, vertexShader);
-		vertexShader = nullptr;
-	}
-	if (fragmentShader != nullptr) {
-		SDL_ReleaseGPUShader(device, fragmentShader);
-		fragmentShader = nullptr;
-	}
-	if (pipeline != nullptr) {
-		SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
-		pipeline = nullptr;
-	}
-	for (SDL_GPUTexture *&tex : outputTex) {
-		if (tex != nullptr) {
-			SDL_ReleaseGPUTexture(device, tex);
-			tex = nullptr;
-		}
-	}
-}
-
-LutRuntime::~LutRuntime()
-{
-	if (device == nullptr || texture == nullptr)
-		return;
-	SDL_ReleaseGPUTexture(device, texture);
-	texture = nullptr;
-}
 
 void WriteFloat(std::vector<uint8_t> &bytes, uint32_t offset, float value)
 {
@@ -298,59 +185,6 @@ void WriteUint(std::vector<uint8_t> &bytes, uint32_t offset, uint32_t value)
 	std::memcpy(bytes.data() + offset, &value, sizeof(uint32_t));
 }
 
-/** @brief std140 component count of a uniform type (ROB-23: writes are
- *         clamped to the member's own storage - writeVec4 used to write
- *         8+ bytes into every member). Mat4 is out of scope: the MVP writer
- *         emits its 16 floats directly. */
-int UniformComponentCount(UniformType type)
-{
-	switch (type) {
-	case UniformType::Vec2:
-	case UniformType::IVec2:
-	case UniformType::UVec2:
-		return 2;
-	case UniformType::Vec3:
-	case UniformType::IVec3:
-	case UniformType::UVec3:
-		return 3;
-	case UniformType::Vec4:
-	case UniformType::IVec4:
-	case UniformType::UVec4:
-		return 4;
-	default:
-		return 1; // Float/Int/Uint/Bool scalars.
-	}
-}
-
-/** @brief Writes one component of a member with the bit pattern its declared
- *         type expects (ROB-23: int/uint/bool members matched to a float
- *         parameter used to receive IEEE-float bits - value 5 read back as
- *         ~1.09e9). Component 0 lands at `offset`, component i at
- *         offset + 4*i (std140 components are contiguous 4-byte cells). */
-void WriteMemberValue(std::vector<uint8_t> &bytes, UniformType type, uint32_t offset, float value)
-{
-	switch (type) {
-	case UniformType::Int:
-	case UniformType::IVec2:
-	case UniformType::IVec3:
-	case UniformType::IVec4:
-		WriteInt(bytes, offset, static_cast<int32_t>(value));
-		break;
-	case UniformType::Uint:
-	case UniformType::UVec2:
-	case UniformType::UVec3:
-	case UniformType::UVec4:
-		WriteUint(bytes, offset, static_cast<uint32_t>(value));
-		break;
-	case UniformType::Bool:
-		WriteUint(bytes, offset, value != 0.0F ? 1u : 0u);
-		break;
-	default:
-		WriteFloat(bytes, offset, value);
-		break;
-	}
-}
-
 Runner::~Runner()
 {
 	Unload();
@@ -362,7 +196,9 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	device_ = device;
 	preset_ = preset;
 
-	if (backend != "vulkan") {
+	const bool isVulkan = backend == "vulkan";
+	const bool isD3D12 = backend == "direct3d12";
+	if (!isVulkan && !isD3D12) {
 		error = StrCat("runtime shader presets are not supported on the ", backend, " backend");
 		return false;
 	}
@@ -372,13 +208,6 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	std::unordered_map<int, std::string> pragmaNames;
 	for (size_t i = 0; i < preset_.passes.size(); ++i) {
 		const std::string path = ResolvePresetFilePath(preset_.dir, preset_.passes[i].shaderPath);
-		if (path.empty()) {
-			// SEC-01 refusals return an empty path; name the offending
-			// reference so gpu-scaler.log shows what was refused and why.
-			error = StrCat("shader file not found or refused (references must stay inside ",
-			    ShaderRootDir(), "): ", preset_.passes[i].shaderPath);
-			return false;
-		}
 		std::ifstream stream(path, std::ios::binary);
 		if (!stream) {
 			error = StrCat("cannot open shader file: ", path);
@@ -399,37 +228,29 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	}
 
 	// 2. Known texture names: pass aliases, pass identifiers and LUT names.
-	//    The translator's deduction looks names up lowercased, so every name
-	//    goes in both original and lowercased form. Aliases and #pragma
-	//    names used to be inserted in original case only, so any mixed-case
-	//    reference failed deduction ("unknown texture reference 'Pass0'" -
-	//    field log: motion_interpolation, guest advanced ntsc PrePass0).
 	std::unordered_set<std::string> knownNames;
-	auto insertKnownName = [&knownNames](const std::string &name) {
-		knownNames.insert(name);
-		std::string lower;
-		lower.reserve(name.size());
-		for (const char c : name)
-			lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		knownNames.insert(lower);
-	};
 	for (const PassDef &pass : preset_.passes) {
 		if (!pass.alias.empty())
-			insertKnownName(pass.alias);
+			knownNames.insert(pass.alias);
 	}
 	for (const auto &[_, name] : pragmaNames)
-		insertKnownName(name);
-	for (const TextureDef &tex : preset_.textures)
-		insertKnownName(tex.name);
+		knownNames.insert(name);
+	for (const TextureDef &tex : preset_.textures) {
+		knownNames.insert(tex.name);
+		std::string lower;
+		lower.reserve(tex.name.size());
+		for (const char c : tex.name)
+			lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		knownNames.insert(lower);
+	}
 
 	// 3. Translate + compile every pass.
 	std::vector<std::unique_ptr<PassRuntime>> passStorage;
 	passStorage.reserve(preset_.passes.size());
 	for (size_t i = 0; i < preset_.passes.size(); ++i) {
-		PassDef &def = preset_.passes[i];
+		const PassDef &def = preset_.passes[i];
 		auto pass = std::make_unique<PassRuntime>();
 		pass->def = def;
-		pass->device = device_;
 
 		const std::string slangPath = ResolvePresetFilePath(preset_.dir, def.shaderPath);
 		std::vector<ParamInfo> presetParams;
@@ -444,17 +265,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			error = StrCat("translating '", def.shaderPath, "' (pass ", i, "): ", pass->translation.error);
 			return false;
 		}
-		for (const std::string &w : pass->translation.warnings)
-			LogWarn("GPU scaler preset (pass {}): {}", i, w);
-		// Field round 3: propagate the shader's "#pragma format" token into the
-		// pass definition. It was only ever captured into the translation
-		// result and never read back — FormatForPass checks
-		// PassDef::pragmaFormat, which stayed empty since the mapping table
-		// landed (ae938cfb1), so the spec-4.2 override silently did nothing.
-		def.pragmaFormat = pass->translation.pragmaFormat;
 		PassSpirv spirv;
-		preset::SpirvSource spirvSource = preset::SpirvSource::Compiled;
-		if (!preset::CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error, &spirvSource)) {
+		if (!CompilePass(pass->translation, slangPath, ShaderCacheDir(), spirv, error)) {
 			error = StrCat("compiling '", def.shaderPath, "' (pass ", i, "): ", error);
 			return false;
 		}
@@ -482,12 +294,80 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			info.entrypoint = "main";
 			info.num_samplers = static_cast<Uint32>(stage.textures.size());
 			info.num_uniform_buffers = static_cast<Uint32>(stage.uniformBlocks.size());
-			info.format = SDL_GPU_SHADERFORMAT_SPIRV;
-			info.code = spirv.vertex.data();
-			info.code_size = spirv.vertex.size();
-			if (!vertex) {
-				info.code = spirv.fragment.data();
-				info.code_size = spirv.fragment.size();
+			std::vector<uint8_t> dxbc;
+			if (isVulkan) {
+				info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+				info.code = spirv.vertex.data();
+				info.code_size = spirv.vertex.size();
+				if (!vertex) {
+					info.code = spirv.fragment.data();
+					info.code_size = spirv.fragment.size();
+				}
+			} else {
+				// D3D12: transpile SPIR-V to HLSL with SPIRV-Cross, then
+				// compile DXBC with the guarded d3dcompiler.
+				std::vector<uint32_t> words;
+				const std::vector<uint8_t> &blob = vertex ? spirv.vertex : spirv.fragment;
+				words.resize(blob.size() / sizeof(uint32_t));
+				std::memcpy(words.data(), blob.data(), blob.size());
+				spirv_cross::CompilerHLSL compiler(words);
+				auto opts = compiler.get_hlsl_options();
+				opts.shader_model = 50;
+				opts.point_size_compat = true;
+				opts.point_coord_compat = true;
+				compiler.set_hlsl_options(opts);
+				const spv::ExecutionModel model = vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment;
+				// Explicit register mapping: register N = SDL slot N.
+				spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+				auto addBinding = [&](const spirv_cross::Resource &res) {
+					const uint32_t set = compiler.get_decoration(res.id, spv::DecorationDescriptorSet);
+					const uint32_t binding = compiler.get_decoration(res.id, spv::DecorationBinding);
+					spirv_cross::HLSLResourceBinding resBinding;
+					resBinding.stage = model;
+					resBinding.desc_set = set;
+					resBinding.binding = binding;
+					resBinding.cbv = { set, binding };
+					resBinding.uav = { set, binding };
+					resBinding.srv = { set, binding };
+					resBinding.sampler = { set, binding };
+					compiler.add_hlsl_resource_binding(resBinding);
+				};
+				for (const auto &res : resources.uniform_buffers)
+					addBinding(res);
+				for (const auto &res : resources.sampled_images)
+					addBinding(res);
+				for (const auto &res : resources.separate_samplers)
+					addBinding(res);
+				for (const auto &res : resources.separate_images)
+					addBinding(res);
+				const std::string hlsl = compiler.compile();
+				const char *target = vertex ? "vs_5_0" : "ps_5_0";
+				dxbc = gpu_d3dcompile::Compile(hlsl.c_str(), target);
+				if (dxbc.empty())
+					dxbc = gpu_d3dcompile::Compile(hlsl.c_str(), vertex ? "vs_5_1" : "ps_5_1");
+				if (dxbc.empty()) {
+					gpu_scaler::LogPhase(StrCat("ERROR: preset pass ", i, " (", def.shaderPath,
+					    ") HLSL compilation failed for the D3D12 backend"));
+					// Dump the offending HLSL beside the SPIR-V cache for offline
+					// diagnosis (d3dcompiler faults produce no error text).
+					std::string stem = def.shaderPath;
+					const size_t slash = stem.find_last_of("/\\");
+					if (slash != std::string::npos)
+						stem = stem.substr(slash + 1);
+					const size_t dot = stem.find_last_of('.');
+					if (dot != std::string::npos)
+						stem = stem.substr(0, dot);
+					const std::string dumpPath = preset::ShaderCacheDir() + "/failed-p" + std::to_string(i) + "-"
+					    + stem + (vertex ? "-vertex.hlsl" : "-fragment.hlsl");
+					std::ofstream dump(dumpPath, std::ios::binary);
+					if (dump)
+						dump.write(hlsl.data(), static_cast<std::streamsize>(hlsl.size()));
+					gpu_scaler::LogPhase(StrCat("       failing HLSL written to ", dumpPath));
+					return nullptr;
+				}
+				info.format = SDL_GPU_SHADERFORMAT_DXBC;
+				info.code = dxbc.data();
+				info.code_size = dxbc.size();
 			}
 			SDL_GPUShader *shader = SDL_CreateGPUShader(device_, &info);
 			if (shader == nullptr) {
@@ -498,44 +378,10 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			return shader;
 		};
 		pass->vertexShader = createShader(/*vertex=*/true);
-		if (pass->vertexShader != nullptr)
-			pass->fragmentShader = createShader(/*vertex=*/false);
-
-		// ROB-03 self-heal: a cache-hit blob that the GPU driver rejects is
-		// poisoned — the old read path accepted any magic-number-valid file
-		// forever, so a torn/corrupt blob failed SDL_CreateGPUShader on every
-		// session until the user manually wiped shaders/cache/. Treat the
-		// rejection as a cache miss: delete the blobs and recompile from
-		// source once (the retry compiles fresh; the cache itself is
-		// repopulated by the next clean load).
-		if ((pass->vertexShader == nullptr || pass->fragmentShader == nullptr)
-		    && spirvSource == preset::SpirvSource::Cache) {
-			LogWarn("GPU scaler preset (pass {}): GPU rejected the cached SPIR-V; deleting the cache blobs and recompiling ({})",
-			    i, error);
-			preset::DeleteCachedSpv(pass->translation, slangPath, ShaderCacheDir());
-			PassSpirv recompiled;
-			std::string recompileError;
-			if (preset::CompilePass(pass->translation, slangPath, ShaderCacheDir(), recompiled, recompileError,
-			        /*outSource=*/nullptr, /*allowCache=*/false)) {
-				spirv = std::move(recompiled);
-				// Retry creation from the freshly compiled bytecode: any
-				// shader built from the poisoned blob must be released first.
-				if (pass->vertexShader != nullptr) {
-					SDL_ReleaseGPUShader(device_, pass->vertexShader);
-					pass->vertexShader = nullptr;
-				}
-				if (pass->fragmentShader != nullptr) {
-					SDL_ReleaseGPUShader(device_, pass->fragmentShader);
-					pass->fragmentShader = nullptr;
-				}
-				pass->vertexShader = createShader(/*vertex=*/true);
-				if (pass->vertexShader != nullptr)
-					pass->fragmentShader = createShader(/*vertex=*/false);
-			} else {
-				error = StrCat("recompiling '", def.shaderPath, "' (pass ", i, ") after cache self-heal: ", recompileError);
-			}
-		}
-		if (pass->vertexShader == nullptr || pass->fragmentShader == nullptr)
+		if (pass->vertexShader == nullptr)
+			return false;
+		pass->fragmentShader = createShader(/*vertex=*/false);
+		if (pass->fragmentShader == nullptr)
 			return false;
 
 		passStorage.push_back(std::move(pass));
@@ -572,11 +418,7 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
 		info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 		info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-		// SDL 3.5: multisample_state.sample_mask is "reserved, must be 0"
-		// (SDL_gpu.c release-asserts and rejects the pipeline otherwise on
-		// debug-mode devices; llvmpipe rejects it outright). With sample_count
-		// 1 the default mask already covers every sample; the old 0xFFFFFFFF
-		// form predates the contract change.
+		info.multisample_state.sample_mask = 0xFFFFFFFF;
 		info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
 		info.depth_stencil_state.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
 		info.depth_stencil_state.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
@@ -587,24 +429,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		info.target_info.num_color_targets = 1;
 		info.vertex_input_state = vertexInput;
 		pass->pipeline = SDL_CreateGPUGraphicsPipeline(device_, &info);
-		if (pass->pipeline == nullptr && pass->targetFormat != SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM) {
-			// Field round 3: a per-pass #pragma format can name a format the device
-			// refuses as a color attachment (SDL builds a transient VkRenderPass
-			// with it; single-channel float/int targets are not mandatory
-			// attachment formats in Vulkan — field log: test/format.slangp pass 1
-			// failed with no diagnostics at all). Downgrade to RGBA8 and retry
-			// instead of failing the preset; the target texture follows
-			// pass->targetFormat, so pipeline and target stay consistent.
-			LogWarn("GPU scaler preset (pass {}): color target format unavailable on this device (SDL error: {}); retrying with R8G8B8A8_UNORM",
-			    static_cast<int>(&pass - passStorage.data()), SDL_GetError());
-			SDL_ClearError();
-			targetDesc.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-			pass->targetFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-			pass->pipeline = SDL_CreateGPUGraphicsPipeline(device_, &info);
-		}
 		if (pass->pipeline == nullptr) {
-			error = StrCat("pipeline creation failed for preset pass ", static_cast<int>(&pass - passStorage.data()),
-			    ": ", SDL_GetError());
+			error = StrCat("pipeline creation failed for preset pass ", static_cast<int>(&pass - passStorage.data()));
 			return false;
 		}
 	}
@@ -616,18 +442,15 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			for (const TextureRef &ref : stage->textures) {
 				const std::string &name = ref.name;
 				if (name.rfind("PassFeedback", 0) == 0) {
-					// ROB-01: a malformed suffix ("PassFeedbackx") or a bare
-					// prefix previously threw out of Load and killed the game.
-					const std::optional<int> idx = ParseTextureIndex(name, 12);
-					if (idx && *idx >= 0 && *idx < static_cast<int>(passStorage.size()))
-						passStorage[static_cast<size_t>(*idx)]->needsFeedback = true;
+					const int idx = std::stoi(name.substr(12));
+					if (idx >= 0 && idx < static_cast<int>(passStorage.size()))
+						passStorage[static_cast<size_t>(idx)]->needsFeedback = true;
 				} else if (name.size() > 8 && name.compare(name.size() - 8, 8, "Feedback") == 0) {
 					const std::string base = name.substr(0, name.size() - 8);
 					for (size_t j = 0; j < passStorage.size(); ++j) {
 						const std::string alias = passStorage[j]->def.alias;
 						const auto it = pragmaNames.find(static_cast<int>(j));
-						if ((!alias.empty() && CaseInsensitiveEqual(alias, base))
-						    || (it != pragmaNames.end() && CaseInsensitiveEqual(it->second, base))) {
+						if ((!alias.empty() && alias == base) || (it != pragmaNames.end() && it->second == base)) {
 							passStorage[j]->needsFeedback = true;
 						}
 					}
@@ -644,10 +467,8 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 		for (const StageTranslation *stage : { &pass->translation.vertex, &pass->translation.fragment }) {
 			for (const TextureRef &ref : stage->textures) {
 				if (ref.name.rfind("OriginalHistory", 0) == 0) {
-					// ROB-01: same non-throwing suffix parse as the run path.
-					const std::optional<int> idx = ParseTextureIndex(ref.name, 15);
-					if (idx)
-						historyDepth_ = std::max(historyDepth_, *idx);
+					const int idx = std::stoi(ref.name.substr(15));
+					historyDepth_ = std::max(historyDepth_, idx);
 				}
 			}
 		}
@@ -658,7 +479,6 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 	for (const TextureDef &texDef : preset_.textures) {
 		auto lut = std::make_unique<LutRuntime>();
 		lut->def = texDef;
-		lut->device = device_;
 		if (!LoadLut(*lut, error)) {
 			error = StrCat("loading lookup texture '", texDef.name, "': ", error);
 			return false;
@@ -689,12 +509,11 @@ bool Runner::Load(SDL_GPUDevice *device, std::string_view backend, const Preset 
 			textureNames += tex.name;
 		}
 		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s flipY=%s mipIn=%s"
+		    "GPU scaler preset: pass %u '%s' alias='%s' vertexMvp=%s flipY=%s"
 		    " src=%u:%08x merged=%u:%08x fragFetch=%d/%d textures=[%s]",
 		    static_cast<unsigned>(pi), p.def.shaderPath.c_str(), p.def.alias.c_str(),
 		    p.translation.vertex.usesMvp ? "yes" : "no",
 		    (p.translation.vertex.usesMvp && pi + 1 < passes_.size()) ? "yes" : "no",
-		    p.def.mipmapInput ? "yes" : "no",
 		    static_cast<unsigned>(p.translation.sourceSize), p.translation.sourceHash,
 		    static_cast<unsigned>(p.translation.mergedSize), p.translation.mergedHash,
 		    p.translation.fragment.texelFetchCount, p.translation.fragment.textureGatherCount,
@@ -816,14 +635,6 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 	// Resolve pass target sizes following the libretro scale rules.
 	float prevW = static_cast<float>(gameWidth);
 	float prevH = static_cast<float>(gameHeight);
-	// F6: derive the aspect-corrected viewport once per target resize - the
-	// game image rect fitted inside the swapchain (letterbox fit, half-up
-	// rounding). RetroArch resolves `viewport` scale against this rect, and
-	// the presentation blit letterboxes the chain output onto it, so
-	// viewport-scaled final passes land exactly on the presented game area.
-	DeriveViewportSize(swapchainWidth, swapchainHeight, gameWidth, gameHeight,
-	    targetViewportWidth_, targetViewportHeight_);
-	size_t passIndex = 0;
 	for (PassRuntime *pass : passes_) {
 		auto resolve = [](const ScaleRule &rule, float inputSize, float viewportSize) -> float {
 			switch (rule.type) {
@@ -833,28 +644,14 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 			}
 			return inputSize;
 		};
-		const float viewportW = static_cast<float>(targetViewportWidth_);
-		const float viewportH = static_cast<float>(targetViewportHeight_);
+		const float viewportW = static_cast<float>(swapchainWidth);
+		const float viewportH = static_cast<float>(swapchainHeight);
 		const float outW = resolve(pass->def.scaleX, prevW, viewportW);
 		const float outH = resolve(pass->def.scaleY, prevH, viewportH);
-		// ROB-05: pass scale factors are unclamped preset floats (scale0 = 1e30
-		// or absolute scale 1e9 parse fine), and the float-to-Uint32 cast of an
-		// out-of-range value below is undefined behavior that in practice
-		// produced garbage FBO sizes feeding SDL_CreateGPUTexture (driver
-		// errors or enormous allocations). Clamp every resolved dimension to
-		// [1, 16384] — a ceiling below every real device cap, generous for
-		// legitimate libretro chains — and say so in the log.
-		const float clampedW = ClampPassTargetDim(outW);
-		const float clampedH = ClampPassTargetDim(outH);
-		if (clampedW != outW || clampedH != outH) {
-			LogWarn("GPU scaler preset (pass {}): resolved target size {}x{} clamped to {}x{}",
-			    passIndex, outW, outH, clampedW, clampedH);
-		}
-		pass->outputWidth = static_cast<Uint32>(std::max(1.0F, std::floor(clampedW + 0.5F)));
-		pass->outputHeight = static_cast<Uint32>(std::max(1.0F, std::floor(clampedH + 0.5F)));
+		pass->outputWidth = static_cast<Uint32>(std::max(1.0F, std::floor(outW + 0.5F)));
+		pass->outputHeight = static_cast<Uint32>(std::max(1.0F, std::floor(outH + 0.5F)));
 		prevW = static_cast<float>(pass->outputWidth);
 		prevH = static_cast<float>(pass->outputHeight);
-		passIndex++;
 	}
 	// Field diagnostics: resolved pass output sizes (logs once per size change).
 	std::string targets;
@@ -863,19 +660,13 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		targets += StrCat(ti == 0 ? "" : " ", ti, "=", pass.outputWidth, "x", pass.outputHeight);
 	}
 	SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-	    "GPU scaler preset: pass targets (game %ux%u, swapchain %ux%u, viewport %ux%u): %s",
+	    "GPU scaler preset: pass targets (game %ux%u, swapchain %ux%u): %s",
 	    static_cast<unsigned>(gameWidth), static_cast<unsigned>(gameHeight), swapchainWidth, swapchainHeight,
-	    targetViewportWidth_, targetViewportHeight_, targets.c_str());
+	    targets.c_str());
 
 	// Pass output textures (double-buffered when a pass reads its own
-	// previous-frame output as feedback). F1: an output carries a full mip
-	// chain only when the NEXT pass reads it as Source with mipmap_input -
-	// only `Source` binds the reading pass's mipmap flag (SLANG_SPEC.md 5.4).
-	// Run() refills the chain before that pass every frame.
-	std::string mipChainPasses;
-	for (size_t pi = 0; pi < passes_.size(); ++pi) {
-		PassRuntime *pass = passes_[pi];
-		const bool nextPassWantsMips = pi + 1 < passes_.size() && passes_[pi + 1]->def.mipmapInput;
+	// previous-frame output as feedback).
+	for (PassRuntime *pass : passes_) {
 		SDL_GPUTextureCreateInfo info {};
 		info.type = SDL_GPU_TEXTURETYPE_2D;
 		info.format = pass->targetFormat;
@@ -883,66 +674,18 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 		info.width = pass->outputWidth;
 		info.height = pass->outputHeight;
 		info.layer_count_or_depth = 1;
-		info.num_levels = nextPassWantsMips ? MipLevelsFor(pass->outputWidth, pass->outputHeight) : 1;
+		info.num_levels = 1;
 		info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 		pass->outputTex[0] = SDL_CreateGPUTexture(device_, &info);
 		if (pass->doubleBuffered)
 			pass->outputTex[1] = SDL_CreateGPUTexture(device_, &info);
-		if (pass->outputTex[0] == nullptr || (pass->doubleBuffered && pass->outputTex[1] == nullptr)) {
-			// Failure trail: the silent first-frame abort class - without
-			// this line the caller's hard failure carries no reason
-			// (round-8 field evidence).
-			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-			    "GPU scaler preset: pass %u target texture creation failed (%ux%u, format %u, double-buffered %s): %s",
-			    static_cast<unsigned>(pi), pass->outputWidth, pass->outputHeight,
-			    static_cast<unsigned>(pass->targetFormat),
-			    pass->doubleBuffered ? "yes" : "no", SDL_GetError());
+		if (pass->outputTex[0] == nullptr || (pass->doubleBuffered && pass->outputTex[1] == nullptr))
 			return false;
-		}
-		if (nextPassWantsMips) {
-			if (!mipChainPasses.empty())
-				mipChainPasses += ',';
-			mipChainPasses += std::to_string(pi);
-		}
 	}
-
-	// F1: pass 0 reads the chain input through its mipmapped sampler when it
-	// declares mipmap_input, but the game texture is a single-level
-	// scaler-owned surface. Blit it into a runner-owned mip-capable copy
-	// (RGBA8, same size - the history ring convention) and refill the chain
-	// before pass 0 every frame (Run).
-	if (!passes_.empty() && passes_[0]->def.mipmapInput) {
-		SDL_GPUTextureCreateInfo info {};
-		info.type = SDL_GPU_TEXTURETYPE_2D;
-		info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-		info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-		info.width = static_cast<Uint32>(gameWidth);
-		info.height = static_cast<Uint32>(gameHeight);
-		info.layer_count_or_depth = 1;
-		info.num_levels = MipLevelsFor(info.width, info.height);
-		info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-		mipSourceTex_ = SDL_CreateGPUTexture(device_, &info);
-		if (mipSourceTex_ == nullptr) {
-			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-			    "GPU scaler preset: chain-input mip copy creation failed (%ux%u): %s",
-			    info.width, info.height, SDL_GetError());
-			return false;
-		}
-	}
-
-	// Field diagnostics: which inputs actually carry mip chains (logs once
-	// per target resize).
-	if (!mipChainPasses.empty() || mipSourceTex_ != nullptr)
-		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: mipmapped inputs (F1): pass outputs with mip chains [%s], chain-input copy %s",
-		    mipChainPasses.c_str(), mipSourceTex_ != nullptr ? "on" : "off");
 
 	// Chain-input history ring.
 	if (historyDepth_ > 0) {
-		// depth+1 slots: the slot at historySlot_ holds the CURRENT
-		// frame (blitted at the top of Run) and OriginalHistory1..N
-		// need N further slots behind it (OriginalHistoryN = T-N).
-		history_.assign(static_cast<size_t>(historyDepth_) + 1, nullptr);
+		history_.assign(static_cast<size_t>(historyDepth_), nullptr);
 		for (SDL_GPUTexture *&tex : history_) {
 			SDL_GPUTextureCreateInfo info {};
 			info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -954,12 +697,8 @@ bool Runner::EnsureTargets(int gameWidth, int gameHeight, Uint32 swapchainWidth,
 			info.num_levels = 1;
 			info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 			tex = SDL_CreateGPUTexture(device_, &info);
-			if (tex == nullptr) {
-				SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-				    "GPU scaler preset: history ring texture creation failed (%ux%u): %s",
-				    info.width, info.height, SDL_GetError());
+			if (tex == nullptr)
 				return false;
-			}
 		}
 		historySlot_ = 0;
 	}
@@ -984,11 +723,6 @@ void Runner::ReleaseTargets()
 		}
 	}
 	history_.clear();
-	historySeeded_ = false;
-	if (mipSourceTex_ != nullptr) {
-		SDL_ReleaseGPUTexture(device_, mipSourceTex_);
-		mipSourceTex_ = nullptr;
-	}
 	targetGameWidth_ = 0;
 	targetGameHeight_ = 0;
 	targetSwapchainWidth_ = 0;
@@ -998,11 +732,6 @@ void Runner::ReleaseTargets()
 bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 {
 	const std::string path = ResolvePresetFilePath(preset_.dir, lut.def.path);
-	if (path.empty()) {
-		error = StrCat("LUT texture not found or refused (references must stay inside ",
-		    ShaderRootDir(), "): ", lut.def.path);
-		return false;
-	}
 	SDL_Surface *loaded = IMG_Load(path.c_str());
 	if (loaded == nullptr) {
 		error = StrCat("IMG_Load failed: ", DescribeImageLoadFailure(path), "; SDL: ", SDL_GetError());
@@ -1020,14 +749,7 @@ bool Runner::LoadLut(LutRuntime &lut, std::string &error)
 	SDL_GPUTextureCreateInfo info {};
 	info.type = SDL_GPU_TEXTURETYPE_2D;
 	info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-	// SDL's SDL_GenerateMipmapsForGPUTexture contract requires SAMPLER +
-	// COLOR_TARGET usage on mipmapped textures. The Vulkan backend never
-	// needed COLOR_TARGET (transfer bits are always present and this
-	// device disables SDL debug mode), but keep the flags contract-correct
-	// so mip generation also survives debug mode and future backends.
 	info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-	if (lut.def.mipmap)
-		info.usage |= SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
 	info.width = lut.width;
 	info.height = lut.height;
 	info.layer_count_or_depth = 1;
@@ -1101,8 +823,8 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	const float passOutH = static_cast<float>(pass->outputHeight);
 	const float gameW = static_cast<float>(targetGameWidth_);
 	const float gameH = static_cast<float>(targetGameHeight_);
-	const float viewportW = static_cast<float>(targetViewportWidth_);
-	const float viewportH = static_cast<float>(targetViewportHeight_);
+	const float swapW = static_cast<float>(targetSwapchainWidth_);
+	const float swapH = static_cast<float>(targetSwapchainHeight_);
 	const float inputW = inputWidth;
 	const float inputH = inputHeight;
 
@@ -1112,15 +834,13 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 	static constexpr float kIdentity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 	static constexpr float kFlipY[16] = { 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
-	// ROB-23: writes are clamped to the member's declared shape (a scalar
-	// or vec2 OutputSize used to receive 8+ bytes, scribbling into the next
-	// member's storage) and every component lands with its own type's bit
-	// pattern (an IVec4 builtin used to get IEEE-float bits).
 	auto writeVec4 = [&](const UniformMember &member, float x, float y, float z, float w) {
-		const float components[4] = { x, y, z, w };
-		const int count = UniformComponentCount(member.type);
-		for (int i = 0; i < count; ++i)
-			WriteMemberValue(out, member.type, member.offset + 4 * static_cast<uint32_t>(i), components[i]);
+		WriteFloat(out, member.offset, x);
+		WriteFloat(out, member.offset + 4, y);
+		if (member.type == UniformType::Vec4 || member.type == UniformType::IVec4 || member.type == UniformType::UVec4) {
+			WriteFloat(out, member.offset + 8, z);
+			WriteFloat(out, member.offset + 12, w);
+		}
 	};
 
 	for (const UniformMember &member : def.members) {
@@ -1158,9 +878,7 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue;
 		}
 		if (name == "FinalViewportSize") {
-			// F6: RetroArch's FinalViewportSize is the aspect-corrected
-			// viewport (the game rect inside the swapchain), not the raw window.
-			writeVec4(member, viewportW, viewportH, viewportW > 0 ? 1.0F / viewportW : 0.0F, viewportH > 0 ? 1.0F / viewportH : 0.0F);
+			writeVec4(member, swapW, swapH, swapW > 0 ? 1.0F / swapW : 0.0F, swapH > 0 ? 1.0F / swapH : 0.0F);
 			continue;
 		}
 		if (name == "OriginalSize") {
@@ -1190,53 +908,6 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			WriteInt(out, member.offset, passIndex);
 			continue;
 		}
-		if (name == "Rotation") {
-			// RetroArch fills the Rotation semantic with the frontend's
-			// content rotation (0/1/2/3 = 0/90/180/270 degrees). This game
-			// never rotates the view, so presets declaring it (16 corpus
-			// shaders: crt-effects, authentic_gbc, border fills, subframe
-			// BFI) read the identity value 0 (SLANG_SPEC.md gap #5).
-			WriteUint(out, member.offset, 0);
-			continue;
-		}
-
-		// Shader parameters (defaults from #pragma parameter, overridden by
-		// the preset file's `parameters` list). Checked BEFORE the
-		// <TextureName>Size branch below: the translator accepts a pragma
-		// parameter whose name happens to end in "Size" (MaskSize and
-		// friends), and the old order let the size resolver zero the member
-		// before the parameter lookup ever ran - both the pragma default and
-		// the preset override silently dropped (ROB-23).
-		float value = 0.0F;
-		bool found = false;
-		for (const ParamOverride &override : preset_.parameters) {
-			// Preset keys are lowercased at parse time while #pragma
-			// parameter identifiers keep their original case; an
-			// exact-case compare made every mixed-case override (Mega
-			// Bezel overlays) silently keep defaults (SLANG_SPEC.md
-			// gap #3).
-			if (CaseInsensitiveEqual(override.name, name)) {
-				value = override.value;
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			for (const ParamInfo &param : pass->translation.parameters) {
-				if (param.name == name) {
-					value = param.defaultValue;
-					found = true;
-					break;
-				}
-			}
-		}
-		if (found) {
-			// ROB-23: write with the member's own type - an int/uint/bool
-			// member matched to a float parameter used to receive raw
-			// IEEE-float bits.
-			WriteMemberValue(out, member.type, member.offset, value);
-			continue;
-		}
 
 		// <TextureName>Size members.
 		if (name.size() > 4 && name.compare(name.size() - 4, 4, "Size") == 0) {
@@ -1256,27 +927,16 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 				w = gameW;
 				h = gameH;
 			} else if (texName.rfind("PassOutput", 0) == 0 || texName.rfind("PassFeedback", 0) == 0) {
-				// "PassOutput" is a 10-char prefix but "PassFeedback"
-				// is 12: slicing both at 10 handed stoi("ck#") for the
-				// feedback form and aborted on an uncaught
-				// std::invalid_argument (SLANG_SPEC.md gap #4). Covers
-				// both the <PassFeedback#>Size and the
-				// <PassFeedback#>FeedbackSize member forms.
-				const size_t prefixLen = texName.rfind("PassFeedback", 0) == 0 ? 12 : 10;
-				// ROB-01: a bare prefix ("PassOutputSize" -> suffix "") or a
-				// non-numeric suffix previously threw out of PushBlockUniforms.
-				const std::optional<int> idx = ParseTextureIndex(texName, prefixLen);
-				if (idx && *idx >= 0 && *idx < static_cast<int>(passes_.size())) {
-					w = static_cast<float>(passes_[static_cast<size_t>(*idx)]->outputWidth);
-					h = static_cast<float>(passes_[static_cast<size_t>(*idx)]->outputHeight);
+				const int idx = std::stoi(texName.substr(10));
+				if (idx >= 0 && idx < static_cast<int>(passes_.size())) {
+					w = static_cast<float>(passes_[static_cast<size_t>(idx)]->outputWidth);
+					h = static_cast<float>(passes_[static_cast<size_t>(idx)]->outputHeight);
 				}
 			} else {
 				// Alias or lookup texture.
 				bool resolved = false;
 				for (const PassRuntime *other : passes_) {
-					const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, texName))
-					    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, texName));
-					if (nameMatch) {
+					if (!other->def.alias.empty() && other->def.alias == texName) {
 						w = static_cast<float>(other->outputWidth);
 						h = static_cast<float>(other->outputHeight);
 						resolved = true;
@@ -1298,10 +958,27 @@ void Runner::FillBlockBytes(const UniformBlockRuntime &block, int passIndex, flo
 			continue;
 		}
 
-		// Unmatched member: not a builtin, not a parameter, not a
-		// <TextureName>Size form - leave it zeroed, written with the
-		// member's own type (ROB-23).
-		WriteMemberValue(out, member.type, member.offset, 0.0F);
+		// Shader parameters (defaults from #pragma parameter, overridden by
+		// the preset file's `parameters` list).
+		float value = 0.0F;
+		bool found = false;
+		for (const ParamOverride &override : preset_.parameters) {
+			if (override.name == name) {
+				value = override.value;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			for (const ParamInfo &param : pass->translation.parameters) {
+				if (param.name == name) {
+					value = param.defaultValue;
+					found = true;
+					break;
+				}
+			}
+		}
+		WriteFloat(out, member.offset, value);
 	}
 }
 
@@ -1322,11 +999,8 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 {
 	if (!IsLoaded() || passes_.empty())
 		return false;
-	if (!EnsureSamplers()) {
-		SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-		    "GPU scaler preset: sampler creation failed: %s", SDL_GetError());
+	if (!EnsureSamplers())
 		return false;
-	}
 	if (!EnsureTargets(gameWidth, gameHeight, swapchainWidth, swapchainHeight))
 		return false;
 
@@ -1335,29 +1009,10 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 	swapchainWidth_ = swapchainWidth;
 	swapchainHeight_ = swapchainHeight;
 
-	// Update the chain-input history ring: the current input overwrites
-	// the slot at historySlot_; older frames live at decreasing slot
-	// indices (historySlot_ advances forward by one every frame), so
-	// OriginalHistoryN resolves to ring[(historySlot_ - N) mod size].
+	// Update the chain-input history ring: the current input overwrites the
+	// slot that held the oldest frame, so OriginalHistoryN resolves to
+	// ring[(slot + N) % depth].
 	if (!history_.empty()) {
-		// Seed every slot with the current frame on the first run (and
-		// after every target resize) so early OriginalHistory# reads
-		// see valid content instead of undefined texture memory.
-		if (!historySeeded_) {
-			for (SDL_GPUTexture *slotTex : history_) {
-				SDL_GPUBlitInfo seed {};
-				seed.source.texture = gameTex;
-				seed.source.w = static_cast<Uint32>(gameWidth);
-				seed.source.h = static_cast<Uint32>(gameHeight);
-				seed.destination.texture = slotTex;
-				seed.destination.w = static_cast<Uint32>(gameWidth);
-				seed.destination.h = static_cast<Uint32>(gameHeight);
-				seed.load_op = SDL_GPU_LOADOP_DONT_CARE;
-				seed.filter = SDL_GPU_FILTER_NEAREST;
-				SDL_BlitGPUTexture(cmd, &seed);
-			}
-			historySeeded_ = true;
-		}
 		SDL_GPUBlitInfo blit {};
 		blit.source.texture = gameTex;
 		blit.source.w = static_cast<Uint32>(gameWidth);
@@ -1379,32 +1034,6 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		const int cur = pass->curBuffer;
 		SDL_GPUTexture *target = pass->outputTex[cur];
 
-		// F1: refill the mip chain of this pass's Source before the draw -
-		// SDL_GenerateMipmapsForGPUTexture must run outside any render pass,
-		// so it sits between the per-pass render passes here. Pass 0's Source
-		// is the chain input, a single-level scaler-owned texture: blit it
-		// into the mip-capable copy first and bind the copy. Later passes
-		// generate directly on the producing pass's output (allocated with a
-		// full chain in EnsureTargets exactly when this flag is set).
-		if (pass->def.mipmapInput) {
-			if (i == 0 && mipSourceTex_ != nullptr) {
-				SDL_GPUBlitInfo copy {};
-				copy.source.texture = gameTex;
-				copy.source.w = static_cast<Uint32>(gameWidth);
-				copy.source.h = static_cast<Uint32>(gameHeight);
-				copy.destination.texture = mipSourceTex_;
-				copy.destination.w = static_cast<Uint32>(gameWidth);
-				copy.destination.h = static_cast<Uint32>(gameHeight);
-				copy.load_op = SDL_GPU_LOADOP_DONT_CARE;
-				copy.filter = SDL_GPU_FILTER_NEAREST;
-				SDL_BlitGPUTexture(cmd, &copy);
-				SDL_GenerateMipmapsForGPUTexture(cmd, mipSourceTex_);
-				sourceTex = mipSourceTex_;
-			} else if (i > 0) {
-				SDL_GenerateMipmapsForGPUTexture(cmd, sourceTex);
-			}
-		}
-
 		const StageTranslation &frag = pass->translation.fragment;
 		const StageTranslation &vert = pass->translation.vertex;
 
@@ -1414,12 +1043,8 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		colorInfo.load_op = SDL_GPU_LOADOP_CLEAR;
 		colorInfo.store_op = SDL_GPU_STOREOP_STORE;
 		SDL_GPURenderPass *renderPass = SDL_BeginGPURenderPass(cmd, &colorInfo, 1, nullptr);
-		if (renderPass == nullptr) {
-			SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-			    "GPU scaler preset: render pass begin failed in pass %u (%ux%u): %s",
-			    static_cast<unsigned>(i), pass->outputWidth, pass->outputHeight, SDL_GetError());
+		if (renderPass == nullptr)
 			return false;
-		}
 		SDL_BindGPUGraphicsPipeline(renderPass, pass->pipeline);
 
 		// Push uniform blocks (std140 bytes computed from the reflected layout).
@@ -1450,42 +1075,31 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 				} else if (name == "Original") {
 					tex = gameTex;
 				} else if (name.rfind("OriginalHistory", 0) == 0) {
-					// ROB-01: "OriginalHistory" with a missing, non-numeric
-					// ("OriginalHistoryx") or 20-digit suffix used to throw out
-					// of the frame loop and terminate the process.
-					const std::optional<int> idx = ParseTextureIndex(name, 15);
-					if (!idx || *idx == 0 || history_.empty()) {
+					const int idx = std::stoi(name.substr(15));
+					if (idx == 0 || history_.empty()) {
 						tex = gameTex;
 					} else {
-						// Frame T-N sits N slots behind the just-written
-						// current-frame slot (slots advance forward per frame).
-						const size_t slot = (static_cast<size_t>(historySlot_)
-						                        + history_.size() - static_cast<size_t>(*idx))
+						const size_t slot = (static_cast<size_t>(historySlot_) + static_cast<size_t>(idx))
 						    % history_.size();
 						tex = history_[slot];
 					}
 				} else if (name.rfind("PassOutput", 0) == 0) {
-					// ROB-01: non-throwing suffix parse; an unparsable or
-					// out-of-range index leaves tex null and the null-texture
-					// guard below binds the current input frame instead.
-					const std::optional<int> idx = ParseTextureIndex(name, 10);
-					if (idx && *idx >= 0 && *idx < static_cast<int>(passes_.size())) {
-						PassRuntime *other = passes_[static_cast<size_t>(*idx)];
+					const int idx = std::stoi(name.substr(10));
+					if (idx >= 0 && idx < static_cast<int>(passes_.size())) {
+						PassRuntime *other = passes_[static_cast<size_t>(idx)];
 						tex = other->outputTex[other->curBuffer];
 					}
 				} else if (name.rfind("PassFeedback", 0) == 0) {
-					const std::optional<int> idx = ParseTextureIndex(name, 12);
-					if (idx && *idx >= 0 && *idx < static_cast<int>(passes_.size())) {
-						PassRuntime *other = passes_[static_cast<size_t>(*idx)];
+					const int idx = std::stoi(name.substr(12));
+					if (idx >= 0 && idx < static_cast<int>(passes_.size())) {
+						PassRuntime *other = passes_[static_cast<size_t>(idx)];
 						tex = other->doubleBuffered ? other->outputTex[1 - other->curBuffer]
 						                            : other->outputTex[other->curBuffer];
 					}
 				} else if (name.size() > 8 && name.compare(name.size() - 8, 8, "Feedback") == 0) {
 					const std::string base = name.substr(0, name.size() - 8);
 					for (PassRuntime *other : passes_) {
-						const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, base))
-						    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, base));
-						if (nameMatch) {
+						if ((!other->def.alias.empty() && other->def.alias == base)) {
 							tex = other->doubleBuffered ? other->outputTex[1 - other->curBuffer]
 							                            : other->outputTex[other->curBuffer];
 							break;
@@ -1495,14 +1109,12 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 					// Lookup texture (by preset name or User#).
 					std::string lutName = name;
 					if (lutName.rfind("User", 0) == 0) {
-						// ROB-01: non-throwing suffix parse ("User" alone or
-						// "UserFoo" previously threw out of the frame loop).
-						const std::optional<int> idx = ParseTextureIndex(lutName, 4);
-						if (idx && *idx >= 0 && *idx < static_cast<int>(luts_.size()))
-							lutName = luts_[static_cast<size_t>(*idx)]->def.name;
+						const int idx = std::stoi(lutName.substr(4));
+						if (idx >= 0 && idx < static_cast<int>(luts_.size()))
+							lutName = luts_[static_cast<size_t>(idx)]->def.name;
 					}
 					for (const LutRuntime *lut : luts_) {
-						if (CaseInsensitiveEqual(lut->def.name, lutName)) {
+						if (lut->def.name == lutName) {
 							tex = lut->texture;
 							sampler = SamplerFor(lut->def.filter, lut->def.wrap, lut->def.mipmap);
 							break;
@@ -1515,29 +1127,23 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 						// earlier passes have an output this frame.
 						for (size_t oi = 0; oi < i; ++oi) {
 							PassRuntime *other = passes_[oi];
-							const bool nameMatch = (!other->def.alias.empty() && CaseInsensitiveEqual(other->def.alias, lutName))
-							    || (!other->translation.pragmaName.empty() && CaseInsensitiveEqual(other->translation.pragmaName, lutName));
-							if (nameMatch) {
+							if (!other->def.alias.empty() && other->def.alias == lutName) {
 								tex = other->outputTex[other->curBuffer];
 								break;
 							}
 						}
 					}
-				}
-				if (tex == nullptr) {
-					// Never bind a null texture: the backend dereferences
-					// it and crashes (access violation mid-frame). Reached
-					// from every branch above: unresolved lookup names, an
-					// unparsable or out-of-range builtin index (ROB-01)
-					// and unmatched Feedback aliases all fall back to a
-					// valid binding instead of crashing.
-					static std::unordered_set<std::string> warnedNames;
-					if (warnedNames.insert(name).second)
-						SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-						    "GPU scaler preset: unresolved texture '%s' in pass %u; using the current input frame",
-						    name.c_str(), static_cast<unsigned>(i));
-					tex = sourceTex;
-					sampler = SamplerFor(FilterMode::Nearest, WrapMode::ClampToEdge, false);
+					if (tex == nullptr) {
+						// Never bind a null texture: the backend dereferences
+						// it and crashes (access violation mid-frame).
+						static std::unordered_set<std::string> warnedNames;
+						if (warnedNames.insert(name).second)
+							SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+							    "GPU scaler preset: unresolved texture '%s' in pass %u; using the current input frame",
+							    name.c_str(), static_cast<unsigned>(i));
+						tex = sourceTex;
+						sampler = SamplerFor(FilterMode::Nearest, WrapMode::ClampToEdge, false);
+					}
 				}
 				bindings[b].texture = tex;
 				bindings[b].sampler = sampler;
@@ -1554,16 +1160,6 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 		sourceTex = target;
 	}
 
-	// ROB-15: capture the present target BEFORE the double-buffer flip. The
-	// pass loop above just rendered the final pass into outputTex[curBuffer];
-	// reading the slot after the flip returned the OTHER buffer for a
-	// double-buffered final pass - the previous frame's render, or undefined
-	// GPU memory on the first frame / after ReleaseTargets().
-	PassRuntime *last = passes_.back();
-	*outTexture = last->outputTex[last->curBuffer];
-	*outWidth = last->outputWidth;
-	*outHeight = last->outputHeight;
-
 	// Flip the double-buffered outputs for the next frame's feedback reads.
 	for (PassRuntime *pass : passes_) {
 		if (pass->doubleBuffered)
@@ -1571,37 +1167,41 @@ bool Runner::Run(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *gameTex, int gameWid
 	}
 	if (!history_.empty())
 		historySlot_ = (historySlot_ + 1) % static_cast<int>(history_.size());
+
+	PassRuntime *last = passes_.back();
+	*outTexture = last->outputTex[last->curBuffer];
+	*outWidth = last->outputWidth;
+	*outHeight = last->outputHeight;
 	return true;
 }
 
 void Runner::Unload()
 {
 	if (device_ == nullptr) {
-		// ROB-07: the SDL device is already gone - hand the runtimes to their
-		// destructors with the release context cleared so deletion stays pure
-		// memory cleanup (the reachable state here is empty vectors; this is
-		// defense in depth).
-		for (PassRuntime *pass : passes_) {
-			pass->device = nullptr;
+		for (PassRuntime *pass : passes_)
 			delete pass;
-		}
 		passes_.clear();
-		for (LutRuntime *lut : luts_) {
-			lut->device = nullptr;
+		for (LutRuntime *lut : luts_)
 			delete lut;
-		}
 		luts_.clear();
 		return;
 	}
 	ReleaseTargets();
-	// ROB-07: the runtime destructors are the single release point for the
-	// SDL_GPU objects each runtime owns (shaders, pipeline, pass targets,
-	// LUT texture); ReleaseTargets() already nulled the pass targets above.
-	for (PassRuntime *pass : passes_)
+	for (PassRuntime *pass : passes_) {
+		if (pass->vertexShader != nullptr)
+			SDL_ReleaseGPUShader(device_, pass->vertexShader);
+		if (pass->fragmentShader != nullptr)
+			SDL_ReleaseGPUShader(device_, pass->fragmentShader);
+		if (pass->pipeline != nullptr)
+			SDL_ReleaseGPUGraphicsPipeline(device_, pass->pipeline);
 		delete pass;
+	}
 	passes_.clear();
-	for (LutRuntime *lut : luts_)
+	for (LutRuntime *lut : luts_) {
+		if (lut->texture != nullptr)
+			SDL_ReleaseGPUTexture(device_, lut->texture);
 		delete lut;
+	}
 	luts_.clear();
 	if (vertexBuffer_ != nullptr) {
 		SDL_ReleaseGPUBuffer(device_, vertexBuffer_);

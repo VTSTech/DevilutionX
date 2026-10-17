@@ -1033,10 +1033,12 @@ endif()
 if(USE_GPU_SCALER)
   list(APPEND libdevilutionx_SRCS
     engine/render/gpu/gpu_scaler.cpp
+    engine/render/gpu/gpu_d3dcompile.cpp
     engine/render/gpu/preset/preset_parser.cpp
     engine/render/gpu/preset/slang_translate.cpp
     engine/render/gpu/preset/slang_compile.cpp
     engine/render/gpu/preset/preset_runner.cpp
+    engine/render/gpu/slv_runner.cpp
   )
 endif()
 
@@ -1066,20 +1068,8 @@ if(USE_GPU_SCALER)
     add_dependencies(libdevilutionx gpu_scaler_spv)
   endif()
   # Offline validation harness for the runtime preset loader (headless:
-  # parse + translate + glslang compile, no GPU device). TEST-01: built
-  # with the normal suite (no EXCLUDE_FROM_ALL) and registered with ctest
-  # against the committed micro-corpus in CMake/Tests.cmake.
-  add_executable(preset_smoke engine/render/gpu/preset/preset_smoke.cpp)
-  # TEST-01 geometry fixup (r7.6.2): preset_smoke must live at the build root,
-  # like every other test executable (CMake/Tests.cmake gives the gtest targets
-  # RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}; preset_failure_modes_test sets
-  # its own). SDL_GetBasePath() follows the executable's location, so from
-  # build/Source/ the SEC-01 shader root resolves to build/Source/shaders and
-  # the corpus copied to <build>/shaders/.preset-smoke fails IsPathInside
-  # ShaderRoot(): every good-corpus preset dies with "cannot open shader file"
-  # and ctest's preset_smoke_corpus goes red. At the build root the shader root
-  # is <build>/shaders and the corpus resolves.
-  set_target_properties(preset_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+  # parse + translate + glslang compile, no GPU device).
+  add_executable(preset_smoke EXCLUDE_FROM_ALL engine/render/gpu/preset/preset_smoke.cpp)
   target_compile_definitions(preset_smoke PRIVATE USE_GPU_SCALER)
   target_link_dependencies(preset_smoke PRIVATE libdevilutionx)
   # Runtime libretro slang presets: in-process glslang + SPIRV-Cross.
@@ -1090,7 +1080,10 @@ if(USE_GPU_SCALER)
     glslang::glslang-default-resource-limits
     spirv-cross-core
     spirv-cross-glsl
+    spirv-cross-hlsl
     SDL3_image::SDL3_image # LUT texture loading for runtime presets
+    slangvk # vendored libslang-vk: the "slangvk" GPU backend (slv_runner.cpp)
+    slv-volk # volk Vulkan loader: runtime entry points for the backend (no SDK)
   )
 endif()
 target_link_dependencies(libdevilutionx PUBLIC

@@ -29,11 +29,29 @@ class Surface;
 namespace gpu_scaler {
 
 /**
+ * @brief Preloads the system Direct3D shader compiler at process start
+ * (Windows only; a no-op elsewhere). Must run before any renderer or GPU
+ * device is created so that every later bare-name load of
+ * d3dcompiler_47.dll resolves to the genuine system copy instead of a
+ * stale DLL shipped next to the game.
+ */
+void PreloadD3DCompiler();
+
+/**
  * @brief Returns true when a shader filter is selected in the options,
  * regardless of whether the scaler initialized successfully. Callers use
  * this to keep the backbuffer setup (upscale-style) consistent.
  */
 bool ScalerWanted();
+
+/**
+ * @brief Returns true when DEVILUTIONX_GPU_BACKEND selects the experimental
+ * "slangvk" backend (the runtime preset chain then runs on a raw Vulkan
+ * swapchain through the vendored libslang-vk instead of the SDL_GPU runner).
+ * Callers must create the game window with SDL_WINDOW_VULKAN when this
+ * returns true; every other backend value keeps the SDL_GPU path.
+ */
+bool WantsVulkanWindow();
 
 /**
  * @brief Returns true when the GPU scaler owns presentation for the main
@@ -69,38 +87,6 @@ bool Reinit(SDL_Window *window);
 void Shutdown();
 
 /**
- * @brief Hands the window back to the regular renderer WITHOUT destroying the
- * GPU device: releases the swapchain claim and every filter/preset resource,
- * marks the scaler inactive (IsActive() goes false immediately), and PARKS
- * the device for deferred destruction.
- *
- * Used by the presentation hand-back path (Shaders -> Off and fallbacks).
- * Destroying the device synchronously inside that switch — Vulkan teardown
- * immediately followed by window recreation and a D3D11 reclaim on Windows —
- * is the field-crashing call sequence (ROB-26): the GPU backend priority is
- * D3D12 > Vulkan on Windows, so this stack only ever started running once the
- * forced-Vulkan retry (ROB-18) made the scaler work there, which is why the
- * unload path appeared "newly broken" when it had in fact never worked.
- *
- * The parked device is destroyed by the next Shutdown() (quit / dx_cleanup),
- * or transparently reused by the next Reinit() (re-selecting a shader just
- * re-claims a fresh window on it and reloads filter resources).
- */
-void HandbackWindow(SDL_Window *window);
-
-/**
- * @brief Applies the current FrameRateControl setting (Vertical Sync vs
- * None) to the live GPU swapchain. ROB-08: the FrameRateControl option had
- * no change callback, so toggling vsync while the scaler was active
- * changed nothing until restart or filter change, while the SDL_Renderer
- * path re-applied it on every ReinitializeRenderer. Registered as the
- * option's change callback; a no-op unless the scaler is active (owns the
- * present). A failed SDL_SetGPUSwapchainParameters keeps the old present
- * mode and is logged, never fatal.
- */
-void ApplyFrameRateControl();
-
-/**
  * @brief Presents the given RGBA frame (game resolution) with the active
  * shader filter. Blocks for vsync when configured.
  */
@@ -115,7 +101,7 @@ void LogPhase(std::string_view line);
 
 /**
  * @brief Refreshes the persistent filter OSD label confirming which shader
- * filter the presentation path is actually running (e.g. "Shader:
+ * filter the presentation path is actually running (e.g. "Shader Filter:
  * HQ2x (Vulkan)"). Call after the renderer (re)initialization has settled.
  * The label is visible in the bottom-right corner of the game frame only
  * while a filter is selected; with the filter Off no label is shown. This

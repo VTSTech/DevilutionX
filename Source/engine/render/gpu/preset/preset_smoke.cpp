@@ -7,15 +7,10 @@
  * to SPIR-V with the in-process glslang frontend. No SDL_GPU device is
  * created, so this runs headless (CI / sandbox friendly).
  *
- * Exit code 0 when every preset compiles. Prints per-preset diagnostics.
+ * Exit code 0 when every preset compiles (or passes --allow-failures with
+ * at least one success). Prints per-preset diagnostics.
  *
- * --expect-fail inverts the contract for a MALFORMED corpus (TEST-01):
- * exit 0 only when every preset fails cleanly - a non-empty error string
- * per failure, never a crash - locking the ROB-01/ROB-02 failure contract
- * in mechanically.
- *
- * Usage: preset_smoke --root <dir> [--limit N] [--quiet] [--expect-fail]
- *                    [--dump <dir>] [--disasm]
+ * Usage: preset_smoke [--root <dir>] [--limit N] [--quiet]
  */
 
 #include <cstdint>
@@ -23,9 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <regex>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -45,7 +38,6 @@ int main(int argc, char **argv)
 	bool disasm = false;
 	int limit = -1;
 	bool quiet = false;
-	bool expectFail = false;
 	for (int i = 1; i < argc; ++i) {
 		const std::string arg = argv[i];
 		if (arg == "--root" && i + 1 < argc) {
@@ -54,8 +46,6 @@ int main(int argc, char **argv)
 			limit = std::atoi(argv[++i]);
 		} else if (arg == "--quiet") {
 			quiet = true;
-		} else if (arg == "--expect-fail") {
-			expectFail = true;
 		} else if (arg == "--dump" && i + 1 < argc) {
 			dumpDir = argv[++i];
 		} else if (arg == "--disasm") {
@@ -75,7 +65,6 @@ int main(int argc, char **argv)
 	int okCount = 0;
 	int failCount = 0;
 	int passTotal = 0;
-	int emptyErrorCount = 0;
 	std::string firstFailure;
 	std::string firstFailurePreset;
 
@@ -88,8 +77,6 @@ int main(int argc, char **argv)
 		std::string error;
 		if (!preset::ParsePreset(path, preset, error)) {
 			++failCount;
-			if (error.empty())
-				++emptyErrorCount;
 			if (firstFailure.empty()) {
 				firstFailure = "parse: " + error;
 				firstFailurePreset = entry.displayName;
@@ -99,36 +86,10 @@ int main(int argc, char **argv)
 			continue;
 		}
 
-		// TEST-06: the runner also binds pass outputs by their #pragma name
-		// (the step-1 pre-scan in Runner::Load), so a pack whose later pass
-		// samples an earlier pass by name - no alias, a pattern the runner's
-		// own comments cite - translated in-game but failed here with
-		// "unknown texture reference". Mirror the runner's pre-scan so the
-		// smoke verdict matches the in-game translation for that idiom.
-		std::unordered_map<int, std::string> pragmaNames;
-		for (size_t i = 0; i < preset.passes.size(); ++i) {
-			const std::string pragmaPath = preset::ResolvePresetFilePath(preset.dir, preset.passes[i].shaderPath);
-			std::ifstream stream(pragmaPath, std::ios::binary);
-			if (!stream)
-				continue; // The pass loop reports the open failure with context.
-			std::ostringstream ss;
-			ss << stream.rdbuf();
-			static const std::regex nameRe(R"(^\s*#pragma\s+name\s+(\w+)\s*$)");
-			std::istringstream lines(ss.str());
-			std::string line;
-			while (std::getline(lines, line)) {
-				std::smatch match;
-				if (std::regex_match(line, match, nameRe)) {
-					pragmaNames[static_cast<int>(i)] = match[1].str();
-					break;
-				}
-			}
-		}
-
 		bool presetOk = true;
 		std::string presetError;
 		for (size_t p = 0; p < preset.passes.size(); ++p) {
-			const std::string slangPath = preset::ResolvePresetFilePath(preset.dir, preset.passes[p].shaderPath);
+			const std::string slangPath = ResolvePresetFilePath(preset.dir, preset.passes[p].shaderPath);
 			// Build the same known-name set the runner uses: lookup texture
 			// names declared by the preset plus every pass alias.
 			std::unordered_set<std::string> known;
@@ -146,8 +107,6 @@ int main(int argc, char **argv)
 				insertBoth(tex.name);
 			for (const preset::PassDef &pass : preset.passes)
 				insertBoth(pass.alias);
-			for (const auto &[_, pragmaName] : pragmaNames)
-				insertBoth(pragmaName);
 			preset::SlangTranslation translation;
 			std::vector<preset::ParamInfo> presetParams;
 			for (const auto &override_ : preset.parameters) {
@@ -222,8 +181,6 @@ int main(int argc, char **argv)
 				std::printf("ok   %s (%zu passes)\n", entry.displayName.c_str(), preset.passes.size());
 		} else {
 			++failCount;
-			if (presetError.empty())
-				++emptyErrorCount;
 			if (firstFailure.empty()) {
 				firstFailure = presetError;
 				firstFailurePreset = entry.displayName;
@@ -236,14 +193,5 @@ int main(int argc, char **argv)
 	std::printf("\nresult: %d ok, %d failed, %d passes compiled\n", okCount, failCount, passTotal);
 	if (!firstFailure.empty())
 		std::printf("first failure (%s): %s\n", firstFailurePreset.c_str(), firstFailure.c_str());
-	if (expectFail) {
-		// TEST-01 malformed corpus: every scanned preset must fail
-		// cleanly with a non-empty error string. Failure-by-crash or a
-		// failure without an explanation both fail this run.
-		const bool allFailedCleanly = okCount == 0 && failCount == runLimit && emptyErrorCount == 0;
-		std::printf("expect-fail: %s (%d of %d failed with a non-empty error string)\n",
-		    allFailedCleanly ? "met" : "NOT met", failCount - emptyErrorCount, runLimit);
-		return allFailedCleanly ? 0 : 1;
-	}
 	return failCount == 0 ? 0 : 1;
 }

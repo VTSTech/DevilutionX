@@ -123,11 +123,6 @@ protected:
 
 	void TearDown() override
 	{
-		if (missingAssets_) {
-			// GTEST_SKIP in SetUp() still runs TearDown(), but the engine
-			// state this cleanup touches was never initialised.
-			return;
-		}
 		CloseAllPanels();
 		ActiveStore = TalkID::None;
 		FreeCursor();
@@ -244,10 +239,6 @@ protected:
 		MyPlayer->_pNumInv = idx + 1;
 		return idx;
 	}
-
-protected:
-	/** @brief True when MPQ fixtures were absent and SetUp() skipped. */
-	static bool MissingAssets() { return missingAssets_; }
 
 private:
 	static bool missingAssets_;

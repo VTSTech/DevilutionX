@@ -29,7 +29,6 @@ set(tests
   math_test
   missiles_test
   multi_logging_test
-  options_test
   pack_test
   player_test
   quests_test
@@ -103,14 +102,6 @@ endforeach()
 
 foreach(test_target ${standalone_tests})
   target_link_libraries(${test_target} PRIVATE GTest::gtest_main)
-  # These standalone tests include <gmock/gmock.h> but only linked gtest_main,
-  # which carries no gmock include dirs - they only ever built where system
-  # gtest headers sat on the default include path. Link GTest::gmock when the
-  # dependency tree provides it (vendored googletest always does; system
-  # FindGTest defines it when libgmock was found) so the suite builds anywhere.
-  if(TARGET GTest::gmock)
-    target_link_libraries(${test_target} PRIVATE GTest::gmock)
-  endif()
   target_include_directories(${test_target} PRIVATE "${PROJECT_SOURCE_DIR}/Source")
 endforeach()
 
@@ -174,21 +165,6 @@ target_link_dependencies(format_int_test PRIVATE libdevilutionx_format_int langu
 target_link_dependencies(ini_test PRIVATE libdevilutionx_ini app_fatal_for_testing)
 target_link_dependencies(mod_identity_test PRIVATE libdevilutionx_mod_identity app_fatal_for_testing)
 target_include_directories(mod_identity_test PRIVATE "${PROJECT_SOURCE_DIR}/3rdParty/PicoSHA2")
-# TEST-03: the fork's shader-filter options layer (stale-value self-heal,
-# custom-index mapping, ini round-trip) and the ROB-09 corrupt-ini recovery,
-# headless. The options machinery links standalone via libdevilutionx_options;
-# SDL is needed only for SDL_SetBasePath/SDL_Init (no GPU, no window).
-target_link_dependencies(options_test
-  PRIVATE
-  DevilutionX::SDL
-  libdevilutionx_options
-  libdevilutionx_paths
-  libdevilutionx_assets
-  tl
-  unordered_dense::unordered_dense
-  app_fatal_for_testing
-  language_for_testing
-)
 target_link_dependencies(light_render_benchmark PRIVATE libdevilutionx_light_render DevilutionX::SDL libdevilutionx_surface libdevilutionx_paths app_fatal_for_testing)
 target_link_dependencies(palette_blending_test PRIVATE libdevilutionx_palette_blending DevilutionX::SDL libdevilutionx_strings GTest::gmock app_fatal_for_testing)
 target_link_dependencies(palette_blending_benchmark
@@ -267,83 +243,3 @@ target_link_dependencies(sheen_bidi_test PRIVATE libdevilutionx_sheen_bidi)
 target_link_dependencies(utf8_test PRIVATE libdevilutionx_utf8)
 
 target_include_directories(writehero_test PRIVATE 3rdParty/PicoSHA2)
-
-# Headless hostile-input regression tests for the preset parser / slang
-# translator (ROB-01 + ROB-02). Compiles only the four parser/translator TUs
-# plus the test — deliberately NOT libdevilutionx, so the binary has no SDL
-# dependency (the test stubs SDL_GetBasePath) and runs on any headless CI box.
-if(USE_GPU_SCALER)
-  add_executable(preset_failure_modes_test
-    test/preset_failure_modes_test.cpp
-    Source/engine/render/gpu/preset/preset_parser.cpp
-    Source/engine/render/gpu/preset/slang_translate.cpp
-    Source/utils/str_cat.cpp
-    Source/utils/parse_int.cpp
-  )
-  set_target_properties(preset_failure_modes_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-  target_compile_definitions(preset_failure_modes_test PRIVATE USE_GPU_SCALER)
-  if(USE_SDL3)
-    target_compile_definitions(preset_failure_modes_test PRIVATE USE_SDL3)
-  endif()
-  # Mirror the SDL include dirs of the real build (vendored or system) so the
-  # SDL headers resolve identically, without linking SDL itself.
-  target_include_directories(preset_failure_modes_test SYSTEM PRIVATE
-    "$<TARGET_PROPERTY:DevilutionX::SDL,INTERFACE_INCLUDE_DIRECTORIES>")
-  target_include_directories(preset_failure_modes_test PRIVATE
-    "${PROJECT_SOURCE_DIR}/Source")
-  add_test(NAME preset_failure_modes COMMAND preset_failure_modes_test)
-
-  # TEST-01: register the full-pipeline preset_smoke harness against the
-  # committed micro-corpus (test/fixtures/preset_smoke). The corpus is
-  # copied into <build>/shaders/.preset-smoke because the SEC-01 sandbox
-  # (IsPathInsideShaderRoot) only resolves shader references inside the
-  # shader root (<SDL_GetBasePath()>/shaders); the dot prefix keeps the
-  # corpus out of the in-game preset browser (ListPresetDir hides it).
-  if(TARGET preset_smoke)
-    add_custom_target(preset_smoke_corpus
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${PROJECT_SOURCE_DIR}/test/fixtures/preset_smoke"
-        "${CMAKE_BINARY_DIR}/shaders/.preset-smoke"
-      VERBATIM)
-    add_dependencies(preset_smoke preset_smoke_corpus)
-    add_test(NAME preset_smoke_corpus
-      COMMAND preset_smoke --root "${CMAKE_BINARY_DIR}/shaders/.preset-smoke/good" --quiet)
-    add_test(NAME preset_smoke_malformed
-      COMMAND preset_smoke --root "${CMAKE_BINARY_DIR}/shaders/.preset-smoke/malformed" --expect-fail)
-  endif()
-
-  # Headless GPU-resource lifecycle harness for the preset runner: load,
-  # run frames on a live device, unload, reload ("Shaders -> Off" CTD
-  # regression harness; requires a Vulkan device - a software ICD such as
-  # lavapipe satisfies it on headless CI boxes). Skips cleanly when no
-  # Vulkan device is available.
-  add_executable(preset_unload_test test/preset_unload_test.cpp)
-  set_target_properties(preset_unload_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-  target_compile_definitions(preset_unload_test PRIVATE USE_GPU_SCALER)
-  if(USE_SDL3)
-    target_compile_definitions(preset_unload_test PRIVATE USE_SDL3)
-  endif()
-  target_link_dependencies(preset_unload_test PRIVATE libdevilutionx)
-  add_custom_target(preset_unload_corpus
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${PROJECT_SOURCE_DIR}/test/fixtures/preset_smoke/good"
-      "${CMAKE_BINARY_DIR}/shaders/unload-corpus"
-    VERBATIM)
-  add_dependencies(preset_unload_test preset_unload_corpus)
-  add_test(NAME preset_unload COMMAND preset_unload_test --root "${CMAKE_BINARY_DIR}/shaders/unload-corpus")
-endif()
-
-# The fork's settings browser (options.cpp, compiled with USE_GPU_SCALER)
-# calls the preset parser/translator (ScanPresets / ListPresetDir /
-# ShaderRootDir). The gtest suite resolves those via test_main ->
-# libdevilutionx_so, but these standalone tests / benchmarks link
-# libdevilutionx_options without the full engine - give them the two TUs
-# directly so the suite links under BUILD_TESTING=ON again.
-foreach(_standalone_with_options data_file_test text_render_integration_test clx_render_benchmark dun_render_benchmark options_test)
-  if(TARGET ${_standalone_with_options})
-    target_sources(${_standalone_with_options} PRIVATE
-      Source/engine/render/gpu/preset/preset_parser.cpp
-      Source/engine/render/gpu/preset/slang_translate.cpp
-    )
-  endif()
-endforeach()

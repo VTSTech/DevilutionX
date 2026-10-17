@@ -84,7 +84,6 @@ struct SlangTranslation {
 	int mergedSize = 0;
 	unsigned mergedHash = 0;
 	std::string error;
-	std::vector<std::string> warnings; // Non-fatal notes: deviations tolerated at translate time.
 
 	bool ok() const { return error.empty() && (vertex.present || fragment.present); }
 };

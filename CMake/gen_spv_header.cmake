@@ -7,6 +7,13 @@
 
 set(SHADER_PAIRS
   "fullscreen.vert:kVertex"
+  "hqx_index.frag:kHqxIndex"
+  "hqx_blend.frag:kHqxBlend"
+  "scalefx_pass0.frag:kSfxPass0"
+  "scalefx_pass1.frag:kSfxPass1"
+  "scalefx_pass2.frag:kSfxPass2"
+  "scalefx_pass3.frag:kSfxPass3"
+  "scalefx_pass4.frag:kSfxPass4"
   "blit.frag:kBlit"
 )
 

@@ -42,8 +42,8 @@ public:
 	 * @brief Parses, translates, compiles and uploads the preset.
 	 *
 	 * @param device SDL_GPU device (must stay alive until Unload).
-	 * @param backend "vulkan" compiles SPIR-V; any other backend fails
-	 *     with an explanatory error.
+	 * @param backend "vulkan" compiles SPIR-V; "direct3d12" transpiles the
+	 *     SPIR-V to HLSL and compiles DXBC with the guarded d3dcompiler.
 	 * @param preset The parsed preset (preset_parser).
 	 * @param error Filled with a human-readable reason on failure.
 	 */
@@ -98,16 +98,11 @@ private:
 	int historyDepth_ = 0;                  // Max referenced OriginalHistory# index.
 	std::vector<SDL_GPUTexture *> history_; // Ring of chain-input copies.
 	int historySlot_ = 0;
-	bool historySeeded_ = false; // All ring slots hold valid content.
-
-	SDL_GPUTexture *mipSourceTex_ = nullptr; // F1: mip-capable copy of the chain input for pass-0 mipmap_input
 
 	int targetGameWidth_ = 0;
 	int targetGameHeight_ = 0;
 	Uint32 targetSwapchainWidth_ = 0;
 	Uint32 targetSwapchainHeight_ = 0;
-	Uint32 targetViewportWidth_ = 0; // F6: aspect-corrected game rect inside the swapchain
-	Uint32 targetViewportHeight_ = 0;
 
 	Uint64 frameCounter_ = 0;
 	Uint64 frameDeltaUs_ = 0;

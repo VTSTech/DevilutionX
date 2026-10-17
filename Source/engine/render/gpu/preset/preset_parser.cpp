@@ -7,7 +7,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -139,17 +138,6 @@ std::string StripQuotes(const std::string &s)
 	return s;
 }
 
-/** @brief Upper bound on the shader chain length (ROB-02). The slangp format
- *         itself sets no pass-count limit ("no limit on #", slang-shaders
- *         README), and real combined presets exceed 32 — the field-failing
- *         crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale stack carries
- *         pass index 32 (ROB-32, field round 5). The bound still exists so a
- *         hostile in-int-range key (`shader2000000000 = x`) fails the preset
- *         with a named error instead of driving the lazy `passes` resize into
- *         a multi-gigabyte allocation; 128 keeps that allocation bounded with
- *         ~4x headroom over the largest chains seen in the field. */
-constexpr int kMaxPresetPasses = 128;
-
 bool ParseBool(const std::string &value, bool defaultValue)
 {
 	const std::string v = ToLower(Trim(value));
@@ -237,12 +225,8 @@ void ApplyPassKey(PassDef &pass, const std::string &key, const std::string &valu
 	} else if (key == "frame_count_mod") {
 		pass.frameCountMod = static_cast<uint32_t>(std::max(0, ParseInt(value, 0)));
 	} else if (key == "scale") {
-		// RetroArch parses preset keys order-independently: a declared
-		// scale_type always wins over the bare-scale default. Fill in the
-		// scale VALUE only and keep the type this pass already has
-		// (ScaleType::Source unless scale_type(_x/_y) preceded).
-		pass.scaleX.scale = ParseFloat(value, 1.0F);
-		pass.scaleY.scale = pass.scaleX.scale;
+		pass.scaleX = { ScaleType::Source, ParseFloat(value, 1.0F) };
+		pass.scaleY = pass.scaleX;
 	} else if (key == "scale_x") {
 		pass.scaleX.scale = ParseFloat(value, 1.0F);
 	} else if (key == "scale_y") {
@@ -303,11 +287,6 @@ bool DirContainsPreset(const std::filesystem::path &dir, int maxDepth)
 bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, int depth, bool isReferenceTarget)
 {
 	constexpr int kMaxReferenceDepth = 8;
-	// ROB-20: preset files above this fail with a named error instead of an
-	// uncaught allocation death. 8 MiB is orders of magnitude above the
-	// largest preset in any known pack (presets are key/value text, not
-	// payloads).
-	constexpr std::streamoff kMaxPresetFileBytes = 8 * 1024 * 1024;
 	if (depth > kMaxReferenceDepth) {
 		error = StrCat("preset #reference depth limit exceeded at ", path);
 		return false;
@@ -315,23 +294,6 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
 		error = StrCat("cannot open preset file: ", path);
-		return false;
-	}
-	// ROB-20: cap the preset read before slurping. A multi-gigabyte planted
-	// file used to be pulled in whole (ostringstream << rdbuf, plus a second
-	// full copy via str() and per-line copies below), where the allocation
-	// throws std::bad_alloc with no handler anywhere on the load path -
-	// process death instead of the documented error contract.
-	stream.seekg(0, std::ios::end);
-	const std::streamoff fileBytes = stream.tellg();
-	stream.seekg(0, std::ios::beg);
-	if (fileBytes < 0) {
-		error = StrCat("cannot determine preset file size: ", path);
-		return false;
-	}
-	if (fileBytes > kMaxPresetFileBytes) {
-		error = StrCat("preset file too large: ", path, " (", static_cast<long long>(fileBytes),
-		    " bytes; limit is 8 MiB)");
 		return false;
 	}
 	std::ostringstream ss;
@@ -377,10 +339,9 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	}
 	// A preset may #reference several parents (a shader-chain preset plus
 	// one or more .params overlays, as the Mega Bezel collection does).
-	// Parents merge in order: the LAST chain providing passes wins (each
-	// parent with a non-empty chain overwrites the previous one), textures
-	// and parameter overrides accumulate, and this file's own keys are
-	// still applied on top afterwards.
+	// Parents merge in order: the first chain providing passes wins,
+	// textures and parameter overrides accumulate, and this file's own keys
+	// are still applied on top afterwards.
 	for (const std::string &referencePath : referencePaths) {
 		const std::string parentPath = ResolvePresetFilePath(preset.dir, referencePath);
 		Preset parentPreset;
@@ -416,6 +377,7 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	}
 
 	// Pass 2: apply keys.
+	int shaderCount = static_cast<int>(preset.passes.size());
 	int feedbackPass = preset.feedbackPass;
 	int histories = preset.histories;
 	std::string texturesList;
@@ -455,12 +417,7 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 
 	for (const auto &[key, value] : keyValuePairs) {
 		if (key == "shaders") {
-			// Consumed for format compatibility, but the pass chain is
-			// built lazily from the shaderN keys actually present. The
-			// declared count deliberately never sizes the vector: a
-			// 30-byte preset with `shaders = 2147483647` previously
-			// resized `passes` toward ~250 GB and aborted the process
-			// (ROB-02).
+			shaderCount = std::max(shaderCount, std::max(0, ParseInt(value, 0)));
 			continue;
 		}
 		if (key == "feedback_pass") {
@@ -481,29 +438,9 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 			const size_t suffixLen = std::strlen(suffix);
 			if (key.size() > suffixLen && key.compare(key.size() - suffixLen, suffixLen, suffix) == 0) {
 				const std::string baseLower = key.substr(0, key.size() - suffixLen);
-				// Field round 2: only attach modifiers to textures that actually
-				// exist - declared in this file's `textures` list, inherited from
-				// a #reference parent, or (for `_path`) declared by the key itself
-				// without a list. crt-geom-deluxe-ntsc-adaptive carries
-				// "delta_filter_linear = true" for a texture named "delta";
-				// deriving a pathless texture "delta_filter" here hard-failed the
-				// whole preset, while RetroArch ignores undeclared modifier keys.
-				TextureDef *tex = nullptr;
 				const auto found = textureNames.find(baseLower);
-				if (found != textureNames.end()) {
-					tex = textureByName(found->second);
-				} else {
-					for (TextureDef &existing : preset.textures) {
-						if (ToLower(existing.name) == baseLower) {
-							tex = &existing;
-							break;
-						}
-					}
-					if (tex == nullptr && std::strcmp(suffix, "_path") == 0)
-						tex = textureByName(baseLower);
-				}
-				if (tex == nullptr)
-					break; // Undeclared modifier key: ignored (RetroArch-conformant).
+				const std::string texName = found != textureNames.end() ? found->second : baseLower;
+				TextureDef *tex = textureByName(texName);
 				if (suffix == std::string("_linear")) {
 					tex->filter = ParseFilterMode(value);
 				} else if (suffix == std::string("_wrap_mode")) {
@@ -568,38 +505,6 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 				preset.parameters.push_back({ key, ParseFloat(value, 0.0F) });
 			continue;
 		}
-		std::string baseKey;
-		const int passIndex = SplitPassKey(key, baseKey);
-		if (passIndex >= 0) {
-			if (passIndex >= kMaxPresetPasses) {
-				// ROB-02: an in-int-range but absurd index
-				// (`shader2000000000 = x`) must not drive the lazy
-				// `passes` resize into a multi-gigabyte allocation.
-				error = StrCat("preset pass index ", passIndex,
-				    " exceeds the limit of ", kMaxPresetPasses, ": ", path);
-				return false;
-			}
-			if (static_cast<int>(preset.passes.size()) <= passIndex)
-				preset.passes.resize(static_cast<size_t>(passIndex) + 1);
-			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value);
-			continue;
-		}
-		// Implicit texture declaration (RetroArch-compat): a path-valued key
-		// with no other meaning declares a texture usable by the shaders.
-		if (passIndex < 0 && LooksLikeImagePath(value)) {
-			TextureDef *tex = textureByName(key);
-			if (tex->path.empty())
-				tex->path = value;
-			continue;
-		}
-		// Field round 3: the numeric-override tolerance for list-less overlay
-		// files (Mega Bezel .params) runs AFTER the pass-key and implicit-texture
-		// handling — it used to sit in front of SplitPassKey, so any numeric
-		// pass key (scale_x0 = 2.0, scale_y0 = ...) was swallowed as a parameter
-		// override and the pass kept the default scale (1196 of 3454 corpus
-		// presets carry scale_x/scale_y without a parameters list). The runner
-		// applies only overrides whose name matches a #pragma parameter, so
-		// genuinely unknown numeric keys stay inert.
 		if (parametersList.empty()) {
 			// Overlay files without a `parameters` list (e.g. Mega Bezel
 			// .params) still carry numeric values; accept any numeric key as
@@ -623,13 +528,27 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 			}
 		}
 
+		std::string baseKey;
+		const int passIndex = SplitPassKey(key, baseKey);
+		if (passIndex >= 0) {
+			if (static_cast<int>(preset.passes.size()) <= passIndex)
+				preset.passes.resize(static_cast<size_t>(passIndex) + 1);
+			ApplyPassKey(preset.passes[static_cast<size_t>(passIndex)], baseKey, value);
+			continue;
+		}
+		// Implicit texture declaration (RetroArch-compat): a path-valued key
+		// with no other meaning declares a texture usable by the shaders.
+		if (passIndex < 0 && LooksLikeImagePath(value)) {
+			TextureDef *tex = textureByName(key);
+			if (tex->path.empty())
+				tex->path = value;
+			continue;
+		}
 		// Unknown key: ignore silently (the preset format has harmless extras).
 	}
 
-	// ROB-02: no padding to the declared `shaders` count. Padded entries
-	// carry no shader path and the erase below drops them immediately, so
-	// the only thing the old resize did was turn a hostile declared count
-	// into a huge allocation. The chain is exactly the shaderN keys seen.
+	if (static_cast<int>(preset.passes.size()) < shaderCount)
+		preset.passes.resize(static_cast<size_t>(shaderCount));
 	preset.passes.erase(std::remove_if(preset.passes.begin(), preset.passes.end(),
 	                        [](const PassDef &p) { return p.shaderPath.empty(); }),
 	    preset.passes.end());
@@ -653,13 +572,7 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 	}
 	for (TextureDef &tex : preset.textures) {
 		if (tex.name.empty() || tex.path.empty()) {
-			// MAINT-19: name the actual problem - an empty-name texture (a bare
-			// "= x.png" line) previously logged "has no path", sending field
-			// debugging the wrong way.
-			if (tex.name.empty())
-				error = StrCat("preset texture has an empty name (", path, ")");
-			else
-				error = StrCat("preset texture '", tex.name, "' has no path (", path, ")");
+			error = StrCat("preset texture has no path: ", tex.name.empty() ? "(unnamed)" : tex.name, " (", path, ")");
 			return false;
 		}
 	}
@@ -670,18 +583,7 @@ bool ParsePresetImpl(const std::string &path, Preset &out, std::string &error, i
 
 bool ParsePreset(const std::string &path, Preset &out, std::string &error)
 {
-	// ROB-20: the load path's only handler - any exception escaping the
-	// parse (allocation failure, data-driven throw) converts into the
-	// documented failure contract instead of terminating the process.
-	try {
-		return ParsePresetImpl(path, out, error, 0, /*isReferenceTarget=*/false);
-	} catch (const std::exception &e) {
-		error = StrCat("preset load failed for ", path, ": ", e.what());
-		return false;
-	} catch (...) {
-		error = StrCat("preset load failed for ", path, ": unknown exception");
-		return false;
-	}
+	return ParsePresetImpl(path, out, error, 0, /*isReferenceTarget=*/false);
 }
 
 std::vector<PresetEntry> ScanPresets(const std::string &rootDir)
@@ -795,31 +697,6 @@ std::string ShaderCacheDir()
 	return ShaderRootDir() + "/cache";
 }
 
-bool IsPathInsideShaderRoot(const std::filesystem::path &candidate)
-{
-	std::error_code ec;
-	const std::filesystem::path root = std::filesystem::weakly_canonical(std::filesystem::path(ShaderRootDir()), ec);
-	if (ec)
-		return false;
-	// weakly_canonical resolves symlinks (a root-internal link pointing
-	// outside is correctly rejected) and tolerates nonexistent tails.
-	const std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
-	if (ec)
-		return false;
-	const std::string rootStr = root.string();
-	const std::string resStr = resolved.string();
-	if (resStr.size() < rootStr.size())
-		return false;
-	const bool prefixMatches = std::equal(rootStr.begin(), rootStr.end(), resStr.begin(), [](char a, char b) {
-		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
-	});
-	if (!prefixMatches)
-		return false;
-	// ".../shaders-ng/x" must not pass a ".../shaders" prefix check: the
-	// first differing position must be a separator (or the root itself).
-	return resStr.size() == rootStr.size() || resStr[rootStr.size()] == '/' || resStr[rootStr.size()] == '\\';
-}
-
 std::string ResolvePresetPath(const std::string &relativePath)
 {
 	if (relativePath.empty())
@@ -838,15 +715,9 @@ std::string ResolvePresetFilePath(const std::string &presetDir, const std::strin
 	if (IsAbsolutePath(referencedPath)) {
 		std::error_code ec;
 		const std::filesystem::path absolute(referencedPath);
-		std::filesystem::path resolved = absolute;
 		if (std::filesystem::exists(absolute, ec) && !ec)
-			resolved = absolute.lexically_normal();
-		// SEC-01: untrusted preset packs may only reach files inside the
-		// shaders root; absolute references pointing elsewhere are refused
-		// (the caller's "not found" path reports the failure).
-		if (!IsPathInsideShaderRoot(resolved))
-			return {};
-		return NormalizeSeparators(resolved.string());
+			return NormalizeSeparators(absolute.lexically_normal().string());
+		return NormalizeSeparators(referencedPath);
 	}
 
 	std::string normalizedRef = NormalizeSeparators(referencedPath);
@@ -879,19 +750,12 @@ std::string ResolvePresetFilePath(const std::string &presetDir, const std::strin
 	for (const std::filesystem::path &base : bases) {
 		ec.clear();
 		const std::filesystem::path candidate = base / normalizedRef;
-		if (std::filesystem::exists(candidate, ec) && !ec) {
-			// SEC-01: the ancestor walk can reach above the shaders root
-			// (../../-style). A hit outside is refused, not read.
-			if (!IsPathInsideShaderRoot(candidate))
-				return {};
+		if (std::filesystem::exists(candidate, ec) && !ec)
 			return NormalizeSeparators(candidate.lexically_normal().string());
-		}
 	}
 
 	// Nothing found: keep the conventional preset-relative join so the
-	// "cannot open shader file" error shows the expected path. This path is
-	// guaranteed nonexistent (every base above was tried and missed), so it
-	// is never read and needs no sandbox check.
+	// "cannot open shader file" error shows the expected path.
 	const std::string baseDir = dirStr.empty() ? std::string() : dirStr + "/";
 	return NormalizeSeparators(std::filesystem::path(baseDir + normalizedRef).lexically_normal().string());
 }
