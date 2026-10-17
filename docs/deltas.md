@@ -1980,3 +1980,66 @@ No ledger movement. This round re-verified the standing ledger rather than closi
   entries received CLOSED/DISPOSITIONED banners (both round 11); the Priority Matrix
   backlog row dropped closed MAINT-15 and added TEST-08.
 - Counts unchanged: **74 findings | 43 closed | 31 open (0 High / 0 Medium / 31 Low)**.
+
+---
+
+## Round 17 — Field round 5: ROB-32, preset pass cap 32 → 128 (2026-10-17)
+
+Ledger movement: +1 finding — ROB-32 (Low, Robustness), added and closed in the same round as a field regression, following the round-15 ROB-31 precedent.
+
+**Original (field log 2026-10-17, Windows/Vulkan, round-4 build).** The first
+field failure of a *legitimate* preset. Switching
+`crt-beam-simulator-fsr-sony-crt-megatron-hdr` →
+`crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale` failed at parse:
+
+> ```
+> preset parse failed: preset pass index 32 exceeds the limit of 32: F:/GAMES/Diablo/shaders/presets/crt-beam-simulator/crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale.slangp
+> custom preset failed to load; Shader Filter is off for this session
+> ```
+
+The failure contract then executed exactly as designed: the stock renderer
+resumed ("GPU scaler unavailable, using the regular renderer instead"), the main
+window was recreated for the presentation path switch, the OSD carried the named
+error, no crash. Two adjacent behaviors were field-validated in the same session:
+per-shader cache hits across preset switches (`cache hit` on the beam-simulator
+and both FSR slang files), and the 6-pass HDR preset's full load/swap path (pass
+targets resolved 1920×1080 across the chain).
+
+**Root cause.** ROB-02's `kMaxPresetPasses = 32` bounds the lazy `passes` resize
+against hostile in-int-range pass keys (`shader2000000000 = x`), and its comment
+assumed real chains top out far below 32 ("RetroArch chains top out far lower").
+The slangp format sets no pass-count limit ("no limit on #", slang-shaders
+README), and stacked community chains — this one being NNEDI3 ×4 + FSR +
+CRT-Royale + HDR — now exceed 32 passes. The cap is a DoS bound, not a format
+requirement, and because the resize is lazy (grows only to the highest index
+actually seen), the bound's *value* has no runtime cost; it only has to remain a
+bound.
+
+**Resolution.** `kMaxPresetPasses` 32 → 128 (`Source/engine/render/gpu/preset/
+preset_parser.cpp`, ~4× headroom over the largest field chain); the comment was
+rewritten to state the format reality and the retained guard rationale, and the
+guard logic is untouched — an index at or above the cap fails the preset with a
+named error before any resize. Test coverage moved with the value:
+
+- `test/preset_failure_modes_test.cpp` (`preset_failure_modes` ctest): boundary
+  assertions 31/32 → 127/128 (`shader127` loads and compacts to the 1 keyed pass;
+  `shader128` fails); the hostile-index case now asserts `exceeds the limit of
+  128`.
+- New `tools/audit/test_field_round5.cpp` (round-4-style standalone, links the
+  real parser only): parses the exact field-failing 33-pass shape, checks pass-32
+  key landing (shader path, alias, scale_x, filter parity across the chain),
+  sparse-chain compaction at index 127, over-cap (`shader128`) and hostile
+  (`shader2147483647`) named failures, and Preset-untouched-on-failure.
+
+**Verification.** Both suites compiled against the real parser and translator,
+headless (g++ 14.2, `-ISource -DUSE_SDL3=1 -DUSE_GPU_SCALER=1`, SDL3 declaration
+stubs; no SDL device, no glslang — same contract as the round-4 test build line)
+and run green: `test_field_round5` **14 checks / 0 failures**;
+`preset_failure_modes` **41 checks / 0 failures** — hostile declared count,
+hostile index, 127/128 boundary, declared-count-ignore, valid-preset parity,
+translator ROB-01 edges, SEC-01 sandbox refusals, ROB-20 size caps, and the
+SEC-04 log sanitizer all still passing. No clang-format/CI pass was available in
+this environment; the diff is one constant + comment plus the two test files in
+house style.
+
+Counts: **75 findings | 44 closed | 31 open (0 High / 0 Medium / 31 Low)**.

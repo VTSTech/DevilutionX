@@ -86,7 +86,7 @@ void TestHostilePassIndex()
 	std::string error;
 	const bool ok = preset::ParsePreset(kPresetDir + "/hostile_index.slangp", out, error);
 	Check(!ok, "preset fails to load");
-	Check(error.find("exceeds the limit of 32") != std::string::npos,
+	Check(error.find("exceeds the limit of 128") != std::string::npos,
 	    "error names the limit: " + error);
 }
 
@@ -108,18 +108,18 @@ void TestDeclaredCountIgnored()
 
 void TestPassIndexBoundary()
 {
-	std::printf("[ROB-02] pass index boundary (31 ok, 32 rejected)\n");
-	WriteFile(kPresetDir + "/edge31.slangp", "shader31 = shaders/simple.slang\n");
+	std::printf("[ROB-02] pass index boundary (127 ok, 128 rejected)\n");
+	WriteFile(kPresetDir + "/edge31.slangp", "shader127 = shaders/simple.slang\n");
 	preset::Preset out;
 	std::string error;
 	Check(preset::ParsePreset(kPresetDir + "/edge31.slangp", out, error),
-	    "shader31 (last allowed slot) loads: " + error);
+	    "shader127 (last allowed slot) loads: " + error);
 	Check(out.passes.size() == 1 && out.passes[0].shaderPath == "shaders/simple.slang",
 	    "chain collapses to the 1 keyed pass");
 
-	WriteFile(kPresetDir + "/edge32.slangp", "shader32 = shaders/simple.slang\n");
+	WriteFile(kPresetDir + "/edge32.slangp", "shader128 = shaders/simple.slang\n");
 	Check(!preset::ParsePreset(kPresetDir + "/edge32.slangp", out, error),
-	    "shader32 (first over the limit) fails");
+	    "shader128 (first over the limit) fails");
 }
 
 void TestValidPresetUnchanged()

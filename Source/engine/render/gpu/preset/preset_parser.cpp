@@ -139,11 +139,16 @@ std::string StripQuotes(const std::string &s)
 	return s;
 }
 
-/** @brief Upper bound on the shader chain length (ROB-02). Generous beyond
- *         any real preset (RetroArch chains top out far lower); bounds the
- *         lazy `passes` vector growth so a hostile `shader2000000000 = x`
- *         key fails the preset with an error instead of allocating. */
-constexpr int kMaxPresetPasses = 32;
+/** @brief Upper bound on the shader chain length (ROB-02). The slangp format
+ *         itself sets no pass-count limit ("no limit on #", slang-shaders
+ *         README), and real combined presets exceed 32 — the field-failing
+ *         crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale stack carries
+ *         pass index 32 (ROB-32, field round 5). The bound still exists so a
+ *         hostile in-int-range key (`shader2000000000 = x`) fails the preset
+ *         with a named error instead of driving the lazy `passes` resize into
+ *         a multi-gigabyte allocation; 128 keeps that allocation bounded with
+ *         ~4x headroom over the largest chains seen in the field. */
+constexpr int kMaxPresetPasses = 128;
 
 bool ParseBool(const std::string &value, bool defaultValue)
 {

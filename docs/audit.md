@@ -3,9 +3,9 @@
 **DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
 
 **Repository:** https://github.com/VTSTech/DevilutionX
-**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-17 (round 16 — ledger refresh verification)
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-17 (round 17 — field round 5: ROB-32 opened + closed)
 **Audit commit:** `96af9b5fc8f5a4e4aef13e5276ebc604c3eaf299` (HEAD at refresh; one commit — a CI packaging `cp` fix — newer than the round-15 ledger commit `554239d3a`; squashed-history anchor `8341ef99` retained for provenance) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-74 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 43 closed → [deltas.md](deltas.md) | 31 open: **0 High / 0 Medium / 31 Low**
+75 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 44 closed → [deltas.md](deltas.md) | 31 open: **0 High / 0 Medium / 31 Low**
 
 ---
 
@@ -30,7 +30,7 @@
 
 This audit covers VTSTech's standalone mod of DevilutionX — a C++23 engine (~121,700 lines of `.cpp` across 620 source files in `Source/`, plus ~15,000 lines of fork-specific code under `Source/engine/render/gpu/`) that layers a Vulkan GPU shader pipeline over the stock SDL render path. Rounds 1–6 enumerated the finding set — the fork's entire delta and its integration points, the engine's game loop and options architecture, and the build/CI/packaging layer, down to individual SDL_GPU API invocations; round 7 re-walked the same surface with fresh eyes targeting state-machine ordering, unchecked SDL return values, resource lifetime across renderer hand-off, and translation-layer input handling. Rounds 7.5–14 then worked the backlog those sweeps produced, closing **42 of the 73 findings** — every closure regression-verified in-tree (the two field closures verified on hardware), each with its full Original/Resolution/Verification record in [deltas.md](deltas.md), the single record of closures and, since round 12, also the home of the round-by-round fix history.
 
-The ledger stands at **31 open findings: 0 High / 0 Medium / 31 Low** — no High finding has been open since the round-7.5 quick-fix batch closed the round-7 pair, and since the round-14 8C sweep **no Medium either**: the working queue that opened the round — ROB-23 (`FillBlockBytes` uniform-fill semantics), TEST-06 (smoke pragma-names), ROB-07 (runner RAII), FEAT-01 (preset reload), FEAT-03 (in-game error surfacing) — all closed in one patch. The open set is Low-only; two partially-fixed findings stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). Round 16 (2026-10-17) was a pure refresh verification against HEAD `96af9b5fc`: all 31 open findings' code anchors were re-checked in tree (31/31 confirmed open — no silent closures), the round-15 ROB-31 fix was re-verified present, the single post-ledger commit (a CI packaging `cp` filename alignment) was reviewed with no new findings, and drifted line citations across the detailed findings were refreshed to current positions.
+The ledger stands at **31 open findings: 0 High / 0 Medium / 31 Low** — no High finding has been open since the round-7.5 quick-fix batch closed the round-7 pair, and since the round-14 8C sweep **no Medium either**: the working queue that opened the round — ROB-23 (`FillBlockBytes` uniform-fill semantics), TEST-06 (smoke pragma-names), ROB-07 (runner RAII), FEAT-01 (preset reload), FEAT-03 (in-game error surfacing) — all closed in one patch. The open set is Low-only; two partially-fixed findings stay open with cross-notes in their entries below: MAINT-09 (translator aggregated unknown-UBO-member count remains) and MAINT-19 (bare `shaderpath` behavior decision with the maintainer). Round 16 (2026-10-17) was a pure refresh verification against HEAD `96af9b5fc`: all 31 open findings' code anchors were re-checked in tree (31/31 confirmed open — no silent closures), the round-15 ROB-31 fix was re-verified present, the single post-ledger commit (a CI packaging `cp` filename alignment) was reviewed with no new findings, and drifted line citations across the detailed findings were refreshed to current positions. Round 17 (2026-10-17, field round 5) added and closed ROB-32 in the same pass — the first field failure of a legitimate preset: a 33-pass NNEDI3+FSR+CRT-Royale+HDR stack tripped ROB-02's `kMaxPresetPasses = 32` DoS cap (`preset pass index 32 exceeds the limit of 32`), the session fallback held exactly as designed, and the cap moved to 128 with the hostile-key guarantee unchanged (`preset_failure_modes` boundary moved to 127/128 plus the new `tools/audit/test_field_round5.cpp`, 14 checks green).
 
 Work is sequenced by the upstream merge plan (`docs/merge-plan-draft-r2.md`), which gates every proposed PR on the findings that share its files and orders the remaining closure into three Phase-0 sweeps — **8A** library surface, **8B** presentation surface, **8C** runner surface. First contact (PR 4 + PR 1) is barred until 8A+8B complete — 9 of the 14 Medium open when r2 was measured (r2's own “10 of 14” over-counted ROB-20, which gates both PR 1 and PR 2's translator half). Rounds 8, 9, 11, and 13 have since closed all nine — ROB-18/19/22/20/21, MAINT-15, the FEAT-02 Metal disposition, and (round 13) ROB-08 and PERF-06 — so **the 8A+8B first-contact bar is complete**, and the round-14 8C sweep closed the runner surface together with the FEAT-01/FEAT-03 riders — **Phase 0 is done and the ledger is Medium-free**. Waived out of the PR series: MAINT-11/12/13/14 + TEST-05 (upstream issues, not PR riders), ARCH-02 (fork-only Phase-0 hygiene), ROB-13 (known-documented), FEAT-04 (deferred). Strategic frame recorded in handoff §14: whether or not any PR merges, the long-term goal is a standalone reusable shader-preset library — every closure in this ledger is a step toward that gate.
 
@@ -584,6 +584,47 @@ clang-format 18.1.8 clean on both files. Failure contract: a rejected present
 mode costs a log line, never a crash. CI: the gtest suite and the clang-format
 gate stay green.
 
+#### ROB-32: Preset pass cap (32) rejects real combined presets — field round 5
+
+**Original finding.** Loading the legitimate combined preset
+`crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale.slangp` (NNEDI3 ×4 + FSR +
+CRT-Royale + HDR stack, 33 passes) failed at parse (field report against the
+round-4 build, Windows/Vulkan, 2026-10-17): `preset pass index 32 exceeds the
+limit of 32`, followed by "custom preset failed to load; Shader Filter is off for
+this session" and the session fallback to the stock renderer. The
+ROB-01/ROB-02 failure contract held exactly as designed — the OSD named the
+error, the renderer swapped, no crash — but the cap value itself was the defect:
+the slangp format sets no pass-count limit ("no limit on #", slang-shaders
+README), and stacked community chains now exceed the 32 the ROB-02 comment
+assumed ("RetroArch chains top out far lower").
+
+**Resolution.** A DoS bound has no business sitting that close to legitimate
+input, and the lazy `passes` resize (grows only to the highest index actually
+seen) makes the cap value free at runtime: `kMaxPresetPasses` 32 → 128
+(`preset_parser.cpp`, ~4× headroom over the largest field chain). The comment was
+rewritten to state the format reality and the retained guard rationale; the
+guard logic is untouched — an index at or above the cap still fails the preset
+with a named error before any allocation. Test coverage moved with the value:
+the `preset_failure_modes` ctest boundary assertions went 31/32 → 127/128
+(`shader127` loads and compacts; `shader128` fails) with the hostile-index case
+now naming `limit of 128`; new standalone `tools/audit/test_field_round5.cpp`
+parses the exact field-failing 33-pass shape and checks pass-32 key landing
+(shader/alias/scale/filter), sparse-chain compaction, over-cap and hostile-key
+named failures, and Preset-untouched-on-failure.
+
+**Verification.** Both suites built against the real parser and translator,
+headless (g++ 14.2, `-DUSE_SDL3=1 -DUSE_GPU_SCALER=1`, SDL3 declaration stubs; no
+SDL device, no glslang — same contract as the round-4 test build line) and run
+green: `test_field_round5` 14 checks / 0 failures; `preset_failure_modes` 41
+checks / 0 failures — hostile declared count, hostile index, 127/128 boundary,
+declared-count-ignore, valid-preset parity, translator ROB-01 edges, SEC-01
+sandbox refusals, ROB-20 size caps, and the SEC-04 log sanitizer all still
+passing. No clang-format/CI pass available in this environment; the diff is one
+constant + comment plus the two test files in house style.
+
+**Impact:** Legit 33-pass mega-presets load; hostile keys keep the identical
+bounded-failure guarantee.
+
 
 ---
 
@@ -597,7 +638,7 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | **Short term** (planned work) | *(empty — the round-14 8C runner sweep closed the whole row: ROB-23, TEST-06, ROB-07 → FEAT-01, FEAT-03; see [deltas.md](deltas.md))* |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-28, ROB-29, ROB-30, MAINT-08 through MAINT-14, MAINT-17 through MAINT-19, PERF-01 through PERF-05, FEAT-04, ARCH-02, TEST-04, TEST-05, TEST-08 |
 
-Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) is dispositioned as of round 11 — the device layer is Vulkan-only, auto-selected Metal gets an honest message plus the ROB-18 Vulkan retry (MoltenVK stays viable) — so the backend policy is decided and the handoff table matches the code. The round-14 8C sweep closed the entire short-term row — ROB-23 (type- and size-aware uniform fill with the parameter lookup ahead of the `*Size` branch), TEST-06 (smoke ports the runner's `#pragma name` pre-scan), ROB-07 (RAII destructors as the single release point) — with FEAT-01 (reload-on-select when the file's mtime/size changed) and FEAT-03 (the OSD names the load failure) as riders; ROB-29 (glslang mutex) remains the prerequisite to honor before any async variant of the now-shipped reload. Field round 15 (2026-10-16) then opened and closed ROB-31, the post-8C field regression: the Vertical Sync toggle's change-callback registration was dead on arrival (the option's single callback slot was won by the stock handler), leaving an unthrottled IMMEDIATE swapchain behind the disabled CPU limiter — fixed with an explicit scaler/stock dispatcher plus present-mode support fallback. Round 16 (2026-10-17) was a refresh-only pass: no ledger movement — all 31 open anchors re-verified at `96af9b5fc`, the ROB-31 closure record re-verified in tree, the post-ledger CI packaging `cp` fix reviewed (no finding impact), and drifted line anchors refreshed throughout this document.
+Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) is dispositioned as of round 11 — the device layer is Vulkan-only, auto-selected Metal gets an honest message plus the ROB-18 Vulkan retry (MoltenVK stays viable) — so the backend policy is decided and the handoff table matches the code. The round-14 8C sweep closed the entire short-term row — ROB-23 (type- and size-aware uniform fill with the parameter lookup ahead of the `*Size` branch), TEST-06 (smoke ports the runner's `#pragma name` pre-scan), ROB-07 (RAII destructors as the single release point) — with FEAT-01 (reload-on-select when the file's mtime/size changed) and FEAT-03 (the OSD names the load failure) as riders; ROB-29 (glslang mutex) remains the prerequisite to honor before any async variant of the now-shipped reload. Field round 15 (2026-10-16) then opened and closed ROB-31, the post-8C field regression: the Vertical Sync toggle's change-callback registration was dead on arrival (the option's single callback slot was won by the stock handler), leaving an unthrottled IMMEDIATE swapchain behind the disabled CPU limiter — fixed with an explicit scaler/stock dispatcher plus present-mode support fallback. Round 16 (2026-10-17) was a refresh-only pass: no ledger movement — all 31 open anchors re-verified at `96af9b5fc`, the ROB-31 closure record re-verified in tree, the post-ledger CI packaging `cp` fix reviewed (no finding impact), and drifted line anchors refreshed throughout this document. Field round 5 (2026-10-17) then opened and closed ROB-32, the first field failure of a legitimate preset: the 33-pass `crt-beam-simulator-nnedi3-nns16-4x-luma-fsr-crtroyale` stack tripped ROB-02's `kMaxPresetPasses = 32` DoS cap at parse (`preset pass index 32 exceeds the limit of 32`) while the session fallback executed exactly as designed — cap raised to 128 with the guard semantics unchanged and both regression suites green.
 
 **Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan-draft-r2.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (round 8) + FEAT-02 (round-11 disposition) + ROB-08 (round 13) + ROB-30 → **8B**; ROB-20/21 (round 9) + MAINT-15 (round 11) + PERF-06 (round 13) → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C** (all three closed round 14); FEAT-03 → optional PR-7 rider (closed round 14 alongside). Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (9 of the original 14 open Medium closed — r2's “10” double-counted ROB-20 across the PR 1/PR 2 gates; rounds 8+9 shipped 5 of those 9, round 11 closed MAINT-15 and the FEAT-02 disposition, and round 13 closed the last two, ROB-08 and PERF-06 — **8A+8B complete as of round 13**); the round-14 sweep closed 8C's own three Mediums with the FEAT-01/FEAT-03 riders — **Phase 0 complete, ledger Medium-free**.
 
