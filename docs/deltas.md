@@ -1945,3 +1945,38 @@ scaler-active to `ApplyFrameRateControl` and stock to `ReinitializeRenderer`.
 clang-format 18.1.8 clean on both files. Failure contract: a rejected present
 mode costs a log line, never a crash. CI: the gtest suite and the clang-format
 gate stay green.
+
+---
+
+## Round 16 — Refresh verification (2026-10-17, commit `96af9b5fc`)
+
+No ledger movement. This round re-verified the standing ledger rather than closing findings:
+
+- **All 31 open findings re-confirmed open at HEAD** via scripted anchor checks plus manual
+  reads of every flagged site: SEC-02/03/05/06, ROB-10/11/12/13/28/29/30,
+  MAINT-08/09/10/11/12/13/14/17/18/19, PERF-01/02/03/04/05, FEAT-04, ARCH-02, TEST-04/05/08.
+  No finding was silently fixed by the round-15 code or the post-ledger commit.
+- **ROB-31 closure re-verified in tree**: `OptionFrameRateControlChanged` dispatcher at
+  `display.cpp:348`; `ApplySwapchainPresentMode` with the IMMEDIATE → MAILBOX → VSYNC
+  fallback at `gpu_scaler.cpp:867`.
+- **Post-ledger commit reviewed** (`96af9b5fc`, one line): the Windows package step now
+  copies `Packaging/windows/clear_gpu-scaler.log.cmd` (file exists, 107 bytes) instead of
+  the extensionless `clear_gpu-scaler.log` — a packaging filename alignment. No finding
+  impact; no new findings.
+- **Line-anchor drift refreshed** in `audit.md` (cited positions predated the
+  round-7.5–15 code movement): SEC-02 (→ 818-827; call site `gpu_scaler.cpp:579`),
+  SEC-03 (→ 145-150, 222-228), SEC-05 (→ 793-816), SEC-06 (→ 829-845; probe `:837`,
+  refusal `:842`), ROB-10 (→ 1286-1294; `:1416`, `:314`), ROB-11 (→ 1043-1048,
+  `LoadLut` 998-1087), ROB-28 (→ 167, 605; translate `:256`), ROB-29 (→ 55-91),
+  ROB-30 (→ 1131-1138), MAINT-08 (→ 81, 30, 34-43), MAINT-09 (→ 1255-1310, `:1298`),
+  MAINT-10 (→ 161-166, 204-230), MAINT-17 (→ 222-228; gate `:512`), MAINT-18
+  (→ 682-728, `ListPresetDir` 729-772; `Tests.cmake` 296-307), MAINT-19 (→ 205-213,
+  248-253, 567-579), PERF-01/PERF-04 (→ 1200-1262), PERF-02 (→ 1442, 1452-1500),
+  PERF-03 (→ 1159, 1358), PERF-05 (→ 190-200), TEST-04 (→ 222-229), TEST-08
+  (`LoadLut` 998-1087, pass-log digest 681-693). PERF-02's body updated for the ROB-01
+  `std::stoi` → `ParseTextureIndex` swap (the allocation + re-parse cost remains).
+- **Ledger integrity fixes in `audit.md`**: TEST-08 (a summary-table member since round
+  14) gained its missing Detailed Findings entry; MAINT-15 and FEAT-02's stale detailed
+  entries received CLOSED/DISPOSITIONED banners (both round 11); the Priority Matrix
+  backlog row dropped closed MAINT-15 and added TEST-08.
+- Counts unchanged: **74 findings | 43 closed | 31 open (0 High / 0 Medium / 31 Low)**.

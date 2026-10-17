@@ -12,6 +12,141 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-96af9b5 (2026-10-16 09:45:48 PM)
+
+The window between the field-verified 007f3956a build and this one — audit
+rounds 13–15 in one flight. Round 13 closed the last two first-contact-bar
+Mediums (PERF-06, ROB-08), completing the nine-finding bar that gated first
+upstream contact; round 14 ran the 8C runner sweep (ROB-23, TEST-06,
+ROB-07, plus the FEAT-01/FEAT-03 riders) to close every remaining Medium —
+the ledger's first Medium-free state, with every Phase-0 sweep of
+merge-plan r2 done; and round 15 answered the window's one field
+regression, the Vertical Sync CTD (ROB-31), which also exposed that round
+13's ROB-08 change callback had been dead on arrival. The ledger moves
+73 → 74 findings: **43 closed / 31 open (0 High / 0 Medium / 31 Low)**.
+
+### Fixed
+
+#### GPU scaler presentation
+
+- **ROB-31** — the Vertical Sync toggle no longer crashes the game, and
+  mid-session vsync now reaches the GPU swapchain for real — closing
+  ROB-08 with an erratum: round 13's change callback never actually ran.
+  The FrameRateControl option's single change-callback slot was silently
+  won by the stock `ReinitializeRenderer` registration, so the round-13
+  `gpu_scaler::ApplyFrameRateControl` registration was dead on arrival:
+  with the scaler active the toggle was a same-window no-op, while the
+  frame loop stopped limiting once the option read VerticalSync — an
+  unthrottled present flood on the still-IMMEDIATE swapchain the window
+  was claimed with (the field CTD). One dispatcher now routes the option
+  to `ApplyFrameRateControl` while the scaler owns the window and to the
+  stock recreate path otherwise, the dead registration is removed, and
+  `ApplySwapchainPresentMode` — shared by both Reinit claim sites,
+  success paths byte-identical — probes `SDL_WindowSupportsGPUPresentMode`
+  and falls back IMMEDIATE → MAILBOX → VSYNC (logged) instead of letting
+  the option desync from the swapchain. Null device/window states are
+  guarded no-ops and every failure stays LogFail-only — never fatal.
+
+#### GPU scaler presets
+
+- **ROB-23** — uniform blocks fill correctly for parameter-driven packs.
+  Three defects shared one function: the `<TextureName>Size` branch ran
+  before the shader-parameter lookup, so a member named e.g. `MaskSize`
+  backed by `#pragma parameter MaskSize` (which the translator accepts)
+  was zeroed by the size resolver and both the pragma default and the
+  preset override were silently dropped; `writeVec4` wrote 8+ bytes
+  unconditionally, letting a scalar or vec2 member clobber its neighbor's
+  storage; and the generic fallback wrote IEEE-float bits regardless of
+  the member's declared type (value 5 read back as ~1.09e9 in an int
+  member). The parameter lookup now runs first, and every write is type-
+  and size-aware through two new helpers (std140 component count,
+  per-type bit patterns for int/uint/bool members) — CRT-mask strengths,
+  curvature and every other parameter now land as the user set them.
+
+- **ROB-07** — a mid-load preset failure no longer leaks the GPU resources
+  created before the failure. `PassRuntime` and `LutRuntime` held raw
+  SDL_GPU pointers with no destructor, so a shader, pipeline or LUT
+  texture created before a failed step was unreachable once the staging
+  unique_ptrs died — bounded only by the failure contract's full device
+  teardown, and silently false to the header's "Unload is safe to call
+  anytime" contract. Both runtimes now own RAII destructors (release
+  context recorded at creation) as the single release point for their GPU
+  objects: staged runtimes clean up at scope exit on any mid-load
+  failure, `Unload` delegates to the same destructors, and the FEAT-01
+  reload below is the first reuse-of-Runner consumer to stand on it.
+
+### Added
+
+#### GPU scaler
+
+- **FEAT-01** — re-selecting the same preset now reloads it when the file
+  changed on disk. The loaded-chain identity gains an mtime/size snapshot
+  taken at load; the same-path fast-path re-stats, and a changed file
+  logs "preset file changed on disk; reloading" and rebuilds through the
+  normal flow. Iterating on a preset pack no longer detours through
+  another preset or restart; a stat that fails keeps the running chain.
+
+- **FEAT-03** — failed preset loads name themselves in the filter OSD
+  instead of only in gpu-scaler.log. The last load error is recorded at
+  every failure site (path missing, file not found, parse failure, load
+  failure) and the OSD's unavailable state becomes
+  "Shader: <name> (failed: <first line>)", capped so the label stays
+  on-screen; the full text remains in the log. The top failure causes
+  (missing shader files, wrong LFS pull) become self-diagnosable.
+
+### Changed
+
+#### Translator performance
+
+- **PERF-06** — preset load is now linear in shader size and declaration
+  count. `RewriteSamplers` used to walk the entire stage text once per
+  unknown sampler declaration — `IsDefineTarget` and `IsTextureSampled`
+  for every orphan (Mega Bezel wrapper packs legitimately carry many),
+  plus `IsSamplerNameUsed`/`DefineTargetExpansion`/`IsSamplerDeclared` in
+  the #defined-away path — O(N·n) full-text scans on the frame path: the
+  field's seconds-to-minutes stalls on big wrapper packs. A one-pass
+  `SamplerScanIndex` — two linear passes over the stage text, built once
+  before the rewrite loop: directive targets and macro bodies, sampler2D
+  declarations, and a per-token classification of use/sampled contexts —
+  now answers all five queries by lookup through thin wrappers that keep
+  the original full-text scans only for non-identifier names (invalid
+  GLSL that glslang rejects later) for exact parity. Parity evidence:
+  29,590 old-vs-new cross-checks with zero divergences across a
+  branch-torture text, the 32-file smoke corpus, and a 200 KB wrapper
+  pack. The perf record also carries a measured erratum: the finding's
+  first pattern (the `FindUniformBlock` push-constant skip loop) never
+  went quadratic — the shipped suffix-advance probes 0.6×n positions on
+  the finding's own 1 MB/30k-block adversarial shape (30,001
+  `regex_search` calls, 66 ms), so that half needed no change.
+
+#### GPU scaler tests
+
+- **TEST-06** — the smoke corpus can no longer pass on pragma-name drift.
+  The smoke harness now pre-scans every pass shader of every preset with
+  the runner's exact `#pragma name` regex (byte-parity asserted against
+  the runner's own matcher) and folds the identifiers it finds into the
+  known name set both-cased, so corpus and runner can no longer disagree
+  about which names exist; pass files it cannot open are skipped and left
+  to the pass loop to report with context.
+
+#### Audit ledger / documentation
+
+- Ledger riders updated across the window to the round-15 state: audit.md
+  (74/43/31 snapshot — Medium-free since round 14, ROB-31 section added),
+  deltas.md (eight closure records with evidence — PERF-06/ROB-08,
+  ROB-23/TEST-06/ROB-07/FEAT-01/FEAT-03, ROB-31 — plus the ROB-08
+  erratum, index rows, Fix History rounds 13–15), diablo-handoff.md
+  ledger line and Phase-0 note, brief.md backlog and merge-track bullets
+  (the merge-track line still carried the r2 "10 of 14" bar math —
+  corrected to the 9-of-14 errata), merge-plan r2's Phase-0/8C
+  annotations, and the coverage CSV riders.
+
+#### Windows packaging
+
+- The Windows package now ships `clear_gpu-scaler.log.cmd` beside the exe
+  with the shader helper scripts (packaging workflow rider).
+
+
 ## 1.6.0-dev-6d555f32 (2026-10-16 08:40:55 PM)
 
 Field round against the round-14 build: enabling Vertical Sync with the GPU
