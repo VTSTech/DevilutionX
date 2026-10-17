@@ -143,9 +143,24 @@ if(USE_GPU_SCALER)
   # fit-and-center swapchain presentation). The library loads the Vulkan
   # loader at runtime through volk, so no Vulkan SDK is needed at build or
   # link time.
+  # Link mode: the default embeds libslang-vk statically into the exe.
+  # GPU_SCALER_SHARED=ON links the slangvk::shared variant instead, so the
+  # slang machinery ships as libslangvk.dll (or libslangvk.so) beside the
+  # exe. The library's headers pick dllexport/dllimport via SLANGVK_SHARED
+  # (propagated by the shared target to every consumer), and the fork side
+  # needs no other changes: the WSI volk table is repopulated per copy in
+  # gpu_scaler.cpp (volkLoadInstance after Device::create), so the exe keeps
+  # calling Vulkan through its own statically linked volk either way.
+  option(GPU_SCALER_SHARED "Link the slang scaler against the shared libslang-vk variant (libslangvk.dll/libslangvk.so beside the exe) instead of embedding it statically" OFF)
   set(SLANGVK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(SLANGVK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(SLANGVK_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  if(GPU_SCALER_SHARED)
+    set(SLANGVK_BUILD_SHARED ON CACHE BOOL "" FORCE)
+    set(SLANGVK_LINK_TARGET slangvk::shared)
+  else()
+    set(SLANGVK_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(SLANGVK_LINK_TARGET slangvk::slangvk)
+  endif()
   include(FetchContent)
   FetchContent_Declare(libslang-vk
     GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git

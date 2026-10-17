@@ -67,6 +67,13 @@
 # Both are OS components in System32 on every clean Windows install, so the
 # gate's system-DLL list gained them instead of the gate being skipped - it
 # still catches vendored deps going dynamic (the bug it was built for).
+# 2026-10-18 (GPU_SCALER_SHARED): the nonstatic job also builds libslang-vk
+# as a shared library (-DGPU_SCALER_SHARED=ON): the exe imports
+# libslangvk.dll from the FetchContent build tree, the Package step copies it
+# into pkg/ beside the exe, and the gate scans BOTH import tables (the DLL
+# needs the same MinGW runtime DLLs the exe needs). The static slang variant
+# the other jobs use is untouched (fork CMakeLists GPU_SCALER_SHARED default
+# OFF).
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -445,9 +452,10 @@ jobs:
 
   # Same MinGW cross build as the `windows` job but with NO -static linker
   # flags (see the WINDOWS-NONSTATIC JOB header note at the top). Everything
-  # else is deliberately identical: the vendored deps stay static, so the
-  # only new imports are the MinGW runtime DLLs, which the Package step
-  # resolves from the cross toolchain and ships beside the exe.
+  # else is deliberately identical: the vendored deps stay static EXCEPT
+  # libslang-vk (-DGPU_SCALER_SHARED=ON), which ships as libslangvk.dll
+  # beside the exe; the remaining new imports are the MinGW runtime DLLs,
+  # which the Package step resolves from the cross toolchain and ships too.
   windows-nonstatic:
     name: Windows x64 (MinGW cross, SDL3, dynamic link — ships MinGW runtime DLLs)
     runs-on: ubuntu-24.04
@@ -483,9 +491,12 @@ jobs:
         sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch ccache
 
     # Identical to the static job's Configure except CMAKE_EXE_LINKER_FLAGS:
-    # no -static, no -static-libgcc, no -static-libstdc++. Nothing else adds
-    # static linkage: the toolchain file (CMake/platforms/mingwcc64.toolchain.cmake)
-    # carries none, and DEVILUTIONX_STATIC_CXX_STDLIB (the genex that would add
+    # no -static, no -static-libgcc, no -static-libstdc++, plus
+    # GPU_SCALER_SHARED=ON: libslang-vk also builds its slangvk::shared
+    # variant and the exe links that (libslangvk.dll beside the exe) instead
+    # of the static embed. Nothing else adds static linkage: the toolchain
+    # file (CMake/platforms/mingwcc64.toolchain.cmake) carries none, and
+    # DEVILUTIONX_STATIC_CXX_STDLIB (the genex that would add
     # -static-libgcc/-static-libstdc++ per library) is force-disabled when sound
     # is on and sdl_audiolib is not static (CMakeLists.txt "Mixing
     # -static-libstdc++ with a dynamic C++ dependency" guard).
@@ -499,6 +510,7 @@ jobs:
         -DCROSS_PREFIX=/usr
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
+        -DGPU_SCALER_SHARED=ON
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DDEVILUTIONX_SYSTEM_ZLIB=OFF
@@ -532,12 +544,24 @@ jobs:
         # INVERSE of the static job's DLL gate: the dynamic exe imports the
         # MinGW runtime DLLs, so every NON-SYSTEM import must ship beside the
         # exe (Windows searches the exe's own folder first, keeping the zip
-        # self-contained). Each import must be one of:
+        # self-contained). libslang-vk ships as a DLL in this job
+        # (GPU_SCALER_SHARED=ON): copy libslangvk.dll out of the FetchContent
+        # build tree into pkg/ and gate its OWN import table too - it needs
+        # the same MinGW runtime DLLs the exe needs, and a regression there
+        # must fail here instead of on a user's machine. Each import must be:
         #   1. a known Windows system DLL / API set  -> ok, not shipped
-        #   2. resolvable from the cross toolchain   -> copied into pkg/
-        #   3. anything else (e.g. a vendored dep that went dynamic, SDL3.dll,
+        #   2. libslangvk.dll                        -> copied from the build tree above
+        #   3. resolvable from the cross toolchain   -> copied into pkg/
+        #   4. anything else (e.g. a vendored dep that went dynamic, SDL3.dll,
         #      zlib1.dll) -> FAIL, exactly what the static gate catches there.
-        x86_64-w64-mingw32-objdump -p build/devilutionx.exe | grep 'DLL Name' | sed 's/.*DLL Name: //' | tr -d '\r' | sort -u > dlls.txt
+        slangvk_dll="$(find build -name libslangvk.dll -print -quit)"
+        {
+          x86_64-w64-mingw32-objdump -p build/devilutionx.exe
+          if [ -n "$slangvk_dll" ]; then
+            cp "$slangvk_dll" pkg/
+            x86_64-w64-mingw32-objdump -p "$slangvk_dll"
+          fi
+        } | grep 'DLL Name' | sed 's/.*DLL Name: //' | tr -d '\r' | sort -u > dlls.txt
         if [ ! -s dlls.txt ]; then
           echo '::error::no DLL imports parsed from devilutionx.exe - objdump output format changed?'
           exit 1
@@ -561,6 +585,10 @@ jobs:
             # pulled in through the ws2_32 chain. Both live in System32.
             api-ms-win-*|ext-ms-*|ntdll.dll|kernel32.dll|kernelbase.dll|user32.dll|gdi32.dll|gdi32full.dll|hid.dll|win32u.dll|shell32.dll|advapi32.dll|ole32.dll|oleaut32.dll|uuid.dll|ws2_32.dll|wsock32.dll|msvcrt.dll|mswsock.dll|ucrtbase.dll|vcruntime140*.dll|winmm.dll|imm32.dll|setupapi.dll|version.dll|dinput8.dll|xinput*.dll|shlwapi.dll|rpcrt4.dll|sechost.dll|bcrypt*.dll|userenv.dll|dbghelp.dll|d3d11.dll|dxgi.dll|opengl32.dll|glu32.dll|iphlpapi.dll|wintrust.dll|crypt32.dll|normaliz.dll|dnsapi.dll|cfgmgr32.dll|powrprof.dll|comctl32.dll|comdlg32.dll|uxtheme.dll|dwmapi.dll|msimg32.dll|shcore.dll)
               echo "system DLL (ok, not shipped): $imp" ;;
+            # The slang DLL itself: copied from the build tree above (its own
+            # import table is gated through the same objdump above).
+            libslangvk.dll)
+              echo "shipped libslang-vk DLL: $imp" ;;
             *)
               p="$(resolve_dll "$name" || true)"
               if [ -n "$p" ]; then

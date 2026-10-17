@@ -716,7 +716,7 @@ target_link_dependencies(libdevilutionx_options PUBLIC
 )
 
 if(USE_GPU_SCALER)
-  target_link_dependencies(libdevilutionx_options PUBLIC slangvk::slangvk)
+  target_link_dependencies(libdevilutionx_options PUBLIC ${SLANGVK_LINK_TARGET})
 endif()
 
 add_devilutionx_object_library(libdevilutionx_pathfinding
@@ -1068,11 +1068,15 @@ add_devilutionx_object_library(libdevilutionx ${libdevilutionx_SRCS})
 target_include_directories(libdevilutionx PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 if(USE_GPU_SCALER)
   # libslang-vk provides the preset parser/translator/compiler and the
-  # Vulkan runner. slv-volk is the library's static volk loader target
-  # (VK_NO_PROTOTYPES): linking it propagates the Vulkan and volk headers
-  # the scaler adapter includes, with no link-time Vulkan dependency.
+  # Vulkan runner (static embed, or libslangvk.dll/.so when GPU_SCALER_SHARED
+  # is on -- SLANGVK_LINK_TARGET carries whichever variant was configured).
+  # slv-volk is the library's static volk loader target (VK_NO_PROTOTYPES):
+  # linking it propagates the Vulkan and volk headers the scaler adapter
+  # includes and gives the exe its own volk table for its WSI calls
+  # (repopulated in gpu_scaler.cpp after Device::create), with no link-time
+  # Vulkan dependency.
   target_link_dependencies(libdevilutionx PUBLIC
-    slangvk::slangvk
+    ${SLANGVK_LINK_TARGET}
     slv-volk
   )
 endif()
