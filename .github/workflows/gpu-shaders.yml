@@ -446,7 +446,7 @@ jobs:
           cp build/mods/hf.mpq pkg/mods/
         fi
         # shader helper scripts ship beside the exe (corpus download / cache wipe)
-        cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/install_git.cmd pkg/
+        cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/clear_gpu-scaler.log Packaging/windows/install_git.cmd pkg/
         # gate: the exe must stay fully static — Windows system DLLs ONLY.
         x86_64-w64-mingw32-objdump -p build/devilutionx.exe | grep 'DLL Name' | sort -u | tee dlls.txt
         if grep -qiE 'DLL Name:.*(libstdc|libgcc|libwinpthread|libssp|zlib1|liblzma|libpng|libjpeg|freetype|SDL)' dlls.txt; then

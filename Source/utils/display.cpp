@@ -167,7 +167,6 @@ const auto OptionChangeHandlerResolution = (GetOptions().Graphics.resolution.Set
 const auto OptionChangeHandlerFullscreen = (GetOptions().Graphics.fullscreen.SetValueChangedCallback(SetFullscreenMode), true);
 #ifdef USE_GPU_SCALER
 const auto OptionChangeHandlerShaderFilter = (GetOptions().Graphics.shaderFilter.SetValueChangedCallback(ResizeWindow), true);
-const auto OptionChangeHandlerFrameRateControl = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(gpu_scaler::ApplyFrameRateControl), true);
 #endif
 
 void OptionGrabInputChanged()
@@ -337,7 +336,26 @@ const auto OptionChangeHandlerFitToScreen = (GetOptions().Graphics.fitToScreen.S
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 const auto OptionChangeHandlerScaleQuality = (GetOptions().Graphics.scaleQuality.SetValueChangedCallback(ReinitializeTexture), true);
 const auto OptionChangeHandlerIntegerScaling = (GetOptions().Graphics.integerScaling.SetValueChangedCallback(ReinitializeIntegerScale), true);
-const auto OptionChangeHandlerVSync = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(ReinitializeRenderer), true);
+/** @brief ROB-31: the FrameRateControl option has a single change-callback
+ * slot, and a later registration silently overwrites an earlier one, so the
+ * round-13 scaler registration was dead on arrival: the stock recreate
+ * handler below always won the slot. A vsync toggle with the GPU scaler
+ * active therefore changed nothing while the frame loop stopped limiting
+ * (the option now reads VerticalSync) - an unthrottled IMMEDIATE present
+ * flood that field-crashed. Dispatch explicitly: while the scaler owns the
+ * window the option re-applies the present mode in place; the stock
+ * renderer keeps the upstream recreate path. */
+void OptionFrameRateControlChanged()
+{
+#ifdef USE_GPU_SCALER
+	if (gpu_scaler::IsActive()) {
+		gpu_scaler::ApplyFrameRateControl();
+		return;
+	}
+#endif
+	ReinitializeRenderer();
+}
+const auto OptionChangeHandlerVSync = (GetOptions().Graphics.frameRateControl.SetValueChangedCallback(OptionFrameRateControlChanged), true);
 
 struct DisplayModeComparator {
 	Size size;

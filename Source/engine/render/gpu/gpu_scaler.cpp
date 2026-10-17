@@ -860,13 +860,30 @@ static bool CreateDevice(const char *name)
  * (SDR composition, vsync or immediate present) and returns the requested
  * vsync flag for the caller's log line. A failed SDL_SetGPUSwapchainParameters
  * is logged and non-fatal: the swapchain keeps its previous present mode.
- * Shared by the Reinit window-claim paths and the ROB-08 option change
- * callback (ApplyFrameRateControl). */
+ * Shared by the Reinit window-claim paths and the ROB-31 option change
+ * dispatcher (ApplyFrameRateControl). An unsupported present mode falls
+ * back to the nearest supported one instead of failing the change, and a
+ * null device/window state is a no-op (ROB-31). */
 static bool ApplySwapchainPresentMode()
 {
 	const bool vsync = *GetOptions().Graphics.frameRateControl == FrameRateControl::VerticalSync;
-	if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-	        vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+	if (gDevice == nullptr || gWindow == nullptr)
+		return vsync;
+	SDL_GPUPresentMode mode = vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE;
+	if (!SDL_WindowSupportsGPUPresentMode(gDevice, gWindow, mode)) {
+		// ROB-31: an unsupported present mode must fall back instead of
+		// failing the parameter change and leaving the option desynced from
+		// the swapchain (MAILBOX is the nearest non-blocking mode; the
+		// FIFO/VSYNC mode is supported on every SDL3-GPU backend).
+		if (!vsync && SDL_WindowSupportsGPUPresentMode(gDevice, gWindow, SDL_GPU_PRESENTMODE_MAILBOX))
+			mode = SDL_GPU_PRESENTMODE_MAILBOX;
+		else
+			mode = SDL_GPU_PRESENTMODE_VSYNC;
+		LogFileLine(StrCat("requested present mode unsupported; using present mode ",
+		    static_cast<int>(mode)));
+	}
+	if (!SDL_SetGPUSwapchainParameters(gDevice, gWindow,
+	        SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode)) {
 		LogFail("SDL_SetGPUSwapchainParameters failed");
 	}
 	return vsync;

@@ -59,6 +59,7 @@ snapshot.
 | ROB-07 | Medium | Robustness | `Runner::Load` mid-failure leaks GPU resources; runtimes lack RAII | 2026-10-17 |
 | FEAT-01 | Medium | New Feature | Preset failure retry / hot reload of failed presets | 2026-10-17 |
 | FEAT-03 | Medium | New Feature | Surface preset errors in-game instead of only in gpu-scaler.log | 2026-10-17 |
+| ROB-31 | Medium | Robustness | Field CTD on the Vertical Sync toggle: dead callback registration left an unthrottled IMMEDIATE swapchain | 2026-10-16 |
 
 Standing rules for all future fixes: every touched C/C++ file must be clean under the project's
 `Source/.clang-format` as enforced by **clang-format 18.1.8** (the exact version pinned by the
@@ -174,6 +175,19 @@ closure's full Original/Resolution/Verification record follows in ID order.
   full text in the log). **The ledger is Medium-free** — 0 High / 0 Medium —
   and every Phase-0 sweep (8A/8B/8C) is complete. Ledger 36 → **31 open
   (0 High / 0 Medium / 31 Low)**.
+- **Round 15 (2026-10-16).** Field round against the round-14 build: enabling
+  Vertical Sync with the scaler active CTD'd. Root cause: the round-13 ROB-08
+  callback registration was silently overwritten by the stock
+  `ReinitializeRenderer` handler (the option's single change-callback slot,
+  static-init order), so the toggle never reached the swapchain while dx.cpp
+  stopped limiting frames for the new option value — an unthrottled IMMEDIATE
+  present flood. Opened and closed **ROB-31** (Medium): an explicit dispatcher
+  routes the option to `ApplyFrameRateControl` (scaler owns the window) or the
+  stock recreate path, the dead registration is gone, and
+  `ApplySwapchainPresentMode` gained null guards and an unsupported-present-mode
+  fallback (IMMEDIATE → MAILBOX → VSYNC, logged). Ledger 73 → **74 findings /
+  43 closed / 31 open (0 High / 0 Medium / 31 Low)** — the open set stays
+  Medium-free.
 
 ---
 
@@ -1657,6 +1671,14 @@ handback and parked-device states no-ops. Failure contract: a rejected present m
 and continues — never fatal. CI: the gtest suite (`linux-tests` job) and the
 clang-format gate stay green.
 
+**Erratum (round 15, field).** The round-13 registration never executed:
+`OptionEntryBase::SetValueChangedCallback` stores a single slot, and display.cpp's
+stock `OptionChangeHandlerVSync` (`ReinitializeRenderer`) — registered later in
+the same translation unit — silently overwrote `OptionChangeHandlerFrameRateControl`
+at static-init time. The runtime propagation described above therefore never
+shipped; the field CTD it produced is ROB-31, closed by an explicit dispatcher
+that routes the option to `ApplyFrameRateControl` (scaler active) or
+`ReinitializeRenderer` (stock) while keeping this helper as the single apply point.
 ## ROB-23 — CLOSED: `FillBlockBytes` semantic bugs: `*Size` parameters swallowed, `writeVec4` over-writes, int members get float bits
 
 | Property | Value |
@@ -1876,3 +1898,50 @@ clang-format gate stay green.
 
 ---
 
+---
+
+## ROB-31 — CLOSED: Field CTD on the Vertical Sync toggle — dead callback registration left an unthrottled IMMEDIATE swapchain
+
+| Property | Value |
+|----------|-------|
+| **Severity** | Medium |
+| **Category** | Robustness |
+| **Original location** | `Source/utils/display.cpp` (option change handler registration), `Source/engine/render/gpu/gpu_scaler.cpp` (`ApplySwapchainPresentMode`), `Source/engine/dx.cpp` (present-path limiter) |
+
+**Original finding.** Enabling Vertical Sync in the settings with the GPU scaler
+active crashed the game (field report against the round-14 build, 9cac3fe). The
+round-13 ROB-08 fix registered `gpu_scaler::ApplyFrameRateControl` as the option's
+change callback, but `OptionEntryBase::SetValueChangedCallback` stores a single
+slot and display.cpp registers the stock `ReinitializeRenderer` handler for the
+same option further down the same translation unit — static initialization runs
+in definition order, so the stock handler always won the slot and the scaler
+registration was dead on arrival. The toggle therefore never reached the
+swapchain: with the scaler active, `ReinitializeRenderer` takes the same-window
+fast path (the claim block is skipped when the window object is unchanged and
+the SDL_Renderer is already gone, so neither the window recreation nor
+`SDL_SetGPUSwapchainParameters` runs), while dx.cpp's present path stops calling
+`LimitFrameRate` as soon as the option reads `VerticalSync`. Net effect: the CPU
+limiter switched off but the swapchain stayed in the `IMMEDIATE` present mode it
+was claimed with — an unbounded present/submit flood on a still-immediate
+swapchain, which field-crashed.
+
+**Resolution.** display.cpp now registers one dispatching handler,
+`OptionFrameRateControlChanged`: while the scaler is active it forwards to
+`ApplyFrameRateControl` (the live swapchain re-applies the option's present mode
+in place — VSYNC throttles presentation through swapchain backpressure, matching
+the disabled CPU limiter), otherwise it calls `ReinitializeRenderer`, preserving
+the stock renderer's upstream recreate-and-`SDL_SetRenderVSync` behavior. The
+dead round-13 registration was removed so the single-slot trap cannot recur.
+`ApplySwapchainPresentMode` gained the failure-contract hardening: null
+device/window guards, and an unsupported present mode falls back to the nearest
+supported one (IMMEDIATE → MAILBOX → VSYNC, fallback logged) instead of failing
+the parameter change and leaving the option desynced from the swapchain.
+
+**Verification.** Byte-extracted-block harness: VSYNC request applies FIFO;
+IMMEDIATE applies when supported; IMMEDIATE → MAILBOX and → VSYNC fallbacks
+engage with the log line; a failed parameter change logs (`LogFail`) and returns
+normally; the null-device state makes no SDL call; the dispatcher routes
+scaler-active to `ApplyFrameRateControl` and stock to `ReinitializeRenderer`.
+clang-format 18.1.8 clean on both files. Failure contract: a rejected present
+mode costs a log line, never a crash. CI: the gtest suite and the clang-format
+gate stay green.

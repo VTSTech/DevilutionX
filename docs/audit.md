@@ -3,9 +3,9 @@
 **DevilutionX (VTSTech GPU Shader Mod) v1.6.0-dev**
 
 **Repository:** https://github.com/VTSTech/DevilutionX
-**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-17 (round 13)
+**Author:** VTSTech | **License:** Sustainable Use License (non-commercial, per LICENSE.md) | **Date:** 2026-10-16 (round 15)
 **Audit commit:** `8341ef99f9f9c3786222abb57e2eb8c16e79656a` (code state identical to round-6 tip `b60356e1a` — the only newer commit is docs-only) | **Auditor:** Super Z (GLM) — codebase-audit skill v0.2.0
-73 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 42 closed → [deltas.md](deltas.md) | 31 open: **0 High / 0 Medium / 31 Low**
+74 Findings total | 7 Categories | SEC, ROB, MAINT, PERF, FEAT, ARCH, TEST | 43 closed → [deltas.md](deltas.md) | 31 open: **0 High / 0 Medium / 31 Low**
 
 ---
 
@@ -528,6 +528,47 @@ The most valuable regression test in the repo — the headless timedemo that rep
 
 **Impact:** CI test results are trustworthy — green means the regression net was actually cast.
 
+#### ROB-31: Field CTD on the Vertical Sync toggle — dead callback registration left an unthrottled IMMEDIATE swapchain
+
+**Original finding.** Enabling Vertical Sync in the settings with the GPU scaler
+active crashed the game (field report against the round-14 build, 9cac3fe). The
+round-13 ROB-08 fix registered `gpu_scaler::ApplyFrameRateControl` as the option's
+change callback, but `OptionEntryBase::SetValueChangedCallback` stores a single
+slot and display.cpp registers the stock `ReinitializeRenderer` handler for the
+same option further down the same translation unit — static initialization runs
+in definition order, so the stock handler always won the slot and the scaler
+registration was dead on arrival. The toggle therefore never reached the
+swapchain: with the scaler active, `ReinitializeRenderer` takes the same-window
+fast path (the claim block is skipped when the window object is unchanged and
+the SDL_Renderer is already gone, so neither the window recreation nor
+`SDL_SetGPUSwapchainParameters` runs), while dx.cpp's present path stops calling
+`LimitFrameRate` as soon as the option reads `VerticalSync`. Net effect: the CPU
+limiter switched off but the swapchain stayed in the `IMMEDIATE` present mode it
+was claimed with — an unbounded present/submit flood on a still-immediate
+swapchain, which field-crashed.
+
+**Resolution.** display.cpp now registers one dispatching handler,
+`OptionFrameRateControlChanged`: while the scaler is active it forwards to
+`ApplyFrameRateControl` (the live swapchain re-applies the option's present mode
+in place — VSYNC throttles presentation through swapchain backpressure, matching
+the disabled CPU limiter), otherwise it calls `ReinitializeRenderer`, preserving
+the stock renderer's upstream recreate-and-`SDL_SetRenderVSync` behavior. The
+dead round-13 registration was removed so the single-slot trap cannot recur.
+`ApplySwapchainPresentMode` gained the failure-contract hardening: null
+device/window guards, and an unsupported present mode falls back to the nearest
+supported one (IMMEDIATE → MAILBOX → VSYNC, fallback logged) instead of failing
+the parameter change and leaving the option desynced from the swapchain.
+
+**Verification.** Byte-extracted-block harness: VSYNC request applies FIFO;
+IMMEDIATE applies when supported; IMMEDIATE → MAILBOX and → VSYNC fallbacks
+engage with the log line; a failed parameter change logs (`LogFail`) and returns
+normally; the null-device state makes no SDL call; the dispatcher routes
+scaler-active to `ApplyFrameRateControl` and stock to `ReinitializeRenderer`.
+clang-format 18.1.8 clean on both files. Failure contract: a rejected present
+mode costs a log line, never a crash. CI: the gtest suite and the clang-format
+gate stay green.
+
+
 ---
 
 ## Priority Matrix
@@ -540,7 +581,7 @@ The project versions as `1.6.0-dev` without its own release cadence, so relative
 | **Short term** (planned work) | *(empty — the round-14 8C runner sweep closed the whole row: ROB-23, TEST-06, ROB-07 → FEAT-01, FEAT-03; see [deltas.md](deltas.md))* |
 | **Backlog** (opportunistic) | SEC-02, SEC-03, SEC-05, SEC-06, ROB-10, ROB-11, ROB-12, ROB-13, ROB-28, ROB-29, ROB-30, MAINT-08 through MAINT-15, MAINT-17 through MAINT-19, PERF-01 through PERF-05, FEAT-04, ARCH-02, TEST-04, TEST-05 |
 
-Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) is dispositioned as of round 11 — the device layer is Vulkan-only, auto-selected Metal gets an honest message plus the ROB-18 Vulkan retry (MoltenVK stays viable) — so the backend policy is decided and the handoff table matches the code. The round-14 8C sweep closed the entire short-term row — ROB-23 (type- and size-aware uniform fill with the parameter lookup ahead of the `*Size` branch), TEST-06 (smoke ports the runner's `#pragma name` pre-scan), ROB-07 (RAII destructors as the single release point) — with FEAT-01 (reload-on-select when the file's mtime/size changed) and FEAT-03 (the OSD names the load failure) as riders; ROB-29 (glslang mutex) remains the prerequisite to honor before any async variant of the now-shipped reload.
+Sequencing notes: the round-7 Highs (ROB-14, ROB-15), the unchecked-SDL cluster (ROB-16/17) and the MAINT-03 re-close shipped together as one low-risk patch on 2026-10-16, with ROB-24/ROB-25/MAINT-16/TEST-07 and the partials (MAINT-09, MAINT-19) as riders. The open set now has no High findings; the round-8 patch closed the former queue openers ROB-18/ROB-19/ROB-22 (bounded fallback-path changes plus the gamepad free/re-init pairing), and the round-9 patch closed ROB-20/ROB-21 (the load-path caps + catch-all and the sampler dedupe, with regression corpus), so the short-term queue now opens at ROB-23. ROB-07 (runtime RAII) remains the prerequisite for FEAT-01 (retry/hot-reload), and ROB-29 (glslang mutex) should land before any async variant of FEAT-01. FEAT-02 (Metal) is dispositioned as of round 11 — the device layer is Vulkan-only, auto-selected Metal gets an honest message plus the ROB-18 Vulkan retry (MoltenVK stays viable) — so the backend policy is decided and the handoff table matches the code. The round-14 8C sweep closed the entire short-term row — ROB-23 (type- and size-aware uniform fill with the parameter lookup ahead of the `*Size` branch), TEST-06 (smoke ports the runner's `#pragma name` pre-scan), ROB-07 (RAII destructors as the single release point) — with FEAT-01 (reload-on-select when the file's mtime/size changed) and FEAT-03 (the OSD names the load failure) as riders; ROB-29 (glslang mutex) remains the prerequisite to honor before any async variant of the now-shipped reload. Field round 15 (2026-10-16) then opened and closed ROB-31, the post-8C field regression: the Vertical Sync toggle's change-callback registration was dead on arrival (the option's single callback slot was won by the stock handler), leaving an unthrottled IMMEDIATE swapchain behind the disabled CPU limiter — fixed with an explicit scaler/stock dispatcher plus present-mode support fallback.
 
 **Merge-plan Phase-0 mapping (2026-10-16, `docs/merge-plan-draft-r2.md` §3/§5):** Short-term row → sweeps: ROB-18/19/22 (round 8) + FEAT-02 (round-11 disposition) + ROB-08 (round 13) + ROB-30 → **8B**; ROB-20/21 (round 9) + MAINT-15 (round 11) + PERF-06 (round 13) → **8A**; ROB-23 + ROB-07 + TEST-06 → **8C** (all three closed round 14); FEAT-03 → optional PR-7 rider (closed round 14 alongside). Backlog row → 8A absorbs SEC-02/03/05/06, ROB-12/28/29, MAINT-08/09/18/19, TEST-04, PERF-05; 8C absorbs ROB-10/11, MAINT-17, PERF-02; waived to upstream issues: MAINT-11/13/14 + TEST-05 (+ MAINT-12 no-action); fork-only: ARCH-02; known-documented: ROB-13; deferred features: FEAT-01 (needs ROB-07), FEAT-04. First-contact bar = 8A+8B (9 of the original 14 open Medium closed — r2's “10” double-counted ROB-20 across the PR 1/PR 2 gates; rounds 8+9 shipped 5 of those 9, round 11 closed MAINT-15 and the FEAT-02 disposition, and round 13 closed the last two, ROB-08 and PERF-06 — **8A+8B complete as of round 13**); the round-14 sweep closed 8C's own three Mediums with the FEAT-01/FEAT-03 riders — **Phase 0 complete, ledger Medium-free**.
 

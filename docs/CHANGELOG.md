@@ -12,6 +12,30 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
+## 1.6.0-dev-6d555f32 (2026-10-16 08:40:55 PM)
+
+Field round against the round-14 build: enabling Vertical Sync with the GPU
+scaler active crashed the game. One finding opened and closed in the same pass
+(**74 findings / 43 closed / 31 open, 0 High / 0 Medium / 31 Low** — the open
+set stays Medium-free).
+
+### Fixed
+
+#### GPU scaler
+
+- **ROB-31** — the Vertical Sync toggle no longer crashes the game. The
+  round-13 change callback was dead on arrival: the option's single
+  change-callback slot was silently won by the stock `ReinitializeRenderer`
+  handler, so the toggle never reached the swapchain while the frame loop
+  stopped limiting — an unthrottled present flood on the still-IMMEDIATE
+  swapchain. An explicit dispatcher now routes the option to
+  `gpu_scaler::ApplyFrameRateControl` while the scaler owns the window (the
+  live swapchain follows the option) and to the stock recreate path otherwise;
+  the dead registration is removed. `ApplySwapchainPresentMode` additionally
+  probes `SDL_WindowSupportsGPUPresentMode` and falls back IMMEDIATE → MAILBOX
+  → VSYNC (logged) instead of letting the option desync from the swapchain;
+  null device/window states are a guarded no-op.
+
 ## 1.6.0-dev-9cac3fe (2026-10-16 07:56:17 PM)
 
 Round 14 runs the 8C runner sweep and closes the last five Medium findings —

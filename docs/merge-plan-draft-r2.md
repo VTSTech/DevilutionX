@@ -119,7 +119,7 @@ closed MAINT-15 and the FEAT-02 disposition; round 13 closed the last two, ROB-0
 PERF-06; the round-14 8C sweep closed ROB-07/23 and TEST-06 with the FEAT-01/FEAT-03
 riders, leaving **31 open — 0 High / 0 Medium / 31 Low** per `audit.md`. The nine
 Medium owned by 8A+8B below are all closed — **the first-contact bar is complete**,
-and Phase 0 is done: every sweep's Medium set is closed.)*
+and Phase 0 is done: every sweep's Medium set is closed. Field round 15 then opened and closed ROB-31 (Medium), the post-8C field CTD on the Vertical Sync toggle — the round-13 change-callback registration was silently overwritten by the stock handler (single-slot), leaving an unthrottled IMMEDIATE swapchain; fixed with an explicit scaler/stock dispatcher plus present-mode support fallback.)*
 Phase 0 dispositions
 all of them before/while the series opens. Nothing here is redesign work: every finding
 in the ledger already carries a concrete fix sketch, so Phase 0 is execution, not
