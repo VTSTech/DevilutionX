@@ -144,7 +144,7 @@ bool cineflag;
 int PauseMode;
 clicktype sgbMouseDown;
 uint16_t gnTickDelay = 50;
-char gszProductName[64] = "DevilutionX vUnknown";
+char gszProductName[128] = "DevilutionX vUnknown";
 
 #ifdef _DEBUG
 bool DebugDisableNetworkTimeout = false;
@@ -1218,7 +1218,10 @@ void DiabloInitScreen()
 
 void SetApplicationVersions()
 {
-	*BufCopy(gszProductName, PROJECT_NAME, " v", PROJECT_VERSION) = '\0';
+	// Fork branding: the main-menu footer (mainmenu.cpp UiArtText) and
+	// Discord rich presence show this string verbatim. The 128-byte
+	// buffer fits a full-length GIT_COMMIT_HASH; Discord caps at 128.
+	*BufCopy(gszProductName, "github.com/VTSTech/DevilutionX ", PROJECT_VERSION) = '\0';
 	*BufCopy(gszVersionNumber, "version ", PROJECT_VERSION) = '\0';
 }
 

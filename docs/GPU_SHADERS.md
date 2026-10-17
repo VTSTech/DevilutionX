@@ -3,11 +3,15 @@
 This standalone mod of [DevilutionX](https://github.com/diasurgical/DevilutionX) layers a
 **GPU shader pipeline** on top of the stock SDL render path. The game still renders
 internally at its native 640x480/960x540 8-bit paletted surface; when a shader filter is
-active, the frame is uploaded to a GPU texture each frame and pushed through an SDL3 GPU
-(`SDL_GPU`) pipeline backed by **Vulkan** on Windows and Linux (**Metal** on macOS). The
-filters themselves are **libretro slang presets** (`.slangp`/`.slang`) loaded at runtime
-from a `shaders/` folder next to the executable — there are **no baked-in shaders**: the
-filters you get are exactly the presets you install, drawn from the full
+active, the frame is uploaded to a Vulkan image each frame and pushed through the preset's
+shader chain — **Vulkan** only, executed by the standalone MIT-licensed library
+[libslang-vk](https://github.com/VTSTech/libslang-vk), which owns the entire slang stack:
+`.slangp` parsing, `.slang` -> GLSL translation, glslang SPIR-V compilation, and the
+Vulkan pass runner (history rings, feedback, LUT textures, fit-and-center swapchain
+presentation). The filters themselves are **libretro slang presets**
+(`.slangp`/`.slang`) loaded at runtime from a `shaders/` folder next to the executable —
+there are **no baked-in shaders**: the filters you get are exactly the presets you
+install, drawn from the full
 [RetroArch shader ecosystem](https://github.com/libretro/slang-shaders) (CRT simulation,
 xBR, ScaleFX, HQx, and hundreds more).
 
@@ -24,8 +28,9 @@ GPU — the filter simply reports as `(Unavailable)`).
 
 ## Requirements
 
-- A GPU with **Vulkan** support (or **Metal** on macOS) and a driver new enough for that
-  API. Vulkan is the only actively-supported backend on Windows and Linux.
+- A GPU with **Vulkan** support and a driver new enough for that API. Vulkan is the only
+  backend: the slang stack lives in libslang-vk, which is Vulkan-only by design (on macOS
+  this path is reachable only through MoltenVK and is not a supported tier).
 - A build with SDL3 (`USE_SDL3=ON`). `USE_GPU_SCALER` is a dependent option that defaults
   to ON whenever `USE_SDL3` is ON and `USE_SDL1` is OFF.
 - The in-game **Upscale** option enabled (it is on by default).

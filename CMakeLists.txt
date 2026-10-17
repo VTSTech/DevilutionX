@@ -129,88 +129,29 @@ endif()
   mark_as_advanced(DEVILUTIONX_DISPLAY_TEXTURE_FORMAT)
 endif()
 
-# SDL_GPU shader scaler (ScaleFX / HQx)
-cmake_dependent_option(USE_GPU_SCALER "Enable the SDL_GPU shader scaler (ScaleFX/HQx upscaling filters)" ON "USE_SDL3;NOT USE_SDL1" OFF)
+# Slang preset scaler (libretro slang shader upscaling through libslang-vk)
+cmake_dependent_option(USE_GPU_SCALER "Enable the slang shader scaler (libretro slang presets through libslang-vk)" ON "USE_SDL3;NOT USE_SDL1" OFF)
 if(USE_GPU_SCALER)
-  set(GPU_SCALER_SHADER_DIR "${PROJECT_SOURCE_DIR}/Source/engine/render/gpu/shaders/vulkan")
-  set(GPU_SCALER_SPV_HEADER "${CMAKE_BINARY_DIR}/Source/engine/render/gpu/gpu_shader_spv.hpp")
-  find_program(GLSLANG_VALIDATOR glslangValidator HINTS "$ENV{GLSLANG_DIR}/bin")
-  if(GLSLANG_VALIDATOR)
-    add_custom_target(gpu_scaler_spv
-      COMMAND ${CMAKE_COMMAND}
-          -DGLSLANG=${GLSLANG_VALIDATOR}
-          -DSRC_DIR=${GPU_SCALER_SHADER_DIR}
-          -DOUTPUT=${GPU_SCALER_SPV_HEADER}
-          -P ${PROJECT_SOURCE_DIR}/CMake/gen_spv_header.cmake
-      DEPENDS ${GPU_SCALER_SHADER_DIR}/fullscreen.vert
-              ${GPU_SCALER_SHADER_DIR}/hqx_index.frag
-              ${GPU_SCALER_SHADER_DIR}/hqx_blend.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass0.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass1.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass2.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass3.frag
-              ${GPU_SCALER_SHADER_DIR}/scalefx_pass4.frag
-              ${GPU_SCALER_SHADER_DIR}/blit.frag
-              ${PROJECT_SOURCE_DIR}/CMake/gen_spv_header.cmake
-      COMMENT "Compiling GPU scaler shaders to SPIR-V"
-      VERBATIM)
-    set(GPU_SCALER_SPV_GENERATED ON)
-    message(STATUS "GPU scaler: shaders will be compiled to SPIR-V at build time (glslangValidator found)")
-  else()
-    # No glslangValidator: fall back to the COMMITTED prebuilt SPIR-V header
-    # (Source/engine/render/gpu/gpu_shader_spv_prebuilt.hpp, selected by
-    # gpu_scaler.cpp when GPU_SCALER_SPV_GENERATED is undefined). The scaler
-    # stays fully functional; shaders are only regenerated when glslang exists.
-    message(STATUS "glslangValidator not found - using the committed prebuilt GPU scaler SPIR-V header")
-  endif()
   # NOTE: this define gates BOTH the scaler code and the "Shader Filter" entry
-  # in the settings menu. It MUST be appended in BOTH paths above; adding it
-  # only when glslangValidator exists silently compiles the whole feature out
-  # of the binary (build stays green, the exe just loses the menu).
+  # in the settings menu.
   list(APPEND DEVILUTIONX_PLATFORM_COMPILE_DEFINITIONS USE_GPU_SCALER)
 
-  # Runtime libretro slang preset support ("shaders folder"): glslang
-  # compiles .slang sources to SPIR-V in-process on first load (with a disk
-  # cache), SPIRV-Cross transpiles SPIR-V to HLSL for the D3D12 backend.
-  # The build-time glslangValidator block above only affects the BAKED-IN
-  # ScaleFX/HQx shaders and is independent of this.
-  option(DEVILUTIONX_SYSTEM_GLSLANG "Use system-provided glslang" ON)
-  if(DEVILUTIONX_SYSTEM_GLSLANG)
-    find_package(glslang QUIET CONFIG)
-    if(glslang_FOUND)
-      message(STATUS "GPU scaler runtime shaders: using system glslang")
-    else()
-      set(DEVILUTIONX_SYSTEM_GLSLANG OFF)
-    endif()
-  endif()
-  if(NOT DEVILUTIONX_SYSTEM_GLSLANG)
-    message(STATUS "GPU scaler runtime shaders: using glslang from source")
-    add_subdirectory(3rdParty/glslang glslang)
-  endif()
-  option(DEVILUTIONX_SYSTEM_SPIRV_CROSS "Use system-provided SPIRV-Cross" ON)
-  if(DEVILUTIONX_SYSTEM_SPIRV_CROSS)
-    find_package(spirv_cross_core QUIET CONFIG)
-    if(spirv_cross_core_FOUND)
-      message(STATUS "GPU scaler runtime shaders: using system SPIRV-Cross")
-    else()
-      set(DEVILUTIONX_SYSTEM_SPIRV_CROSS OFF)
-    endif()
-  endif()
-  if(NOT DEVILUTIONX_SYSTEM_SPIRV_CROSS)
-    message(STATUS "GPU scaler runtime shaders: using SPIRV-Cross from source")
-    add_subdirectory(3rdParty/SPIRV-Cross SPIRV-Cross)
-  endif()
-
-  # libslang-vk - standalone libretro slang preset library with a Vulkan
-  # execution path (vendored at 3rdParty/libslang-vk; MIT, see its
-  # PROVENANCE.md). It powers the optional "slangvk" GPU backend selected by
-  # DEVILUTIONX_GPU_BACKEND=slangvk; without that env var nothing changes.
-  # Tests/examples/shared variant of the vendored build are disabled; glslang
-  # is reused from this build (see 3rdParty/libslang-vk/cmake/deps.cmake).
+  # All slang machinery lives in the MIT-licensed libslang-vk library:
+  # .slangp preset parsing, .slang -> GLSL translation, glslang SPIR-V
+  # compilation (the library fetches its own glslang), and the Vulkan preset
+  # chain (history rings, feedback, LUT textures, mipmap inputs,
+  # fit-and-center swapchain presentation). The library loads the Vulkan
+  # loader at runtime through volk, so no Vulkan SDK is needed at build or
+  # link time.
   set(SLANGVK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(SLANGVK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SLANGVK_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-  add_subdirectory(3rdParty/libslang-vk slangvk)
+  include(FetchContent)
+  FetchContent_Declare(libslang-vk
+    GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git
+    GIT_TAG 75ec8e3d6fd861f5b5672a846e1369d94ecbed67 # M4
+    )
+  FetchContent_MakeAvailable(libslang-vk)
 endif()
 
 if(USE_SDL1)
@@ -255,6 +196,7 @@ option(DISABLE_STREAMING_MUSIC "Disable streaming music (to work around broken p
 mark_as_advanced(DISABLE_STREAMING_MUSIC)
 option(DISABLE_STREAMING_SOUNDS "Disable streaming sounds (to work around broken platform implementations)" OFF)
 mark_as_advanced(DISABLE_STREAMING_SOUNDS)
+option(DEVILUTIONX_WAV_FALLBACK "Recover WAVs that SDL3_mixer cannot parse (e.g. zero-length RIFF chunks in 1990s-era assets) by decoding with SDL_LoadWAV_IO and retrying with a canonical RIFF/WAVE header. Set OFF to exercise the raw SDL3_mixer path (zero-length RIFF diagnosis)" ON)
 set(STREAM_ALL_AUDIO_MIN_FILE_SIZE "" CACHE STRING "If set, stream all the audio files larger than this size")
 mark_as_advanced(STREAM_ALL_AUDIO_MIN_FILE_SIZE)
 option(DEVILUTIONX_PALETTE_TRANSPARENCY_BLACK_16_LUT "Whether to use a lookup table for transparency blending with black. This improves performance of blending transparent black overlays, such as quest dialog background, at the cost of 128 KiB of RAM." ON)

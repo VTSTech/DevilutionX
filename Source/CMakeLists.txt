@@ -697,6 +697,10 @@ target_link_dependencies(libdevilutionx_multiplayer
 add_devilutionx_object_library(libdevilutionx_options
   options.cpp
 )
+# options.h forward-declares slv::preset::PresetEntry and options.cpp uses
+# the libslang-vk preset scan/parse API: the slangvk headers must be visible
+# to every consumer of this object library (the library only exists when the
+# scaler is enabled; options.cpp guards its slangvk includes the same way).
 target_link_dependencies(libdevilutionx_options PUBLIC
   DevilutionX::SDL
   magic_enum::magic_enum
@@ -710,6 +714,10 @@ target_link_dependencies(libdevilutionx_options PUBLIC
   libdevilutionx_strings
   libdevilutionx_ini
 )
+
+if(USE_GPU_SCALER)
+  target_link_dependencies(libdevilutionx_options PUBLIC slangvk::slangvk)
+endif()
 
 add_devilutionx_object_library(libdevilutionx_pathfinding
   engine/path.cpp
@@ -1031,14 +1039,10 @@ if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PCX)
 endif()
 
 if(USE_GPU_SCALER)
+  # The scaler adapter only: preset parsing, translation, compilation and
+  # the Vulkan pass runner come from the libslang-vk library.
   list(APPEND libdevilutionx_SRCS
     engine/render/gpu/gpu_scaler.cpp
-    engine/render/gpu/gpu_d3dcompile.cpp
-    engine/render/gpu/preset/preset_parser.cpp
-    engine/render/gpu/preset/slang_translate.cpp
-    engine/render/gpu/preset/slang_compile.cpp
-    engine/render/gpu/preset/preset_runner.cpp
-    engine/render/gpu/slv_runner.cpp
   )
 endif()
 
@@ -1063,27 +1067,13 @@ endif()
 add_devilutionx_object_library(libdevilutionx ${libdevilutionx_SRCS})
 target_include_directories(libdevilutionx PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 if(USE_GPU_SCALER)
-  if(GPU_SCALER_SPV_GENERATED)
-    target_compile_definitions(libdevilutionx PRIVATE GPU_SCALER_SPV_GENERATED)
-    add_dependencies(libdevilutionx gpu_scaler_spv)
-  endif()
-  # Offline validation harness for the runtime preset loader (headless:
-  # parse + translate + glslang compile, no GPU device).
-  add_executable(preset_smoke EXCLUDE_FROM_ALL engine/render/gpu/preset/preset_smoke.cpp)
-  target_compile_definitions(preset_smoke PRIVATE USE_GPU_SCALER)
-  target_link_dependencies(preset_smoke PRIVATE libdevilutionx)
-  # Runtime libretro slang presets: in-process glslang + SPIRV-Cross.
-  target_include_directories(libdevilutionx SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/3rdParty/PicoSHA2)
+  # libslang-vk provides the preset parser/translator/compiler and the
+  # Vulkan runner. slv-volk is the library's static volk loader target
+  # (VK_NO_PROTOTYPES): linking it propagates the Vulkan and volk headers
+  # the scaler adapter includes, with no link-time Vulkan dependency.
   target_link_dependencies(libdevilutionx PUBLIC
-    glslang::glslang
-    glslang::SPIRV
-    glslang::glslang-default-resource-limits
-    spirv-cross-core
-    spirv-cross-glsl
-    spirv-cross-hlsl
-    SDL3_image::SDL3_image # LUT texture loading for runtime presets
-    slangvk # vendored libslang-vk: the "slangvk" GPU backend (slv_runner.cpp)
-    slv-volk # volk Vulkan loader: runtime entry points for the backend (no SDK)
+    slangvk::slangvk
+    slv-volk
   )
 endif()
 target_link_dependencies(libdevilutionx PUBLIC

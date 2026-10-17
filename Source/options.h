@@ -37,7 +37,15 @@
 #include "utils/string_view_hash.hpp"
 
 #ifdef USE_GPU_SCALER
-#include "engine/render/gpu/preset/preset_types.hpp"
+// Forward declaration only: the preset browser stores libslang-vk's
+// PresetEntry values, but options.h is included game-wide and must not drag
+// the library's headers (or their include directories) into every target.
+// options.cpp includes <slangvk/core/preset_parser.hpp> for the full type.
+namespace slv {
+namespace preset {
+struct PresetEntry;
+} // namespace preset
+} // namespace slv
 #endif
 
 namespace devilution {
@@ -351,7 +359,7 @@ private:
 	/** @brief Subdirectories of the browsed folder (navigation entries). */
 	std::vector<std::string> subdirs_;
 	/** @brief Presets directly inside the browsed folder (selection entries). */
-	std::vector<gpu_scaler::preset::PresetEntry> presets_;
+	std::vector<slv::preset::PresetEntry> presets_;
 	/** @brief Entry index to focus after the next list rebuild (one-shot). */
 	mutable size_t pendingFocusIndex_ = static_cast<size_t>(-1);
 };
