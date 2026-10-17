@@ -45,6 +45,23 @@
 # test TUs from the binary build (-DBUILD_TESTING=OFF). Both Linux jobs
 # configure with identical flags (except BUILD_TESTING) and share the
 # ccache-linux- prefix, so the tests job's tree build is mostly cache hits.
+#
+# WINDOWS-NONSTATIC JOB (2026-10-18): the same MinGW cross build WITHOUT
+# `-static -static-libgcc -static-libstdc++`. The exe then imports the MinGW
+# runtime DLLs (libstdc++-6.dll, libgcc_s_seh-1.dll, libssp-0.dll, and
+# libwinpthread-1.dll when -lpthread pulls it in), so its Package step SHIPS
+# them beside the exe: Windows searches the exe's own folder first, so the
+# zip is still self-contained. Its DLL gate is the INVERSE of the static
+# job's: every import must be either a known Windows system DLL or a
+# toolchain DLL that was copied into pkg/ - anything else (a vendored dep
+# that went dynamic, e.g. SDL3.dll) FAILS the job. Object code is identical
+# to the static job (only link flags differ), so both Windows jobs share the
+# ccache-windows-x64- restore prefix and warm-start each other's caches.
+# Verified locally 2026-10-18 (gcc-mingw-w64-x86-64 14.2, debian trixie):
+# the dynamic exe imports exactly libgcc_s_seh-1 + libstdc++-6 (+ libssp-0
+# when -fstack-protector-strong is on); all three ship in the
+# gcc-mingw-w64-*-posix-runtime / mingw-w64-x86-64-dev packages, and
+# `x86_64-w64-mingw32-g++ -print-file-name=<dll>` resolves each one.
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -420,3 +437,149 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: devilutionx-gpu-shaders-windows-x64.zip
+
+  # Same MinGW cross build as the `windows` job but with NO -static linker
+  # flags (see the WINDOWS-NONSTATIC JOB header note at the top). Everything
+  # else is deliberately identical: the vendored deps stay static, so the
+  # only new imports are the MinGW runtime DLLs, which the Package step
+  # resolves from the cross toolchain and ships beside the exe.
+  windows-nonstatic:
+    name: Windows x64 (MinGW cross, SDL3, dynamic link — ships MinGW runtime DLLs)
+    runs-on: ubuntu-24.04
+    # MAINT-04: see the Linux job — release uploads need contents:write.
+    permissions:
+      contents: write
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_SLOPPINESS: time_macros,pch_defines
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # Object code is identical to the static job (only link flags differ), so
+    # the shared ccache-windows-x64- prefix warm-starts this job from the
+    # static job's cache of the same push. The primary key has its own
+    # -nonstatic- infix so this job saves under a distinct key and the two
+    # jobs never race for the same cache entry.
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-windows-x64-nonstatic-${{ github.sha }}
+        restore-keys: |
+          ccache-windows-x64-
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 gettext smpq zip patch ccache
+
+    # Identical to the static job's Configure except CMAKE_EXE_LINKER_FLAGS:
+    # no -static, no -static-libgcc, no -static-libstdc++. Nothing else adds
+    # static linkage: the toolchain file (CMake/platforms/mingwcc64.toolchain.cmake)
+    # carries none, and DEVILUTIONX_STATIC_CXX_STDLIB (the genex that would add
+    # -static-libgcc/-static-libstdc++ per library) is force-disabled when sound
+    # is on and sdl_audiolib is not static (CMakeLists.txt "Mixing
+    # -static-libstdc++ with a dynamic C++ dependency" guard).
+    # NOTE: no '#' comments inside the folded command — YAML folds them into the
+    # shell line where '#' starts a comment and silently truncates every argument
+    # after it.
+    - name: Configure (same flags as the static job, minus -static)
+      run: >
+        cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/CMake/platforms/mingwcc64.toolchain.cmake
+        -DCROSS_PREFIX=/usr
+        -DUSE_SDL3=ON
+        -DUSE_GPU_SCALER=ON
+        -DDEVILUTIONX_SYSTEM_SDL3=OFF
+        -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
+        -DDEVILUTIONX_SYSTEM_ZLIB=OFF
+        -DDEVILUTIONX_SYSTEM_BZIP2=OFF
+        -DDEVILUTIONX_SYSTEM_LIBPNG=OFF
+        -DBUILD_TESTING=OFF
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        -DCMAKE_C_FLAGS='-Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion'
+
+    - name: Build
+      run: cmake --build build -j $(getconf _NPROCESSORS_ONLN)
+
+    - name: Package
+      run: |
+        # size telemetry (permanent): exe bytes + per-section breakdown land in
+        # the CI log on every build, so size levers are judged with data.
+        ls -l build/devilutionx.exe
+        x86_64-w64-mingw32-size -A build/devilutionx.exe | head -30
+        mkdir -p pkg
+        cp build/devilutionx.exe pkg/
+        if [ -f build/devilutionx.mpq ]; then cp build/devilutionx.mpq pkg/; fi
+        # Hellfire: ship the expansion MPQ the build produces (BUILD_ASSETS_MPQ
+        # + smpq). Without it the zip cannot run Hellfire even for users who own it.
+        if [ -f build/mods/hf.mpq ]; then
+          mkdir -p pkg/mods
+          cp build/mods/hf.mpq pkg/mods/
+        fi
+        # shader helper scripts ship beside the exe (corpus download / cache wipe)
+        cp Packaging/windows/install_shaders.cmd Packaging/windows/clear_shader_cache.cmd Packaging/windows/clear_gpu-scaler.log.cmd Packaging/windows/install_git.cmd pkg/
+        # INVERSE of the static job's DLL gate: the dynamic exe imports the
+        # MinGW runtime DLLs, so every NON-SYSTEM import must ship beside the
+        # exe (Windows searches the exe's own folder first, keeping the zip
+        # self-contained). Each import must be one of:
+        #   1. a known Windows system DLL / API set  -> ok, not shipped
+        #   2. resolvable from the cross toolchain   -> copied into pkg/
+        #   3. anything else (e.g. a vendored dep that went dynamic, SDL3.dll,
+        #      zlib1.dll) -> FAIL, exactly what the static gate catches there.
+        x86_64-w64-mingw32-objdump -p build/devilutionx.exe | grep 'DLL Name' | sed 's/.*DLL Name: //' | tr -d '\r' | sort -u > dlls.txt
+        if [ ! -s dlls.txt ]; then
+          echo '::error::no DLL imports parsed from devilutionx.exe - objdump output format changed?'
+          exit 1
+        fi
+        cat dlls.txt
+        resolve_dll() {
+          name="$1"
+          p="$(x86_64-w64-mingw32-g++ -print-file-name="$name" 2>/dev/null || true)"
+          if [ -f "$p" ]; then printf '%s\n' "$p"; return 0; fi
+          p="$(find /usr/lib/gcc/x86_64-w64-mingw32 /usr/x86_64-w64-mingw32/lib -maxdepth 3 -name "$name" -print -quit 2>/dev/null || true)"
+          if [ -n "$p" ] && [ -f "$p" ]; then printf '%s\n' "$p"; return 0; fi
+          return 1
+        }
+        fail=0
+        while IFS= read -r imp; do
+          name="$(printf '%s' "$imp" | tr '[:upper:]' '[:lower:]')"
+          case "$name" in
+            # Windows system DLLs / API sets: present on every Windows install.
+            api-ms-win-*|ext-ms-*|ntdll.dll|kernel32.dll|kernelbase.dll|user32.dll|gdi32.dll|gdi32full.dll|win32u.dll|shell32.dll|advapi32.dll|ole32.dll|oleaut32.dll|uuid.dll|ws2_32.dll|wsock32.dll|msvcrt.dll|ucrtbase.dll|vcruntime140*.dll|winmm.dll|imm32.dll|setupapi.dll|version.dll|dinput8.dll|xinput*.dll|shlwapi.dll|rpcrt4.dll|sechost.dll|bcrypt*.dll|userenv.dll|dbghelp.dll|d3d11.dll|dxgi.dll|opengl32.dll|glu32.dll|iphlpapi.dll|wintrust.dll|crypt32.dll|normaliz.dll|dnsapi.dll|cfgmgr32.dll|powrprof.dll|comctl32.dll|comdlg32.dll|uxtheme.dll|dwmapi.dll|msimg32.dll|shcore.dll)
+              echo "system DLL (ok, not shipped): $imp" ;;
+            *)
+              p="$(resolve_dll "$name" || true)"
+              if [ -n "$p" ]; then
+                cp "$p" pkg/
+                echo "shipped toolchain DLL: $name <- $p"
+              else
+                echo "::error::$imp is imported but is neither a known Windows system DLL nor shipped by the cross toolchain. If this is a vendored dep that went dynamic (SDL/zlib/png/...), restore its static linkage; if it is a MinGW runtime DLL, fix resolve_dll above."
+                fail=1
+              fi ;;
+          esac
+        done < dlls.txt
+        if [ "$fail" -ne 0 ]; then
+          echo '::error::devilutionx.exe has imports that the package does not cover - the zip would not launch on a clean Windows install.'
+          exit 1
+        fi
+        ls -l pkg/
+        cd pkg && zip -r ../devilutionx-gpu-shaders-windows-x64-nonstatic.zip . && cd ..
+
+    - name: Upload Windows package (nonstatic)
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-gpu-shaders-windows-x64-nonstatic
+        path: devilutionx-gpu-shaders-windows-x64-nonstatic.zip
+
+    # MAINT-04: attach the nonstatic zip to the release that triggered the run.
+    - name: Attach build to the GitHub Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: devilutionx-gpu-shaders-windows-x64-nonstatic.zip
