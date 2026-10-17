@@ -6,9 +6,11 @@
 // volk.h must come first: it pulls in <vulkan/vulkan.h> with VK_NO_PROTOTYPES
 // (defined by the slv-volk target that libslang-vk exposes) and provides every
 // entry point as a runtime-loaded function pointer, so neither the scaler nor
-// the game needs a Vulkan SDK or a link-time loader dependency. libslang-vk
-// loads the Vulkan library during Device::create; the volkLoad* calls below
-// only repopulate the same global table for this translation unit's WSI calls.
+// the game needs a Vulkan SDK or a link-time loader dependency. The exe's volk
+// copy is initialized HERE (volkInitialize + volkLoad* below): with
+// GPU_SCALER_SHARED=ON libslang-vk is a DLL with its own separate volk copy,
+// so Device::create's initialization inside the DLL does not reach this copy —
+// in the static build the two used to be the same table.
 #include <volk.h>
 
 #include <SDL3/SDL_filesystem.h>
@@ -817,8 +819,22 @@ bool CreateVulkanDevice(SDL_Window *window)
 	}
 	gDevice.emplace(std::move(*device));
 
-	// Repopulate volk's global table for this TU's WSI calls. Device::create
-	// already loaded the loader; both calls are idempotent.
+	// Repopulate volk's global table for this TU's WSI calls. There are TWO
+	// volk copies when GPU_SCALER_SHARED=ON: one inside libslangvk.dll
+	// (initialized by Device::create) and the exe's own static copy linked
+	// from slv-volk. The exe's copy starts completely NULL in the DLL build
+	// (in the static build Device::create initialized the single shared
+	// table, which is why this used to work without a volkInitialize here) —
+	// and volkLoadInstance dereferences this copy's vkGetInstanceProcAddr
+	// global through its stub, so calling it before volkInitialize() is a
+	// guaranteed null-call crash (field crash 2026-10-18, nonstatic DLL
+	// build, right after the "shader root" log line). volkInitialize is
+	// idempotent: it merely refcounts LoadLibrary("vulkan-1.dll") and
+	// re-fetches vkGetInstanceProcAddr when the table is already live.
+	if (volkInitialize() != VK_SUCCESS) {
+		LogFileLine("volkInitialize failed: the Vulkan loader (vulkan-1.dll) is not loadable");
+		return false;
+	}
 	volkLoadInstance(gDevice->instance());
 	volkLoadDevice(gDevice->device());
 
