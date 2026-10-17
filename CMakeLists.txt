@@ -176,7 +176,7 @@ if(USE_GPU_SCALER)
   include(FetchContent)
   FetchContent_Declare(libslang-vk
     GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git
-    GIT_TAG 6e693ec27382d7ec51c89d24416240800d702ee6 # M4 + cmake floor + push-block runner fix
+    GIT_TAG 80ff00adadaa617a6181b6e5d84162bf14be8895 # M4 + cmake floor + push-block runner fix
     )
   FetchContent_MakeAvailable(libslang-vk)
 endif()
