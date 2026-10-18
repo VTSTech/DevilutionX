@@ -2,6 +2,19 @@
 # and whether to link them statically.
 include(functions/dependency_options)
 include(functions/emscripten_system_library)
+# BUILD_SHARED_LIBS pin (2026-10-18): SDL_image/SDL_mixer's CMake declares
+# BUILD_SHARED_LIBS via cmake_dependent_option, and current CMake's
+# CMakeDependentOption module FORCE-writes that value into the GLOBAL cache
+# using the per-glue directory value of 3rdParty/SDL3[_image|_mixer]. Every
+# dependency configured afterwards (libsodium, magic_enum, asio, libzt,
+# googletest, benchmark, ...) then sees BUILD_SHARED_LIBS=ON and builds its
+# typeless add_library() targets as shared libraries: in the nonstatic CI
+# jobs libzt's natpmp_pic/zto_pic became DLLs and failed to link (undefined
+# __imp_socket/ws2_32/iphlpapi on MinGW; the same leak broke the Linux job).
+# Pin the build's own intent (static) at the root scope: each SDL glue still
+# overrides BUILD_SHARED_LIBS inside its own directory scope, while every
+# other add_subdirectory below inherits this OFF exactly like it always has.
+set(BUILD_SHARED_LIBS OFF)
 
 if(EMSCRIPTEN)
   emscripten_system_library("zlib" ZLIB::ZLIB USE_ZLIB=1)
