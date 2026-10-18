@@ -5,1070 +5,1812 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Fork releases are numbered `1.6.0-dev-<commit>`, where `<commit>` is the
-short hash of the commit a build or overlay was produced from, and are
-dated with an America/Toronto timestamp. Upstream (diasurgical) release
-history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
-and is not modified.
+## Unreleased
 
+### Features
 
-## 1.6.0-dev-96af9b5 (2026-10-16 09:45:48 PM)
-
-The window between the field-verified 007f3956a build and this one — audit
-rounds 13–15 in one flight. Round 13 closed the last two first-contact-bar
-Mediums (PERF-06, ROB-08), completing the nine-finding bar that gated first
-upstream contact; round 14 ran the 8C runner sweep (ROB-23, TEST-06,
-ROB-07, plus the FEAT-01/FEAT-03 riders) to close every remaining Medium —
-the ledger's first Medium-free state, with every Phase-0 sweep of
-merge-plan r2 done; and round 15 answered the window's one field
-regression, the Vertical Sync CTD (ROB-31), which also exposed that round
-13's ROB-08 change callback had been dead on arrival. The ledger moves
-73 → 74 findings: **43 closed / 31 open (0 High / 0 Medium / 31 Low)**.
-
-### Fixed
-
-#### GPU scaler presentation
-
-- **ROB-31** — the Vertical Sync toggle no longer crashes the game, and
-  mid-session vsync now reaches the GPU swapchain for real — closing
-  ROB-08 with an erratum: round 13's change callback never actually ran.
-  The FrameRateControl option's single change-callback slot was silently
-  won by the stock `ReinitializeRenderer` registration, so the round-13
-  `gpu_scaler::ApplyFrameRateControl` registration was dead on arrival:
-  with the scaler active the toggle was a same-window no-op, while the
-  frame loop stopped limiting once the option read VerticalSync — an
-  unthrottled present flood on the still-IMMEDIATE swapchain the window
-  was claimed with (the field CTD). One dispatcher now routes the option
-  to `ApplyFrameRateControl` while the scaler owns the window and to the
-  stock recreate path otherwise, the dead registration is removed, and
-  `ApplySwapchainPresentMode` — shared by both Reinit claim sites,
-  success paths byte-identical — probes `SDL_WindowSupportsGPUPresentMode`
-  and falls back IMMEDIATE → MAILBOX → VSYNC (logged) instead of letting
-  the option desync from the swapchain. Null device/window states are
-  guarded no-ops and every failure stays LogFail-only — never fatal.
-
-#### GPU scaler presets
-
-- **ROB-23** — uniform blocks fill correctly for parameter-driven packs.
-  Three defects shared one function: the `<TextureName>Size` branch ran
-  before the shader-parameter lookup, so a member named e.g. `MaskSize`
-  backed by `#pragma parameter MaskSize` (which the translator accepts)
-  was zeroed by the size resolver and both the pragma default and the
-  preset override were silently dropped; `writeVec4` wrote 8+ bytes
-  unconditionally, letting a scalar or vec2 member clobber its neighbor's
-  storage; and the generic fallback wrote IEEE-float bits regardless of
-  the member's declared type (value 5 read back as ~1.09e9 in an int
-  member). The parameter lookup now runs first, and every write is type-
-  and size-aware through two new helpers (std140 component count,
-  per-type bit patterns for int/uint/bool members) — CRT-mask strengths,
-  curvature and every other parameter now land as the user set them.
-
-- **ROB-07** — a mid-load preset failure no longer leaks the GPU resources
-  created before the failure. `PassRuntime` and `LutRuntime` held raw
-  SDL_GPU pointers with no destructor, so a shader, pipeline or LUT
-  texture created before a failed step was unreachable once the staging
-  unique_ptrs died — bounded only by the failure contract's full device
-  teardown, and silently false to the header's "Unload is safe to call
-  anytime" contract. Both runtimes now own RAII destructors (release
-  context recorded at creation) as the single release point for their GPU
-  objects: staged runtimes clean up at scope exit on any mid-load
-  failure, `Unload` delegates to the same destructors, and the FEAT-01
-  reload below is the first reuse-of-Runner consumer to stand on it.
-
-### Added
-
-#### GPU scaler
-
-- **FEAT-01** — re-selecting the same preset now reloads it when the file
-  changed on disk. The loaded-chain identity gains an mtime/size snapshot
-  taken at load; the same-path fast-path re-stats, and a changed file
-  logs "preset file changed on disk; reloading" and rebuilds through the
-  normal flow. Iterating on a preset pack no longer detours through
-  another preset or restart; a stat that fails keeps the running chain.
-
-- **FEAT-03** — failed preset loads name themselves in the filter OSD
-  instead of only in gpu-scaler.log. The last load error is recorded at
-  every failure site (path missing, file not found, parse failure, load
-  failure) and the OSD's unavailable state becomes
-  "Shader: <name> (failed: <first line>)", capped so the label stays
-  on-screen; the full text remains in the log. The top failure causes
-  (missing shader files, wrong LFS pull) become self-diagnosable.
-
-### Changed
-
-#### Translator performance
-
-- **PERF-06** — preset load is now linear in shader size and declaration
-  count. `RewriteSamplers` used to walk the entire stage text once per
-  unknown sampler declaration — `IsDefineTarget` and `IsTextureSampled`
-  for every orphan (Mega Bezel wrapper packs legitimately carry many),
-  plus `IsSamplerNameUsed`/`DefineTargetExpansion`/`IsSamplerDeclared` in
-  the #defined-away path — O(N·n) full-text scans on the frame path: the
-  field's seconds-to-minutes stalls on big wrapper packs. A one-pass
-  `SamplerScanIndex` — two linear passes over the stage text, built once
-  before the rewrite loop: directive targets and macro bodies, sampler2D
-  declarations, and a per-token classification of use/sampled contexts —
-  now answers all five queries by lookup through thin wrappers that keep
-  the original full-text scans only for non-identifier names (invalid
-  GLSL that glslang rejects later) for exact parity. Parity evidence:
-  29,590 old-vs-new cross-checks with zero divergences across a
-  branch-torture text, the 32-file smoke corpus, and a 200 KB wrapper
-  pack. The perf record also carries a measured erratum: the finding's
-  first pattern (the `FindUniformBlock` push-constant skip loop) never
-  went quadratic — the shipped suffix-advance probes 0.6×n positions on
-  the finding's own 1 MB/30k-block adversarial shape (30,001
-  `regex_search` calls, 66 ms), so that half needed no change.
-
-#### GPU scaler tests
-
-- **TEST-06** — the smoke corpus can no longer pass on pragma-name drift.
-  The smoke harness now pre-scans every pass shader of every preset with
-  the runner's exact `#pragma name` regex (byte-parity asserted against
-  the runner's own matcher) and folds the identifiers it finds into the
-  known name set both-cased, so corpus and runner can no longer disagree
-  about which names exist; pass files it cannot open are skipped and left
-  to the pass loop to report with context.
-
-#### Audit ledger / documentation
-
-- Ledger riders updated across the window to the round-15 state: audit.md
-  (74/43/31 snapshot — Medium-free since round 14, ROB-31 section added),
-  deltas.md (eight closure records with evidence — PERF-06/ROB-08,
-  ROB-23/TEST-06/ROB-07/FEAT-01/FEAT-03, ROB-31 — plus the ROB-08
-  erratum, index rows, Fix History rounds 13–15), diablo-handoff.md
-  ledger line and Phase-0 note, brief.md backlog and merge-track bullets
-  (the merge-track line still carried the r2 "10 of 14" bar math —
-  corrected to the 9-of-14 errata), merge-plan r2's Phase-0/8C
-  annotations, and the coverage CSV riders.
-
-#### Windows packaging
-
-- The Windows package now ships `clear_gpu-scaler.log.cmd` beside the exe
-  with the shader helper scripts (packaging workflow rider).
-
-
-## 1.6.0-dev-6d555f32 (2026-10-16 08:40:55 PM)
-
-Field round against the round-14 build: enabling Vertical Sync with the GPU
-scaler active crashed the game. One finding opened and closed in the same pass
-(**74 findings / 43 closed / 31 open, 0 High / 0 Medium / 31 Low** — the open
-set stays Medium-free).
-
-### Fixed
-
-#### GPU scaler
-
-- **ROB-31** — the Vertical Sync toggle no longer crashes the game. The
-  round-13 change callback was dead on arrival: the option's single
-  change-callback slot was silently won by the stock `ReinitializeRenderer`
-  handler, so the toggle never reached the swapchain while the frame loop
-  stopped limiting — an unthrottled present flood on the still-IMMEDIATE
-  swapchain. An explicit dispatcher now routes the option to
-  `gpu_scaler::ApplyFrameRateControl` while the scaler owns the window (the
-  live swapchain follows the option) and to the stock recreate path otherwise;
-  the dead registration is removed. `ApplySwapchainPresentMode` additionally
-  probes `SDL_WindowSupportsGPUPresentMode` and falls back IMMEDIATE → MAILBOX
-  → VSYNC (logged) instead of letting the option desync from the swapchain;
-  null device/window states are a guarded no-op.
-
-## 1.6.0-dev-9cac3fe (2026-10-16 07:56:17 PM)
-
-Round 14 runs the 8C runner sweep and closes the last five Medium findings —
-the audit ledger is Medium-free for the first time (**73 findings / 42 closed
-/ 31 open, 0 High / 0 Medium / 31 Low**), and with the 8A+8B first-contact bar
-already complete as of round 13, every Phase-0 sweep of the merge plan is
-done.
-
-### Fixed
-
-#### GPU scaler presets
-
-- **ROB-23** — uniform blocks fill correctly for parameter-driven packs.
-  Three defects shared one function: the `<TextureName>Size` branch ran
-  before the shader-parameter lookup, so a member named e.g. `MaskSize`
-  backed by `#pragma parameter MaskSize` (which the translator accepts) was
-  zeroed by the size resolver and both the pragma default and the preset
-  override were silently dropped; `writeVec4` wrote 8+ bytes
-  unconditionally, letting a scalar or vec2 member clobber its neighbor's
-  storage; and the generic fallback wrote IEEE-float bits regardless of the
-  member's declared type (value 5 read back as ~1.09e9 in an int member).
-  The parameter lookup now runs first, and every write is type- and
-  size-aware through two new helpers (std140 component count, per-type bit
-  patterns for int/uint/bool members) — CRT-mask strengths, curvature and
-  every other parameter now land as the user set them.
-
-- **ROB-07** — a mid-load preset failure no longer leaks the GPU resources
-  created before the failure. `PassRuntime` and `LutRuntime` held raw
-  SDL_GPU pointers with no destructor, so a shader, pipeline or LUT texture
-  created before a failed step was unreachable once the staging unique_ptrs
-  died — bounded only by the failure contract's full device teardown, and
-  silently false to the header's "Unload is safe to call anytime" contract.
-  Both runtimes now own RAII destructors (release context recorded at
-  creation) as the single release point for their GPU objects: staged
-  runtimes clean up at scope exit on any mid-load failure, `Unload`
-  delegates to the same destructors, and the FEAT-01 reload below is the
-  first reuse-of-Runner consumer to stand on it.
-
-### Added
-
-#### GPU scaler
-
-- **FEAT-01** — re-selecting the same preset now reloads it when the file
-  changed on disk. The loaded-chain identity gains an mtime/size snapshot
-  taken at load; the same-path fast-path re-stats, and a changed file logs
-  "preset file changed on disk; reloading" and rebuilds through the normal
-  flow. Iterating on a preset pack no longer detours through another preset
-  or restart; a stat that fails keeps the running chain.
-
-- **FEAT-03** — failed preset loads name themselves in the filter OSD
-  instead of only in gpu-scaler.log. The last load error is recorded at
-  every failure site (path missing, file not found, parse failure, load
-  failure) and the OSD's unavailable state becomes
-  "Shader: <name> (failed: <first line>)", capped so the label stays
-  on-screen; the full text remains in the log. The top failure causes
-  (missing shader files, wrong LFS pull) become self-diagnosable.
-
-### Changed
-
-#### Audit ledger / documentation
-
-- Ledger riders updated to the round-14 state: audit.md (Medium-free
-  snapshot, five detail sections and table rows removed), deltas.md (five
-  closure records, index rows, Fix History), handoff ledger line + Phase-0
-  note, brief.md backlog and merge-track bullets (the merge-track line still
-  carried the r2 "10 of 14" bar math — corrected to the 9-of-14 errata), and
-  merge-plan r2's ledger note + 8C status annotations.
-
-## 1.6.0-dev-f113268 (2026-10-16 6:28:14 PM)
-
-Round 13 closes the last two first-contact-bar Mediums — **PERF-06** and
-**ROB-08** — completing the 8A+8B bar that gated first upstream contact: all
-nine Medium findings open when merge-plan r2 was measured (ROB-18/19/22/20/21,
-MAINT-15, the FEAT-02 Metal disposition, ROB-08, PERF-06) are now closed, and
-the 8C runner sweep (ROB-07/23, TEST-06) remains, pipelining with early PR
-reviews. Ledger: **73 findings / 37 closed / 36 open (0 High / 5 Medium /
-31 Low)**.
-
-### Fixed
-
-#### GPU scaler presentation
-
-- **ROB-08** — mid-session vsync changes now reach the GPU swapchain. The
-  `FrameRateControl` option (Vertical Sync) carried `RecreateUI` but had no
-  change callback, so toggling vsync while the scaler was active changed
-  nothing until restart or filter change — while the SDL_Renderer path honored
-  the change on every `ReinitializeRenderer` (`SDL_SetRenderVSync`), the same
-  toggle silently did nothing on the GPU path. The duplicated apply block in
-  both `Reinit` window-claim sites is factored into a shared
-  `ApplySwapchainPresentMode()`, and a new public
-  `gpu_scaler::ApplyFrameRateControl()` — registered as the option's change
-  callback beside resolution/fullscreen/shaderFilter — re-applies
-  `SDL_SetGPUSwapchainParameters` (SDR composition, vsync or immediate)
-  whenever the setting changes while `IsActive()`, logging the new present
-  mode to gpu-scaler.log. A rejected present mode logs and keeps the old one —
-  never fatal — and the handback/parked-device states are no-ops. The two
-  refactored claim sites are behavior-identical on the success path.
-
-### Changed
-
-#### Translator performance
-
-- **PERF-06** — preset load is now linear in shader size and declaration
-  count. `RewriteSamplers` used to walk the entire stage text once per unknown
-  sampler declaration — `IsDefineTarget` and `IsTextureSampled` for every
-  orphan (Mega Bezel wrapper packs legitimately carry many), plus
-  `IsSamplerNameUsed`/`DefineTargetExpansion`/`IsSamplerDeclared` in the
-  #defined-away path — O(N·n) full-text scans on the frame path: the field's
-  seconds-to-minutes stalls on big wrapper packs. A one-pass
-  `SamplerScanIndex` — two linear passes over the stage text, built once
-  before the rewrite loop: directive targets and macro bodies, sampler2D
-  declarations, and a per-token classification of use/sampled contexts — now
-  answers all five queries by lookup through thin wrappers that keep the
-  original full-text scans only for non-identifier names (invalid GLSL that
-  glslang rejects later) for exact parity. Parity evidence: 29,590 old-vs-new
-  cross-checks with zero divergences across a branch-torture text, the
-  32-file smoke corpus, and a 200 KB wrapper pack. The perf record also
-  carries a measured erratum: the finding's first pattern (the
-  `FindUniformBlock` push-constant skip loop) never went quadratic — the
-  shipped suffix-advance probes 0.6×n positions on the finding's own
-  1 MB/30k-block adversarial shape (30,001 `regex_search` calls, 66 ms), so
-  that half needed no change.
-
-#### Audit ledger / documentation
-
-- Ledger riders updated to the round-13 state: audit.md (snapshot + bar
-  complete), deltas.md (PERF-06/ROB-08 closure records with the parity and
-  probe-count evidence, index rows, Fix History), handoff ledger line and bar
-  note, brief.md backlog bullet (was still at the round-9 state with the old
-  72-finding count — now corrected), and merge-plan r2's Phase-0 status note.
-  No findings closed by these riders themselves.
-
-## 1.6.0-dev-007f3956a (2026-10-16 5:55:57 PM)
-
-The window between the field-verified 1f7d111fd build and this one. Engine
-code changes exactly once — the FEAT-02 Metal disposition — while the bulk of
-the window is audit-ledger work (rounds 10–12), the fork's first test-TU
-clang-format pass, and a two-step Linux CI restructure: shader baking left
-the build via `GPU_SCALER_SPV_PREBUILT` (MAINT-15), then the gtest suite left
-the Linux build job entirely for its own `linux-tests` job, closing the ~5x
-Linux-vs-Windows wall-time gap. The window closes MAINT-15 and FEAT-02 — the
-last two of the nine first-contact-bar Mediums measured at merge-plan r2,
-leaving ROB-08 and PERF-06 — and the ledger now stands at 73 findings:
-**35 closed / 38 open (0 High / 7 Medium / 31 Low)**.
-
-### Fixed
-
-#### GPU scaler (macOS)
-
-- **FEAT-02** — the Metal question is answered by retiring the MSL path
-  instead of leaving it half-wired: the hand-ported MSL for the shared
-  programs (`gpu_shaders_msl.hpp`) was never field-validated and the preset
-  runner submits SPIR-V only, so an MSL-capable device produced a session
-  that deterministically failed at first preset load behind the generic
-  error. `BuildDeviceProperties` no longer advertises the MSL shader-format
-  property, `CreateShader` is SPIR-V-only (the `MslFor`/`MslEntryFor` helpers
-  and the MSL branch are gone; the entrypoint is always `"main"`), and
-  `gpu_shaders_msl.hpp` is no longer included, carrying only an unwired
-  banner for reference. Auto-selected Metal now gets an honest log line —
-  "GPU shader mod requires Vulkan; Metal is not yet supported" — and falls
-  into ROB-18's single explicit-Vulkan retry (MoltenVK keeps the scaler
-  available on stock macOS); a retry that still comes back non-Vulkan
-  records the hard failure and reverts to the stock renderer exactly as
-  before. The handoff table's macOS row now matches the code.
-
-### Changed
-
-#### Continuous integration
-
-- **MAINT-15** — shipped SPIR-V becomes a function of the repo, not of the
-  build runner: a new `GPU_SCALER_SPV_PREBUILT` CMake option (default OFF)
-  skips the glslangValidator probe and embeds the committed
-  `gpu_shader_spv_prebuilt.hpp` directly. Previously the prebuilt header was
-  only the no-glslang fallback, so CI — which has glslang — regenerated the
-  header at build time and shipped bytes drifted with the runner's apt
-  glslang version. Every CI job sets it ON: Windows drops `glslang-tools`
-  from its apt line entirely, Linux keeps it only as the Package step's
-  source-health canary and the spirv-blobs artifact compiler, and local
-  development stays OFF to iterate on the `.vert`/`.frag` sources against a
-  live glslangValidator. deltas.md's MAINT-15 closure record carries the
-  CI-split addendum.
-- Linux CI split: the gtest suite moved out of the Linux build job into its
-  own `linux-tests` job. The Linux job carried the full vendored-dep build
-  AND the headless-GPU test run serially — ~5x the Windows job's wall time;
-  now the binary build (`-DBUILD_TESTING=OFF`: no gtest, no test TUs, no
-  Vulkan/Xvfb stack on its critical path) and the suite (same
-  gcc:14-bookworm image, Xvfb + lavapipe, full ctest plus the preset_unload
-  "ALL OK" coverage guard) run in parallel. Both Linux jobs configure with
-  identical flags and share the `ccache-linux-` cache prefix, so the tests
-  job's tree build is mostly cache hits; all three jobs keep
-  `GPU_SCALER_SPV_PREBUILT=ON`. Trade-off: a suite failure now fails the run
-  red without blocking the Linux artifact upload — tests gate the run, not
-  the package step.
-
-#### Tests
-
-- clang-format 18.1.8 (the CI-pinned version) pass over every TU the
-  round-8/9 window touched found all seven `Source/` TUs clean with line
-  endings and tab conventions byte-intact; the one offender was
-  `test/preset_unload_test.cpp`, space-indented since it landed — now
-  re-indented under `test/.clang-format` (169 lines, whitespace-only:
-  `git diff -w` is empty) so the CI format gate covers it cleanly.
-
-#### Audit ledger / documentation
-
-- Round-10 re-head (2026-10-17): the field records keep ROB-26/ROB-27 —
-  matching the code comments shipped in 69be0cad5 and b0b4d5e0a — and the
-  open Low finding that shared the ROB-26 number moves to **ROB-30**
-  (audit.md ledger + merge-plan-draft-r2.md's 8B row, with a renumber note
-  on both). Open count unchanged by the re-head: **40 findings — 0 High /
-  9 Medium / 31 Low**.
-- Merge-plan arithmetic corrected in the same push: the first-contact bar
-  is **9 of the 14** Medium open when r2 was measured — 8A carries four
-  (ROB-20/21, PERF-06, MAINT-15) and 8B five (ROB-08/18/19/22, FEAT-02
-  disposition), with ROB-20 no longer double-counted across the PR 1/PR 2
-  gates — not the "10 of 14" r2 originally wrote. `merge-plan-draft-r2.md`
-  and `audit.md` carry the fix plus a dated ledger note reconciling r2's
-  44-open snapshot with the round-10 count.
-- Round 12 (2026-10-17, docs-only): the round-by-round fix history moved
-  out of `audit.md`'s Executive Summary into a new **Fix History** section
-  in [deltas.md](deltas.md) (whose index table also gained the missing
-  round-11 rows, MAINT-15 and FEAT-02), and the Executive Summary was
-  regenerated as a current-state snapshot — 35 closed / 38 open (0 High /
-  7 Medium / 31 Low), bar = ROB-08 + PERF-06. `diablo-handoff.md`'s ledger
-  line updated to the round-11 state and its stale "10 of 14" bar note
-  aligned with the 9-of-14 errata. No findings closed, no code changed.
-- `docs/audit/vulkan-coverage-updated.csv` refreshed repeatedly through the
-  window (+226/−25 net).
-
-## 1.6.0-dev-1f7d111fd (2026-10-16 3:39:59 PM)
-
-The window that closes the Shaders → 'Off' field CTD. Five code commits shipped
-between the round-8 patch and this build — the round-9 load-path hardening
-(ROB-20/21), a ROB-19 rider for the first field report, the Linux CI headless-GPU
-fix, and the two fixes that actually ended the crash (ROB-26, ROB-27) — and the
-field now confirms it: switching Shaders to Off with a preset active no longer
-terminates the process (verified on this build, 2026-10-17). The same window gave
-Linux CI its first real headless GPU test coverage, and the fork took its first
-upstream sync through a true merge commit (PR #1 from diasurgical/master).
-
-### Fixed
-
-#### GPU scaler load path (round 9)
-
-- **ROB-20** — every untrusted read on the preset load path is capped *before* the
-  slurp: `ParsePresetImpl` refuses presets above 8 MiB, `ResolveIncludes` refuses
-  the top-level shader and every include above 4 MiB, and the diagnostics
-  fingerprint reader applies the same cap and simply skips the fingerprint on
-  oversize input; unseekable streams are refused with their own message. Both
-  readers previously slurped whole files with no guard anywhere upstream on the
-  load path, so a planted multi-gigabyte file terminated the process via uncaught
-  `bad_alloc` instead of returning the documented error contract. The
-  int-overflow class closes structurally (both diagnostics size casts go through a
-  clamping `DiagSizeToInt` helper), and the missing top-level guard now exists:
-  `ParsePreset`/`TranslateSlang` wrap their bodies in a catch-all that converts
-  any escaping exception — `bad_alloc` included — into the documented failure
-  contract (`false` plus a named error, `out` left in the early-failure state).
-  The caps sit orders of magnitude above the real corpus (the largest known
-  `.slang` is ~130 KiB), so no legitimate pack changes behavior.
-- **ROB-21** — `RewriteSamplers` name-dedupes the plain rewrite path immediately
-  before the emit. Include-once is tracked *per bucket* (shared/vertex/fragment),
-  so a file included once in the shared region and again in the fragment region
-  pasted its stage-guarded sampler declaration into the fragment TU twice — valid
-  input producing two dense bindings for one sampler: a glslang "redefinition"
-  compile failure with misleading diagnostics, plus double-counted
-  `stage.textures` reserving two sampler slots for one texture. The repeat
-  declaration is now dropped (first binding wins — it is visible everywhere below
-  in the same TU) with a named warning recorded; the alias-branch dedupe composes
-  unchanged and every other validation runs as before. The smoke corpus gained
-  `dupinclude.slangp` (+ two shaders) exercising exactly that re-inclusion, and
-  `preset_failure_modes` grew from 37 to 41 checks under the new caps.
-
-#### GPU scaler — Shaders → 'Off' CTD (field-verified closed on this build)
-
-- **ROB-19 rider** — the first field report on the round-8 stack:
-  `RecreateMainRenderWindow`'s create-before-destroy order created the replacement
-  window *visible* while the old one still owned display, focus and mouse grab —
-  a two-visible-windows moment the original destroy-then-create order never had.
-  The replacement is now created `SDL_WINDOW_HIDDEN`, the old window destroyed,
-  then shown and raised — a single visible transition, keeping ROB-19's
-  no-window-loss guarantee. Correct for its own finding, though (per ROB-26's
-  record below) not what the field crash ultimately turned on.
-- **ROB-26** — the hand-back no longer tears the GPU device down inside the
-  settings switch. The field bisection that framed the hunt ("d5ca0c0 good") was a
-  false negative: SDL3-GPU's backend priority on Windows is D3D12 before Vulkan,
-  and at d5ca0c0 the `CreateDevice` whitelist rejected the auto-selected d3d12, so
-  the scaler never activated there and the 'Off' switch exercised nothing but the
-  renderer-only path. ROB-18's forced-Vulkan retry made the scaler work on that
-  machine for the first time — which made the never-once-executed hand-back stack
-  reachable: synchronous `SDL_ReleaseWindowFromGPUDevice` + `SDL_DestroyGPUDevice`
-  (full Vulkan teardown) microseconds before a window recreation and a D3D11
-  reclaim, all inside one call frame. New `gpu_scaler::HandbackWindow(window)` does
-  everything `Shutdown()` does **except** destroy the device: frame/filter
-  resources, the preset runner, the samplers and the window claim are released
-  explicitly while the window is still alive (SDL_gpu has no window-destroy
-  auto-release hook), `IsActive()` flips false immediately so every game path
-  falls back to the regular renderer at once, and the parked, resource-less device
-  is destroyed by the next `Shutdown()` (quit / `dx_cleanup`) or transparently
-  reused by the next `Reinit()` (re-selecting a shader re-claims a fresh window on
-  it). `gpu-scaler.log` brackets the remaining GPU call (`HandbackWindow: ...`) so
-  any residual failure names its frame.
-- **ROB-27** — the crash ROB-26's build still hit: a null item-cursor CLX read
-  when the switch runs in the main menu. The regular-renderer branch of
-  `ReinitializeRenderer` re-runs `InitVirtualGamepadGFX()` (the ROB-22 pair) →
-  `LoadPotionArt()` → `GetInvItemSize(CURSOR_FIRSTITEM + ICURS_POTION_OF_HEALING)`
-  → `pCursCels->numSprites()`, but `pCursCels` (`data\inv\objcurs`) is loaded by
-  `InitCursor()` at game-session start and freed by `FreeCursor()` — empty in the
-  menu, so the read is `LoadLE32(nullptr)`: an instant, silent access violation in
-  Release. Shader options are CantChangeInGame, so the menu is the only context
-  this path executes in, and sessions where the scaler never activated never reach
-  it (the startup renderer exists, so the branch is skipped) — which is why the
-  field crash only appeared once ROB-18 made the scaler work on Windows, and why
-  the diagnostic log stopped exactly after `Created renderer: direct3d11`. Two
-  guards: `GetInvItemSize()` (`Source/cursor.cpp`) returns `{0, 0}` when
-  `pCursCels` is not loaded, and `LoadPotionArt()`
-  (`Source/controls/touch/renderers.cpp`) skips the potion strip on a zero size —
-  the strip is never rendered in menus, and the game-load path (`LoadAllGFX`)
-  rebuilds it exactly where the engine always did. In-game behavior is
-  byte-identical.
-
-#### Tests / CI
-
-- `preset_unload_test` now actually runs on Linux CI instead of failing. Headless
-  containers have no video device, and SDL3 (unlike SDL2) never auto-selects the
-  dummy video driver — whose driver, in turn, has no Vulkan hooks at all, so
-  `SDL_VIDEODRIVER=dummy` is not a viable fallback for `SDL_CreateGPUDevice`. The
-  harness gained a clean skip tier for `SDL_Init(SDL_INIT_VIDEO)` failure (exit 0,
-  loud SKIP line — same tier as the existing no-device/no-corpus skips), and the
-  Linux job runs the suite under `xvfb-run` with `SDL_VIDEODRIVER=x11` plus
-  `libvulkan1`/`mesa-vulkan-drivers` (bookworm's lavapipe ICD qualifies; SDL_gpu
-  requires only Vulkan 1.0 core). A coverage guard re-runs `preset_unload`
-  verbosely and fails the job unless it ends with "ALL OK", so a silently-skipping
-  test can no longer leave the suite green with zero GPU lifecycle coverage. The
-  harness also gained round 4: menu-context `InitVirtualGamepadGFX()` /
-  `FreeVirtualGamepadGFX()` with `pCursCels` empty — the exact ROB-27 sequence,
-  which kills the process pre-fix and passes asset-free post-fix.
-
-### Added
-
-#### Upstream sync (PR #1 — first true merge commit)
-
-- Merged `diasurgical/master` inbound. Upstream was exactly one commit ahead of
-  the 2026-10-11 sync base: 94433061f (staphen, "Free pointer returned by
-  SDL_GetDisplays()"). Net effect on the fork tree is a single line —
-  `SDL_free(displays)` after the desktop display mode is read in
-  `CalculatePreferredWindowSize` — landing cleanly beside the fork's existing
-  `ErrSdl()` handling. `Source/engine/render/gpu/` is untouched and no conflicts
-  surfaced.
-
-### Changed
-
-#### Audit ledger / documentation
-
-- [deltas.md](deltas.md) gains the closure records for ROB-20/21 (round 9) and
-  the field regressions ROB-26/ROB-27, plus the ROB-19 field-regression addendum
-  (mechanism, fix, plan-B note). The audit.md open-list re-head for the field
-  closures is still pending — and note the field records' ROB-26 ID collides with
-  an existing open Low finding of the same number (the swapchain-acquire vs
-  minimized-window-skip finding); renumber at the next re-head. Open ledger per
-  the round-9 re-head: **40 findings — 0 High / 9 Medium / 31 Low**.
-- `docs/audit/vulkan-coverage-updated.csv` refreshed (+42/−15).
-
-## 1.6.0-dev-bbb0a9349 (2026-10-16 12:20:03 AM)
-
-Round 8 of the audit shipped the three presentation-surface Mediums that opened the
-short-term queue — ROB-18, ROB-19, ROB-22 — as one bounded patch, cutting the open
-ledger from 44 to 41 findings (**0 High / 11 Medium / 30 Low**). The rest of the
-window is planning and documentation: the upstream merge plan went out as drafts r1
-and r2 (8-PR ladder with Phase-0 audit gates, shared with the diasurgical
-maintainers, reply pending), the Vulkan field-sweep coverage landed as a committed
-CSV, and the maintainer handoff was consolidated. The Linux CI test-geometry fix
-(r7.6.2) also landed inside this window and carries its own full entry below
-(`1.6.0-dev-a0cbeccb6`).
-
-### Fixed
-
-#### GPU scaler
-
-- **ROB-18** — an unsupported *auto-selected* GPU backend no longer hard-fails the
-  session: `CreateDevice` now retries once with the explicit `"vulkan"` backend
-  whenever its driver whitelist rejects the runtime's pick (on Windows, SDL's
-  default selection order can yield `d3d12` — a SPIR-V-declaring backend per SDL —
-  which previously left the scaler dead for the whole session unless
-  `DEVILUTIONX_GPU_BACKEND=vulkan` was set by hand). The rejected device is
-  destroyed and the property set rebuilt by a new `BuildDeviceProperties` helper
-  (one shared implementation for both attempts), and the session continues on
-  Vulkan with SPIR-V shaders. An explicit `DEVILUTIONX_GPU_BACKEND` value or
-  forced name is still honored as-is (no auto-retry — the override exists to
-  troubleshoot one specific backend), with a log line saying so, and a
-  belt-and-braces check covers an explicitly named backend ever coming back
-  unlisted. The old double-log is gone: `CreateDevice` no longer calls
-  `LogFailHard`/`Shutdown` itself; only the caller records the hard failure, once.
-  Success-path behavior for vulkan/metal-selected devices is byte-identical.
-
-#### Window / renderer lifecycle
-
-- **ROB-19** — `RecreateMainRenderWindow` creates the replacement window *before*
-  destroying the old one, so a failed `SDL_CreateWindow` on the fallback-of-the-
-  fallback path (GPU-failure fallback in `RenderPresent` → `ReinitializeRenderer`)
-  keeps the existing window alive, logs the SDL error, and returns `false` instead
-  of taking the game down through a fatal `ErrSdl()` — followed, previously, by a
-  second one from `SDL_GetWindowSurface(nullptr)` on the next frame. `ghMainWnd`
-  can therefore never be left null by the function, both callers continue with a
-  live window on the stock renderer path, and the game only dies when it is left
-  with no window at all. The success path is order-swapped but otherwise identical.
-
-#### Virtual gamepad (touch)
-
-- **ROB-22** — the second half of the ROB-14 use-after-free family: virtual-gamepad
-  textures no longer dangle across scaler activation. The scaler-activation branch
-  now calls `FreeVirtualGamepadTextures()` immediately before
-  `SDL_DestroyRenderer(renderer)` (mirroring `dx_cleanup`'s ordering and the ROB-14
-  `texture` handling), so the handles are destroyed while their renderer is still
-  alive instead of the next `FreeVirtualGamepadTextures()` running
-  `SDL_DestroyTexture` on freed memory. And the renderer-creation site in
-  `ReinitializeRenderer` re-runs `InitVirtualGamepadGFX()` +
-  `InitVirtualGamepadTextures(*renderer)` after every fresh renderer, so the
-  GPU-failure fallback renders the gamepad against textures created from the
-  *current* renderer — with the art reload covering the common case where
-  `createTextures` already consumed the source surfaces (the extra calls are no-ops
-  in the steady state). Filter toggles and fallbacks now restore the touch UI
-  instead of leaving dangling handles or a permanently missing gamepad; desktop
-  builds are unaffected (the virtual gamepad is never created there).
-
-### Added
-
-#### Upstream merge track (planning — nothing scaffolded, no PRs opened)
-
-- `docs/merge-plan-draft-r1.md` and `docs/merge-plan-draft-r2.md` (r2 supersedes
-  r1): a plan-first, phased 8-PR ladder for carrying the shader-preset pipeline
-  toward `diasurgical/DevilutionX`, answering AJenbo's merge conditions with facts
-  (no SDL patching — SDL3 core byte-identical; functional PRs one at a time). r2
-  adds the audit-closure gate, per-PR readiness gates, and a noise-control policy:
-  every proposed PR is gated on the open findings that share its files, with
-  closure ordered into three Phase-0 sweeps — **8A** library surface (ROB-20/21,
-  PERF-06, MAINT-15, plus the `gpu/preset/*` cluster), **8B** presentation surface
-  (ROB-08, FEAT-02 disposition, ROB-26, MAINT-10, PERF-01/03 — ROB-18/19/22 closed
-  this window), **8C** runner surface (ROB-07/23, TEST-06, ROB-10/11, MAINT-17,
-  PERF-02) — and first contact (PR 4 + PR 1) barred until 8A+8B close 10 of the
-  open Mediums. The plan was shared with the upstream maintainers on October 16,
-  2026 and is awaiting their reply; whether or not any PR ever merges, the
-  long-term goal is unchanged — full audit closure, then a standalone reusable
-  shader-preset library (handoff §14).
-
-#### Field-sweep coverage
-
-- `docs/audit/vulkan-coverage-2026-10-15.csv`: per-preset Vulkan coverage from the
-  field sweep, committed alongside updates to
-  `docs/audit/shader-test-list-2026-10-15.md` — pass counts, load/cache timings,
-  dwell times, and the first mipmap + live `PassFeedback` confirmations
-  (`reshade/magicbloom.slangp`: mip chains on pass outputs 0–10, adapt-ring
-  feedback, 12 passes).
-
-### Changed
-
-#### Audit ledger
-
-- `audit.md` re-headed to round 8; ROB-18/19/22 move from the open Medium list to
-  [deltas.md](deltas.md) with full closure records (verification: both touched TUs
-  clean under `clang-format 18.1.8`, the CI-pinned version, and warning-free under
-  the project's Release flags). Open ledger: **41 findings — 0 High / 11 Medium /
-  30 Low**.
-
-#### Documentation
-
-- `docs/diablo-handoff.md` consolidated (net −728 lines), restructured around the
-  merge track (§14); README and `docs/brief.md` updated for the merge-track
-  addendum; `docs/SLANG_SPEC.md` gap #13 (`#reference` multi-chain order) marked
-  resolved — comment-side fix (`ca02abf856`), last-wins behavior documented, no
-  corpus preset relies on the order.
-
-## 1.6.0-dev-a0cbeccb6 (2026-10-15 7:47:42 PM)
-
-Hotfix on top of the round-7 audit patch stack: the Linux CI test job's first
-real execution of the preset smoke corpus (shadowed since it landed by the
-r7.5 compile break, which died before the Test step, and unblocked by the
-r7.6 void-API fix) failed `preset_smoke_corpus`.
-
-### Fixed
-
-#### Tests
-
-- `preset_smoke_corpus` is green again: the `preset_smoke` test binary now
-  builds into the build root (`RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}`),
-  matching the convention of every other test executable. `SDL_GetBasePath()`
-  follows the binary's location, so from `build/Source/` the SEC-01 shader
-  root resolved to `build/Source/shaders` and the corpus copied to
-  `build/shaders/.preset-smoke/` fell outside it — every good-corpus preset
-  failed at translate with "cannot open shader file" (ctest exit 8, one test
-  in the FAILED list). `preset_smoke_malformed` was and stays green: its
-  `--expect-fail` contract is that every preset fails cleanly with a
-  non-empty error, which the sandbox breakage still satisfied. Corpus,
-  fixtures, harness, and the SEC-01 sandbox are unchanged.
-
-## 1.6.0-dev-98357ff (2026-10-15 7:01:14 PM)
-
-Round 7 of the audit re-walked the entire mod with fresh eyes - scaler/present
-lifecycle, parser/translator, runner/compiler, tests/CI - and produced 25 new
-findings (2 High, 11 Medium, 12 Low) plus a reopened MAINT-03. The Priority
-Matrix's entire Immediate row shipped as one low-risk patch the same day,
-closing both High findings and the unchecked-SDL-return cluster behind them;
-the vendored-SDL3 build break (SDL >= 3.2 made `SDL_UploadToGPUTexture` return
-`void`) and the CI clang-format gate were fixed on top of it. The WAV-fallback
-diagnostics learned to name the failing asset and the MPQ archive it came
-from. The ledger stands at 44 open findings (0 High / 14 Medium / 30 Low);
-`deltas.md` remains the single record of closures.
-
-### Added
-
-#### Audio
-
-- `DEVILUTIONX_WAV_FALLBACK` CMake option: builds the `SDL_LoadWAV_IO`
-  fallback path that recovers the WAV files SDL3_mixer 3.2.0's stricter chunk
-  scanner rejects (zero-length or past-EOF data-chunk sizes in the tail).
-
-#### Testing
-
-- `preset_smoke` is registered with ctest against a committed good + malformed
-  corpus (multi-pass/feedback/history/LUT presets; malformed presets must fail
-  with a named error string, never a crash) - the round-5 fix that closed the
-  audit's last High finding. It landed inside this release window and carries
-  its own full entry above (`1.6.0-dev-a67a4c0`).
-
-#### Packaging
-
-- `Packaging/windows/clear_gpu-scaler.log.cmd`: one-click reset of
-  `gpu-scaler.log` next to the game executable for Windows field reports.
-
-### Changed
-
-#### Audit ledger
-
-- `audit.md` refreshed by the round-7 sweep (+25 findings, MAINT-03 reopened),
-  then re-scoped to the open set only (44 findings: 0 High / 14 Medium /
-  30 Low) after the quick-fix batch; `deltas.md` gained the closure records
-  for everything shipped in this window.
-
-### Removed
-
-- `.github/workflows/cache-cleanup.yml`, `.github/workflows/`
-  `clang-tidy-check.yml`, `.github/workflows/translations.yml` - the MAINT-03
-  zombie workflows, still pinned to the nonexistent `actions/checkout@v7`,
-  actually deleted from the tree this time and verified with `git ls-tree`.
-- `.github/workflows/wav-fallback-test.yml` - the Windows-only A/B workflow
-  built to capture the fallback mismatch, retired once the diagnostics it
-  drove had landed (added and removed inside this release window).
-
-### Fixed
-
-#### GPU scaler (round-7 quick-fix batch)
-
-- **ROB-14 (High)**: activating the shader filter no longer destroys the
-  SDL_Renderer while the global display `texture` still references it - the
-  stale handle is dropped first, mirroring `dx_cleanup`, so toggling the
-  filter can no longer hand a freed texture to the next
-  `ReinitializeTexture()` (the virtual-gamepad half of the finding remains
-  open as ROB-22 by design).
-- **ROB-15 (High)**: `Runner::Run` captures the present target BEFORE the
-  double-buffer flip - feedback-driven final passes no longer present a
-  permanently one-frame-stale image plus one undefined frame after every
-  load/resize.
-- **ROB-16**: a failed `SDL_MapGPUTransferBuffer` (device loss, allocation
-  failure) now costs one skipped frame like every neighboring stage instead
-  of memcpying to NULL outside the failure contract.
-- **ROB-17**: `SDL_BeginGPUCopyPass` is null-checked (fail visibly + empty
-  submit instead of blitting stale contents with a clean log). The
-  upload-result half was reverted in an r7.6 fixup: vendored SDL3 (master,
-  post-3.4.0) follows the SDL >= 3.2 API where command-encoded copy calls
-  return `void` - per-call failure reporting was removed upstream, the bool
-  capture broke the CI build, and the checked
-  `SDL_SubmitGPUCommandBuffer` is the failure net.
-- **ROB-24**: a failed Vulkan-retry window claim now nulls `gWindow`, so the
-  `Shutdown()` path cannot release a window this device never claimed.
-- **ROB-25**: an unexpected (non-custom) filter value is now counted and
-  throttled-logged as a present-path skip instead of presenting a permanent
-  silent black screen with a healthy heartbeat.
-
-#### Audio / WAV fallback
-
-- Load-failure diagnostics name the asset: `SoundSample::SetChunk` carries the
-  asset path and - for MPQ-sourced assets - the archive path (exposed via
-  `mpq_reader`'s new `path()`), so a rejection logs
-  `Failed to decode audio file / <path> (<archive>) / <SDL_GetError>` instead
-  of a bare SDL error, alongside the 56-byte head hex dump from the previous
-  round.
-
-#### Parser
-
-- MAINT-09: the `#reference` merge comment now states the real semantics
-  (the LAST parent chain providing passes wins; textures/parameters
-  accumulate).
-- MAINT-19 (partial): texture validation names the actual problem (empty-name
-  vs missing-path) instead of sending field debugging the wrong way, and the
-  dead 4-argument `ParsePreset` declaration is gone. The bare `shaderpath`
-  behavior decision remains open with the maintainer.
-
-#### CI / build hygiene
-
-- The CI build break with vendored SDL3 master (`void value not ignored`,
-  `SDL_UploadToGPUTexture` bool capture) is fixed - see ROB-17.
-- The `clang-format check` workflow is green for the first time against the
-  mod: `gpu_scaler.cpp` had shipped with a whole-file indentation regression
-  from the previous batch's tooling (whitespace-only, compiled fine); the
-  canonical `Source/.clang-format` formatting is restored and the file's diff
-  collapses back to the surgical change set, and 12 pre-existing violations in
-  `soundsample.cpp` are fixed. Both files are token-identical to their
-  pre-format state (verified by whitespace-stripped byte diff); all 698
-  C/C++ files under the CI's check-paths now pass.
-
-## 1.6.0-dev-a67a4c0 (2026-10-15 3:20:26 PM)
-
-Codebase audit fixes, round 5 — TEST-01 closes the audit's last High
-finding: the fork's ~15K-line GPU pipeline now has a registered,
-CI-executed, full-pipeline test. The offline `preset_smoke` harness (parse →
-translate → in-process glslang compile, no GPU device) builds with the normal
-test suite instead of sitting behind `EXCLUDE_FROM_ALL` where nothing ever
-ran it, and executes against a committed micro-corpus covering the features
-real preset packs use — multi-pass chains with alias feedback, `PassOutput`
-feedback, history-ring taps, LUT textures — plus a malformed corpus that
-asserts the failure contract at every pipeline stage: absurd declared
-counts, absurd pass indexes, empty files, missing shader files, and GLSL
-syntax errors must all fail with a named error string, never a crash (the
-ROB-01/ROB-02 classes, now regression-locked mechanically). Field
-diagnostics also widen the WAV load-failure hex dump from 24 to 56 bytes:
-every rejection captured so far (the gendata cutscene sting, 18355 bytes)
-showed a perfectly canonical 24-byte head, because the malformation
-SDL3_mixer chokes on — zero-length or past-EOF data-chunk sizes — sits at
-offset 36, which only a 56-byte dump reveals. 20 of the original 47 findings
-are now closed; `audit.md` carries only the open set (27 findings: 0 High,
-5 Medium, 22 Low) and `deltas.md` remains the single record of closures.
-
-### Added
-
-#### Testing
-
-- `preset_smoke` is built with the normal test suite (`EXCLUDE_FROM_ALL`
-  dropped in `Source/CMakeLists.txt`) and registered with ctest in
-  `CMake/Tests.cmake` whenever `USE_GPU_SCALER` and `BUILD_TESTING` are on:
-  - `preset_smoke_corpus` runs the committed good corpus
-    (`test/fixtures/preset_smoke/good`) — 5 presets, 8 shader passes that
-    must parse, translate, and glslang-compile: single pass with a
-    `#pragma parameter` consumed from the fragment UBO, 3-pass chain with
-    `alias1 = blur` sampled from a later pass, explicit `PassOutput0`
-    feedback, `OriginalHistory1/2` taps with `histories = 4`, and a LUT
-    preset with a committed 2x2 PNG. All shaders follow the canonical
-    `tools/audit/field-presets` style (explicit `layout(location = 0) out
-    vec4 FragColor`, parameters inside the stage UBO per SLANG_SPEC 4.6).
-  - `preset_smoke_malformed` runs the malformed corpus with the harness's
-    new `--expect-fail` mode — 5 presets, one per pipeline stage, that must
-    fail cleanly with a non-empty error string: `shaders = 2147483647`
-    (ROB-02 class), `shader2147483647` (ROB-02 class), an empty file, a
-    missing shader file (translate stage), and a GLSL syntax error (glslang
-    compile stage). Failure-by-crash or failure-without-explanation fails
-    the test, and a clean corpus under `--expect-fail` fails it too.
-- The corpus is copied to `<build>/shaders/.preset-smoke/` at build time
-  because `ResolvePresetFilePath` resolves references only inside the SEC-01
-  shader root (`<SDL_GetBasePath()>/shaders`); the dot prefix keeps the
-  corpus out of the in-game preset browser. The sandbox itself is untouched.
-- `preset_smoke` usage string corrected while touching the harness (it
-  advertised a nonexistent `--allow-failures` and omitted `--dump`/`--disasm`).
-
-### Fixed
-
-#### Diagnostics / audio
-
-- `SoundSample::SetChunk`'s load-failure hex dump widened 24 → 56 bytes
-  (`DEVILUTIONX_WAV_FALLBACK`-independent, still logged by every build):
-  56 bytes covers the canonical 44-byte RIFF/WAVE/fmt head plus the
-  data-chunk header at offset 36, where the zero-length / past-EOF data
-  sizes that SDL3_mixer 3.2.0 rejects actually live.
-
-### Documentation
-
-- `audit.md`: TEST-01 removed from the open set (now 27 open: 0 High,
-  5 Medium, 22 Low; 20 of 47 closed); priority-matrix Immediate row emptied
-  with a pointer to the closure.
-- `deltas.md`: full TEST-01 closure entry (resolution, corpus layout
-  rationale, verification evidence).
-
-### Verification
-
-- Standalone local build of the harness + the four preset TUs + the real
-  glslang 16.6.0 (the exact version vendored by `3rdParty/glslang`; SDL
-  stubbed, shader root pointed at the corpus): good corpus **5/5 presets,
-  8/8 passes compiled, exit 0**; malformed corpus under `--expect-fail`
-  **met, 5/5 failed with named error strings, zero crashes, exit 0**; the
-  good corpus under `--expect-fail` correctly exits 1.
-- `soundsample.cpp` compiles clean in both `DEVILUTIONX_WAV_FALLBACK=ON`
-  and `=OFF` configurations (gnu++23, `-Wall -Wextra`; only the
-  pre-existing `sdl_wrap.h`/`options.h` `-Wextra` noise, identical in both).
-- `preset_smoke.cpp` clang-format 18.1.8 clean.
-
-
-## 1.6.0-dev-d5ca0c0 (2026-10-15 1:46:21 PM)
-
-Codebase audit fixes, round 4 — the entire "next sprint" batch from the audit:
-the shader-cache failure contract (atomic writes + toolchain-version salt),
-three more robustness closures (scale clamp, diagnostics-log race, corrupt-ini
-self-heal), the window-ownership ABA fix, release-asset CI, and the first
-options-layer test registration (which immediately caught a real
-startup-restore bug). Field result: shader presets now load right from the
-title screen instead of requiring a trip through the shader menu first. 19 of
-the original 47 findings are now closed; `audit.md` carries only the open set
-(28 findings: 1 High, 5 Medium, 22 Low) and `deltas.md` remains the single
-record of closures.
-
-### Fixed
-
-#### Graphics / GPU scaler
-
-- Shader cache blobs can no longer be poisoned by a torn write: each
-  `.vert.spv`/`.frag.spv` is written to a process-unique temp sibling
-  (`<path>.<pid>.tmp`) and atomically renamed into place (existing target
-  removed first for Windows), so a crash or kill mid-write can no longer leave
-  a truncated blob that fails every later load; `CompilePass` gained an
-  out-parameter form (`SpirvSource` = Compiled/Cache/Sidecar, plus
-  `allowCache`) so callers know where each pass's SPIR-V came from, and a new
-  `DeleteCachedSpv` removes both blobs of a pass. A GPU-rejected cache hit now
-  self-heals: `Runner::Load` releases any shader built from the poisoned blob,
-  deletes the cached pair, and recompiles once with the cache disabled instead
-  of failing the preset until the user manually wipes `shaders/cache/` (ROB-03)
-- The disk-cache key is salted with the toolchain version: the hashed payload
-  now mixes in `kSpirvCacheVersion` plus the glslang version macros
-  (`GLSLANG_VERSION_MAJOR/MINOR/PATCH`, guarded for exotic builds), and cache
-  file names carry a `-v<version>-` segment so a future bump can also prune by
-  name; upgrading glslang no longer silently serves stale SPIR-V compiled by
-  the previous toolchain (ROB-04)
-- Resolved pass-target dimensions are clamped to [1, 16384] before the
-  float→Uint32 cast (`ClampPassTargetDim`, NaN → 1), each clamp logged with its
-  pass index, and the clamped values feed the prevW/prevH chain; a preset with
-  absurd or NaN `target_size` values can no longer trigger UB in the conversion
-  or request a multi-gigabyte framebuffer (ROB-05)
-- Swapchain window ownership is explicit state keyed by the SDL window ID
-  instead of a `SDL_Window*` compare: SDL window IDs are never reused, so the
-  old `gLastClaimedWindow` dangling-pointer ABA (destroy + recreate landing on
-  the same address, misread as "same window") can no longer hand the swapchain
-  to the wrong window; the three-participant handoff protocol (gpu_scaler /
-  display.cpp / dx.cpp) is documented in one comment (ARCH-01)
-
-#### Configuration
-
-- A corrupt `diablo.ini` no longer terminates the game at startup: the
-  unreadable file is preserved as `diablo.ini.corrupt-<YYYYMMDD-HHMMSS>`, the
-  parse failure is logged, and defaults load via the empty-buffer parse path;
-  the fatal error remains only if preservation itself fails, so a bad write can
-  cost the user their settings but never their config file or their session
-  (ROB-09)
-
-#### Options menu
-
-- Fixed an undocumented startup-restore bug found by the new tests:
-  `GraphicsOptions::GetEntries()` listed `shaderFilter` before
-  `shaderFilterPreset`, and the preset entry re-resolves its path at Rescan
-  time — which is empty at startup — so every restart sanitized a saved custom
-  preset back to Off, and it only re-activated after the shader menu was
-  opened; the (invisible) preset-path entry now loads first and saved custom
-  presets survive restarts — shader presets load right from the title screen
-
-#### CI
-
-- Built binaries now land on the GitHub Release instead of only 90-day
-  workflow artifacts: both `gpu-shaders.yml` jobs attach their package zips via
-  `softprops/action-gh-release@v2`, conditioned on the `release` event, with
-  job-level `permissions: contents: write` for the default token (MAINT-04)
-
-### Testing
-
-- New standalone gtest `options_test` (7 cases) registered in
-  `CMake/Tests.cmake` under the `standalone_tests` pattern (links
-  `libdevilutionx_options` + the preset TUs + `libdevilutionx_assets`, same as
-  `dun_render_benchmark`): stale builtin-filter sanitize (1..99), custom
-  shader-preset index mapping, missing-preset self-heal, ini round-trip, and
-  two corrupt-ini recovery cases (TEST-03). Verification evidence for the
-  round: options_test 7/7 pass headless, all 5 touched TUs compile clean with
-  project flags (gnu++23, -Wall -Wextra), clang-format 18.1.8 clean
-
-### Documentation
-
-- Ledger: 8 closure entries added to `deltas.md` (ROB-03, ROB-04, ROB-05,
-  ROB-06, ROB-09, MAINT-04, ARCH-01, TEST-03) plus the bonus fix; `audit.md`
-  master table and section bodies updated, next-sprint matrix row retired —
-  open set now 1 High (TEST-01), 5 Medium (ROB-07, ROB-08, FEAT-01, FEAT-02,
-  FEAT-03), 22 Low
-
-## 1.6.0-dev-c37e75a (2026-10-15 6:12:02 AM)
-
-Codebase audit fixes, round 3 — CI repair on the `gpu-shaders.yml` pipeline plus
-four more audit closures: both Security findings, Hellfire packaging, and
-`gpu_scaler.cpp` hygiene. 11 of the original 47 findings are now closed;
-`audit.md` carries only the open set (36 findings: 1 High, 13 Medium, 22 Low)
-and `deltas.md` remains the single record of closures.
-
-### Fixed
-
-#### Security
-
-- Preset references can no longer escape the shaders root (arbitrary file read
-  via preset packs): new `preset::IsPathInsideShaderRoot()` runs the candidate
-  and the shader root through `std::filesystem::weakly_canonical` (symlinks
-  resolved) and requires the result to sit at or below the root, with a
-  separator-boundary check so `shaders-ng` cannot pass a `shaders` prefix test
-  (case-insensitive compare for Windows/macOS). `ResolvePresetFilePath` refuses
-  absolute references and ancestor-walk hits that canonicalize outside the root,
-  the slang `#include` resolver fails translation with "include target outside
-  the shaders root: <path>", and the runner names the refused reference in
-  gpu-scaler.log so refusals are diagnosable in the field (SEC-01)
-- gpu-scaler.log is no longer an injection target: new header
-  `gpu_log_sanitize.hpp` (`gpu_scaler::SanitizeLogLine()`) replaces every control
-  byte (< 0x20, including `\n` `\r` `\t` ESC, and 0x7F DEL) with `?` before
-  `LogFileLine` writes, so hostile preset names, `#pragma` descriptions, and
-  glslang info-log text cannot forge log lines or spray terminal escapes;
-  printable text and `%` signs pass through untouched (SEC-04)
-
-#### CI
-
-- `gpu-shaders.yml` Linux job installs dependencies again: the `apt-get install`
-  continuation line ended in a doubled `\` (`ccache \\`), so the shell received a
-  literal `\` as a package name and apt aborted with "E: Unable to locate
-  package \" — back to a single continuation backslash
-- Windows builds are static again: two `#` comment lines sat inside the folded
-  `run: >` scalar of the Configure step; YAML folds comment lines into the shell
-  command, where `#` starts a comment and silently truncated every argument after
-  `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache` — the
-  `-DCMAKE_EXE_LINKER_FLAGS='-static -static-libgcc -static-libstdc++'` flags
-  never reached CMake, the exe linked `libgcc_s_seh-1.dll` / `libstdc++-6.dll`,
-  and the DLL-import gate failed. Comments moved above the step and a warning
-  note about the folded-scalar `#` trap added
-
-#### Packaging
-
-- CI release zips now include Hellfire: both Package steps (Linux and Windows)
-  copy `build/mods/hf.mpq` into `pkg/mods/`, existence-guarded so configurations
-  that did not build the expansion MPQ still package cleanly; shipped builds are
-  no longer silently Diablo-only (MAINT-05)
-
-#### Graphics / GPU scaler
-
-- `gFragmentShaders` is sized by a named constant (`kMaxFragmentPrograms =
-  static_cast<int>(Program::Blit) + 1`) instead of the stale magic number 9 left
-  over from the removed built-in filter set, so resizing the `Program` enum trips
-  a compile error at the table instead of silently changing its bounds; the dead
-  `case None:` switch in `FilterDisplayName` and the unused `<csetjmp>` include
-  are gone (MAINT-07)
-
-### Testing
-
-- `preset_failure_modes` grew 20 → 37 checks: relative and absolute `#include`
-  escapes refused while an in-root include still translates; `../../`, absolute,
-  and sibling-prefix (`shaders-ng`) preset-reference refusals with an in-root
-  reference still resolving; an escaping `#reference` failing the whole preset
-  with a traceable error; and 6 log-sanitizer checks. The harness sandbox is
-  re-rooted at a working-directory fake `SDL_GetBasePath` so containment staging
-  works headless
-
-## 1.6.0-dev-caee40e (2026-10-15 5:08:04 AM)
-
-Codebase audit fixes, round 2 — CI hygiene and the test-suite revival, plus
-the audit ledger split (`deltas.md` now records closed findings).
-
-### Added
-
-#### Testing
-
-- New headless ctest `preset_failure_modes`: the hostile-input regression harness for the preset parser / slang translator (non-numeric and 20-digit texture indices, malformed `#pragma parameter` numbers, absurd `shaders` counts and `shaderN` indices, valid-preset regression guards). Compiles only the four parser/translator TUs — no SDL, no GPU — so it runs on any CI box (TEST-01, partial)
-- The full gtest suite now runs in CI: the Linux job builds with `BUILD_TESTING=ON` (vendored googletest/benchmark) and executes `ctest --output-on-failure` (TEST-02)
-- ccache is wired into both CI jobs (compiler launcher + `actions/cache` restore with per-job keys, 2 GB cap), and doc-only pushes (`**.md`, `docs/**`) no longer trigger the binary build pipeline (MAINT-01)
-
-### Fixed
-
-#### Build system
-
-- `vcpkg.json` now defines the `sdl3` feature (`sdl3` + `sdl3-image`) that `VcPkgManifestFeatures.cmake` has been requesting since `USE_SDL3=ON` was introduced — vcpkg-based (MSVC) configures no longer abort during manifest install (MAINT-06)
-- The test suite builds again under `BUILD_TESTING=ON`: standalone tests now link `GTest::gmock` when available (their `<gmock/gmock.h>` includes previously only resolved where system gtest headers sat on the default include path), and the four standalone test/benchmark targets that carry `libdevilutionx_options` compile the preset parser/translator TUs the fork's settings browser calls (TEST-02)
-- `UITest`-based fixtures no longer segfault when MPQ fixtures are absent: `GTEST_SKIP()` in the base `SetUp()` is a plain `return`, so derived `SetUp()` overrides continued into uninitialized engine state (null `MyPlayer`, unloaded quest data) and crashed all 65 cases across `inventory_ui_test` / `panel_state_test` / `spell_ui_test`; derived setups now bail via `UITest::MissingAssets()` and `TearDown()` guards its cleanup (TEST-02). Suite status: 608/608 pass headless
-
-#### CI
-
-- `clang-format-check.yml` pins `actions/checkout@v4` (was the nonexistent `@v7`, which failed every run at checkout); the three other broken upstream workflows (`clang-tidy-check`, `translations`, `cache-cleanup`) and the one-shot `cleanup-fork-workflows.{sh,ps1}` scripts are removed (MAINT-03). `.github/workflows/` now contains exactly the curated pair: the format check and `gpu-shaders.yml`
-
-### Documentation
-
-- Audit ledger split: closed findings move from `audit.md` to `deltas.md` (ROB-01, ROB-02, MAINT-02, MAINT-01, MAINT-03, TEST-02, MAINT-06 so far); `audit.md` keeps the open set (40 findings: 1 High, 15 Medium, 24 Low) with CLOSED pointers in the master table
-
-## 1.6.0-dev-1d9d84d (2026-10-15 3:26:39 AM)
-
-Codebase audit fixes, round 1 — the two High robustness findings and the
-dead-payload cleanup, from the audit in `audit.md`.
+#### Graphics / Audio
+- Better use of colors to differentiate players in multiplayer
 
 ### Bug Fixes
 
-#### Graphics / GPU scaler
+#### Graphics / Audio
 
-- Malformed texture binding names no longer terminate the process mid-frame: a preset alias or sampler named `PassOutputx`, a bare `User`/`OriginalHistory`, or a 20-digit `OriginalHistory99999999999999` index used to reach `std::stoi` and abort through the uncaught exception; every builtin-name suffix is now parsed without throwing, malformed indices resolve to the closest valid binding, and the unresolved-texture guard (one-time log + current-input-frame fallback) now covers every binding branch, including out-of-range `PassOutput#`/`PassFeedback#` indices and unmatched `*Feedback` aliases that previously could bind null (ROB-01)
-- Malformed `#pragma parameter` numbers (`.` or `-` alone, accepted by the pragma regex) no longer abort preset translation; values now parse with the RetroArch/atof contract — malformed tokens become 0 instead of a thrown `std::invalid_argument` (ROB-01)
-- A hostile tiny preset no longer aborts the game: `shaders = 2147483647` used to resize the pass vector toward ~250 GB (`std::bad_alloc` → terminate); the declared `shaders` count no longer sizes the chain (it is built lazily from the `shaderN` keys actually present), and a `shaderN` key with an index of 32 or above fails the preset with a clear "exceeds the limit of 32" error instead of allocating (ROB-02)
+- Music doesn't unmute when focus is lost on level transition with Auto Pause On Focus Lost disabled
+- Image ghosting visible on border of map in higher resolutions
 
-### Removed
+#### Stability / Performance / System
 
-#### Graphics / GPU scaler
+- Crashes related to player graphics rendering in death state
 
-- Deleted ~10K lines of dead built-in ScaleFX/HQx payload left behind when the built-in filters were removed from the Shader Filter option: `gpu_luts.hpp` (3,820 lines, unreferenced) and its generator `tools/gen_luts.py`, the 7 dead `.frag` sources (`hqx_index`, `hqx_blend`, `scalefx_pass0-4`), and the dead HQx/ScaleFX arrays in the embedded SPIR-V (`gpu_shader_spv_prebuilt.hpp`, 5,595 → 155 lines) and MSL (`gpu_shaders_msl.hpp`, 438 → 53 lines) headers. Only the shared fullscreen-vertex and blit-fragment programs remain baked, and the build-time `gpu_scaler_spv` generation list now covers exactly those two (MAINT-02)
+## DevilutionX 1.5.5
+
+### Features
+
+#### Multiplayer
+
+- Adjust multiplayer game speeds
+- Validate character names
+
+#### Controls
+
+- Enable CTRL + mouse scroll wheel for map zoom
+
+#### Platforms
+
+- Android: Check if a file browser is installed when importing data
+- Android: Show "Import Data" on the setup screen
+- iOS: Add support for multiplayer via ZeroTier
+- Linux: Align icon with Android
+
+#### Translations
+
+- Update Polish translation
+- Update Russian translation
+
+#### Stability / Performance / System
+
+- Fix crash when a TCP connection times out
+- Guard against stash corruption
+- Improve text input handling
+
+### Bug Fixes
+
+#### Platforms
+
+- Android: Prevent demo and translation files from being cleared each week
+- Tiger: Fix icon
+
+#### Controls
+
+- Correct scroll descriptions when using a gamepad
+
+#### Gameplay
+
+- Add Murphy to Crippling Shrines
+- Make Auto Refill Belt work properly
+- Make ears usable
+- Prevent attacking dead monsters
+
+#### Stability / Performance / System
+
+- Fix incorrect CLX rendering
+
+## DevilutionX 1.5.4
+
+### Features
+
+#### Multiplayer
+
+- Make invalid items unusable
+
+#### Controls
+
+- Better support for various gamepads
+- Gamepad: Improve navigation of the stash
+- Improve keymapper options
+
+#### Platforms
+
+- Added support for macOS 10.4 PowerPC
+- Added support for Windows XP
+- Android: Avoid game lagging on devices that can switch refresh rates
+- Correct networking support on big-endian systems
+- iOS: High refresh rate support
+- Xbox One/Series: Include translations
+
+#### Translations
+
+- Improve rendering of Turkish texts
+- Update Italian translation
+- Update Russian translation
+- Update Ukrainian translation
+
+#### Stability / Performance / System
+
+- Fix crashes on device hot-plugging
+- Fix game crash
+- Hide Upscale option in the Settings menu to avoid stability issues
+- Looser validation in Single Player games
+- Make file sync services less likely to corrupt saves
+- Make it clearer how to switch between Hellfire and Diablo
+- Use available screen space in the Settings menu
+
+### Bug Fixes
+
+#### Gameplay
+
+- Fix being able to repair equipped items for free
+- Fix game freezing when loading Lazarus lair from a save game
+- Unique drops now reset on a new game
+- Wake up the whole pack of Gargoyles when disturbed
+
+#### Platforms
+
+- Android: Fix performance and audio issues on recent versions
+- Android: Fix full immersive mode in Android 9 and higher
+- Incorrect menu graphics on DirectFB devices
+- PS4/Switch/Vita/Xbox One/Series: Correct controller mapping
+
+#### Multiplayer
+
+- Correct some item validation
+- Fix items being lost when held in the cursor during lag spikes
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Fix non-solid fences in the caves
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Fix incorrectly solid tile next to crypt stairs down
+
+#### Multiplayer
+
+- Fix runes not being seen as a player spell in PvP
+
+## DevilutionX 1.5.3
+
+### Bug Fixes
+
+#### Multiplayer
+
+- Resolved validation multiplayer errors.
+
+#### Translations
+
+- Added Hungarian translation.
+- Added Turkish translation.
+
+#### Stability / Performance / System
+
+- Fixed issue where a line is repeated in the info panel.
+- Fixed errors when converting Hellfire saved games.
+- Miyoo Mini: Update integration.
+- Android: Update integration (now requires Android 5.0).
+- Android: Improved the data import dialog.
+- Android: Game now runs full screen on devices with a notch.
+- Windows: Fix non-English TCP error messages.
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Fixed item repairs with multiple gold piles.
+
+## DevilutionX 1.5.2
+
+### Bug Fixes
+
+#### Multiplayer
+
+- Unable to join game due to invalid player data
+
+#### Translations
+
+- Improve rendering of Chinese/Japanese/Korean texts
+
+#### Gameplay
+
+- Hellfire items not saving their identified state
+
+#### Stability / Performance / System
+
+- Amiga: Incorrect rendering of things behind transparent elements
+- Android: Game locking up when switching sound output
+- Linux: Statically link BZIP2 and libsodium on x86_64
+- Stash corrupting when converting a hero between Diablo and Hellfire
+- Xbox: Game crashing unexpectedly
+- Xbox: Improve performance
+
+## DevilutionX 1.5.1
+
+### Features
+
+#### Multiplayer
+
+- Validate player stats
+- Update the pvp arenas
+- Rename "Loopback" to "Offline"
+
+#### Stability / Performance / System
+
+- Move hp/mana display and item graphics to gameplay options
+- Validate properties when reloading items
+- Demomode: Improve replay stability
+- Update [Discord link](https://discord.gg/devilutionx-518540764754608128)
+- Display save game confirmation
+- Reduce ram usage
+
+#### Translations
+
+- Update Simplified Chinese translation
+- Update French translation
+- Update German translation
+- Update Greek translation
+- Update Japanese translation
+- Update Korean translation
+- Update Portuguese translation
+- Update Spanish translation
+- Update Swedish translation
+- Update Ukrainian translation
+
+### Bugfixes
+
+#### Gameplay
+
+- Being able to enter Lazarus' chamber before opening the portal
+- Book requirements not updating
+- Some monsters not walking
+- Missiles not traveling the full distance at some angles
+- Diablo: Incorrect level 4 layout when the Magic Banner quest is active
+- Halls of the Blind not being completed by picking up the amulet
+- Shareware: Bucklers not dropping
+- Player animation stuttering
+
+#### Multiplayer
+
+- Potions dropped by Divine shrines not being synced
+
+#### Platforms
+
+- Linux: Add sdl-image dependency for the deb package
+- Linux: Include discord dependency
+- Xbox One: Missing assets
+
+#### Graphics / Audio
+
+- Incorrect cursor rendering
+- Incorrect outlines at the right edge of the screen
+- NPC speech continuing after starting a new game
+- Correct various font rendering issues
+- Hide the hit indicator when only one player is in the game
+- Issues with flashing lights
+- Floating number still appearing after death
+- Misaligned automap
+
+#### Controls
+
+- Inconsistencies with placing items into the stash
+- Gamepad: Being stuck in dialogs
+- Gamepad: Unable to use some scrolls directly
+
+#### Stability / Performance / System
+
+- Unable to playback new demo files
+- Various crashes
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Durability overflowing when reloading items
+- Teleporting onto an occupied tile
+- Right-click during dialogs casts spells
+
+#### Graphics / Audio
+
+- Cursor jitter when interacting with the inventory
+- Broken lava tiles
+
+#### Controls
+
+- Inconsistencies with placing items into the inventory
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Warping onto a solid tile
+
+## DevilutionX 1.5.0
+
+### Features
+
+#### Gameplay
+
+- Floating damage numbers
+- Option to auto-pick up oils
+- Quest items now drop based on difficulty
+
+#### Multiplayer
+
+- All quests can now be played, enabled from settings menu
+- Add chat commands, use `/help` for options
+- Add PvP arenas that can be accessed via `/arena #`
+- Inspect other players' items using `/inspect <name>`
+- Hellfire: Disabled The Cornerstone of the World
+- Draw hostile players' names in red in the chat panel
+
+#### Platforms
+
+- Added support for the original Xbox
+- Added support for Android TV
+- Added (experimental) support for RG99
+- Provide virtual resolutions for systems with only one native resolution
+- Android: Support loading data from external storage
+- Android: Do not speed up game after suspending if playing alone
+- Windows: Digitally signed executable
+- Support demo playback on SDL1 versions
+
+#### Graphics / Audio
+
+- Option to show item graphics in stores
+- More fluid lighting updates when moving
+- Added map in town
+- Add widescreen load screens (thanks to @Chance4us)
+- Durability icon gradually changing to red
+- Provide sound cue when gold is auto-placed into the open inventory
+- Color inventory slot based on item quality
+- Show cast animation in town
+- Monsters end their invisibility on death
+- Make the ground color of small rejuvenation potions distinct
+- Add setting for choosing a different audio resampler
+- Support for recoloring heroes using trn-files
+- Indicate on which difficulty a hero has defeated Diablo
+- Use decimal separators for gold and XP
+- Improve the monster HP bar for some edge cases
+- Only display resolution height when FitToScreen is enabled
+- Various text rendering improvements
+
+#### Controls
+
+- Do not target monster when casting Heal Other and Resurrect
+- Improve logic for belt auto-refill
+- Adjust the info panel descriptions based on the input device
+- keyboard/mouse: Additional mapping options
+- keyboard/mouse: Support back button in menus
+- gamepad/touch: Improve menu navigation
+- gamepad: Controls can now be mapped
+- gamepad: Autodetect button layout
+
+#### Translations
+
+- Update French translation
+- Update Italian translation
+- Update Japanese translation
+- Update Polish translation
+- Update Spanish translation
+- Update Ukrainian translation
+- Synchronize names of existing items with the current game language
+- Xbox One/Series: Include translations
+- Add `--lang` for specifying the language
+
+#### Stability / Performance / System
+
+- Create submenus for setting groups
+- Date based screenshot names
+- Performance improvement
+- Reduce RAM usage
+- Frame skipping on low end systems
+- Setting for picking audio device
+
+### Bugfixes
+
+#### Gameplay
+
+- Attack speed not always being accurate for specific combinations of effects and actions
+- Hellfire: Books from Adria's shop morphing
+- Petrified monsters shifting position when hit after loading a save game
+- Don't consume mana when double casting Mana Shield
+- Telekinesis respects the Disable Crippling Shrines setting
+
+#### Multiplayer
+
+- Items held by cursor lost due to lag cursor
+- Items lost due to various desync issues
+- Fix multiple desync issues
+- Don't show hostile players on the map
+- Player animations sometimes not being in sync
+- Better handling of latency
+
+#### Platforms
+
+- Windows: Fix ZeroTier always failing for Unicode usernames
+- Vita: Items lost when tapping outside the inventory
+- Fix gold withdrawal on SDL1 versions
+- macOS/iOS translate system texts
+- Translation support on BE systems
+
+#### Graphics / Audio
+
+- Top of screen not being rendered at some resolutions
+- Correct alignment of lightning and inferno
+- Make item labels take UI into consideration
+- Adria's "you have nothing to recharge" being misalignment on an empty list
+- Monsters sometimes not being rendered
+- Lighting missing for some areas after loading a saved game
+- Hellfire quests being removed from the quest log when completed
+
+#### Controls
+
+- Hero sometimes not willing to drop an item even when there is still room on the ground
+- touch: Missing buttons on low end devices
+
+#### Stability / Performance / System
+
+- Allow using the built-in screenshot function during text input
+- Various crashes
+- Resolve a few bugs and edge cases with the stash
+- A rare freeze when loading hell levels
+- Various issues with cursor rendering
+- Some additional validation of items when converting saves from Hellfire to Diablo
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Several issues that would cause missiles to miss when they shouldn't
+- Some wall tiles not blocking missiles and vision
+- The player can spawn in an incorrect location on some levels
+- Missing the extra stats at level 50
+- Guardian not calculating its damage correctly
+- Diablo not giving the intended XP on Hell difficulty
+- Fireball/Elemental not doing damage when monster is not in line of sight
+- Lightning spell being able to pass through some walls
+- Double casting of spells
+- Low quality items on quests after using a town portal
+- Monsters on Nightmare and Hell having too little HP
+- Monsters being immune to non-player missiles
+- Stairs up to level 6 not working sometimes
+- The Deadly Hunter bow not dealing the correct damage
+- Spell remaining unavailable after using a stone shrine until reequipping the staff
+- Fast and faster hit recovery stacking
+- Incorrect calculation for max charges lost with when using the recharge skill
+- Not getting XP after damaging a monster if it dies from a trap
+- Fire Arrows causing monsters to stop healing
+
+#### Multiplayer
+
+- Trapped doors rearming themselves when returning to a level
+- Resolve some sources of dsync
+
+#### Graphics / Audio
+
+- Incorrect Armor Class in Char Panel
+- Petrified monsters turning to face the attacker
+- Petrified monster sliding after having been stone cursed
+- Show portal animation in town
+- Broken corners on some cathedral levels
+- Inconsistent lighting on quest levels
+- Light smearing when walking in certain directions
+- Unique monsters light not always following the monster
+- Unique monster light being left behind when they are removed
+- Minor rendering bugs in UI panels
+- Center 2x2 items that go in 2x3 slots
+- Player moonwalking when talking to monsters
+- Tavern Sign playing the wrong sound when dropped on the floor
+- Poisoned Water not appearing in the quest log if discovered before talking to Pepin
+- Camera shaking when loading a save game after Diablo's death
+- Add scrollbar to help window
+
+#### Controls
+
+- Unable to pick Golem spawn location when right-clicking the scroll
+- Casting spells during level transition will target the old position
+- Help panel staying open while talking to NPCs
+
+#### Stability / Performance / System
+
+- Town portal not always returning to the correct quest level
+- Items lost when triggering a portal while picking them up
+- Optic Amulet and Arkaine's Valor sometimes being misaligned
+- Minor stability issues
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Prevent oil of death damage wrap around
+- Reflected damage sometimes being too low
+
+#### Multiplayer
+
+- Desync in Nest when cow quest is enabled
+- Being unable to pick up quest items if you didn't start the game
+- Quest going out of sync
+
+#### Graphics / Audio
+
+- Gillian saying the grave quest start line multiple times
+- Buggy lighting in Nest and Crypt
+- Description of jester's item saying 500% instead of 600% damage
+- Typos in subtitles
+
+## DevilutionX 1.4.1
+
+### Features
+
+#### Graphics / Audio
+
+- Play gold sound effect when depositing in stash
+
+#### Controls
+
+- Add setting for showing item labels
+- Add setting for zoom by default
+
+#### Translations
+
+- Update Chinese Translation
+- Update French Translation
+- Update Japanese Translation
+- Update Polish Translation
+- Update Russian Translation
+- Update Ukrainian Translation
+
+### Bugfixes
+
+#### Gameplay
+
+- Correct behavior for elemental damage on weapons
+- Fallen retreat in the wrong direction
+- Show correct requirements for books in stash
+
+#### Multiplayer
+
+- Issues with joining multiplayer games
+- Refreshing store inventory on new games
+
+#### Platforms
+
+- 3DS: correct C-stick axis mapping
+- 3DS: Package info
+- iOS: Compatibility with Sideloadly
+- iOS/macOS/iPadOS: Show translated error messages
+- OpenDingux: Fix game not starting on some devices
+- PS4: Crashing on startup with no config file
+
+#### Graphics / Audio
+
+- Fix wide screen scenes missing on some platforms
+- Minor graphical issues
+- Misaligned player animation
+
+#### Controls
+
+- Quick cast interrupting the current action
+- Touch: Action buttons sometimes showing the wrong icon
+- Touch/Gamepad: Correct usage description for some spells
+- Touch/Gamepad: Fix targeting berserked monsters
+
+#### Stability / Performance / System
+
+- Improve general game stability
+- Incorrect handling of player names
+- Names on ears not being correct in some translations
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Fallen not seeing each other in a northern direction
+- Lazarus level resetting when using town portal
+- Shrines effects not being random
+
+#### Multiplayer
+
+- Solve more sources of desync
+
+#### Controls
+
+- Make spell feedback consistent in town and dungeon
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Monsters not reacting to being attacked by berserked monster
+
+## DevilutionX 1.4.0
+
+### Features
+
+#### Translations
+
+- Added support for Ukraine 🇺🇦
+- Added Greek localization
+- Added Japanese translation
+- Added Swedish translation
+- Fix some items causing crashes for Spanish and French translations
+- Improve Bulgarian localization
+- Improve Chinese (Simplified) localization
+- Improve Croatian localization
+- Improve Czech localization
+- Improve French localization
+- Improve German localization
+- Improve Italian localization
+- Improve Korean localization
+- Improve Portuguese localization
+- Improve Romanian localization
+- Improve Russian localization ([optional dub](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/ru.mpq) by Stream)
+- Improve Spanish localization
+
+#### Gameplay
+
+- Added a stash at Gillian's house
+- Suppoort for thousands of missiles
+- Added settings menu
+- Added xp share indicator to monster health bar
+- Added option to see exact health/mana
+
+#### Platforms
+
+- Added support for iOS
+- Added support for Nintendo 2DS
+- Added support for PlayStation 4
+- Added support for Xbox One/Series
+- Discord Rich Presence
+- Android: Auto Backup
+- Android: Added game data import shortcut
+- Windows: Auto detect language
+- Windows: Prefer Direct3D 11 for upscaling
+- macOS: Embed assets
+- OpenDingux Lepus: Enable ZeroTier
+
+#### Graphics / Audio
+
+- Always draw hotkeys on spell list
+- Do not stop music when navigating in the main menu
+- Don't hide automap when opening help screen
+- Don't restart music if the same track is played
+- Match unique monster's missiles color to their owner's
+- Show game Difficulty in Automap
+- Use unique unused graphics for Long War Bow
+- Display numeric max resists on character panel
+- Add additional emojis
+- Mute videos when minimized
+- MP3 support
+- Remove stippled transparency option
+
+#### Multiplayer
+
+- Improve how public games are displayed
+- Revamped chat
+- Added a chat log
+- Enable dungeon messages
+- Prevent spells from targeting other players in friendly mode
+
+#### Controls
+
+- A large number of actions can now be mapped to custom keys
+- Increase spell hotkeys from 4 to 12
+- Quick cast option
+- Added support for touch controls on all devices
+- Slightly more responsive player control
+- Add support for multiple lines in quick messages
+- Make main menu react to mouse button up instead of down
+- Android: Auto hide touch UI when not in use
+- mouse: Support for extra buttons
+- gamepad: Hold button to repeat action
+- gamepad: Make scrolls usable from the inventory
+- gamepad: Graphical circle menus
+- touch: Spend stat points when clicking the buttons
+- touch: Disable stand button when in town
+- touch: Enable navigating the spell book
+- 3DS: Add support for the C-stick
+
+#### Stability / Performance / System
+
+- Fine grain control of startup splashes
+- Load custom assets from save folder instead of last known MPQ folder
+- Reduce default debug output
+- Reduce memory consumption during movies
+- Support compressed MPQs
+
+### Bugfixes
+
+#### Gameplay
+
+- Durability overflow not behaving as expected
+- Diablo: Correct Diablo's HP
+- Diablo: Correct the number of items sold by Adria
+- Hellfire: Berserked monsters not fighting each other
+- Hellfire: Ring of Engagement having too high armor penetration
+
+#### Platforms
+
+- Android: Remove broken quit menu
+- Vita/Switch/3DS: Fix support for voice packs
+
+#### Graphics / Audio
+
+- Colored border showing around hardware cursor
+- Hero flickering briefly when dying from a barrel
+- Only use Hardware Cursor if supported
+- Various text rendering improvements
+- Windows: Restore default audio driver (WASAPI)
+- Windows: Fix window scaling
+
+#### Multiplayer
+
+- Correct network error messages
+- Improve handling of high latency
+- Multiplayer being paused after minimizing during loading
+
+#### Controls
+
+- Fix some joysticks not working
+- Item highlighting getting stuck when walking on top of items
+- Missing OK button on error screens
+- Targeting entrances below the original panel height
+- macOS: Mouse confined to a portion of the screen
+- gamepad: Minor improvement to UI navigation
+
+#### Stability / Performance / System
+
+- Fix multiple crashes
+- Improve multiplayer stability
+- Support systems with no GPU
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Add gold to inventory in a consistent manner
+- Correct cow collision box
+- Final Dungeon Message not playing
+- Knockback being able to push monsters on top of each other
+- Lightning Arrow extra damage not always being applied
+- Mana Shield effectiveness not improving with spell level
+- Minor rounding error in monster damage
+- Negative stats incorrectly preventing use of items
+- Shrines incorrectly lowering Life/Mana below the minimum
+- Some empty tiles in hell blocking movement and missiles
+- Some levels changing layout after loading
+- Some monsters were placed on top of doors
+
+#### Graphics / Audio
+
+- Align various game texts
+- Center panel text when holding red items
+- Correct death animation when wearing armor
+- Missing torches near traps
+
+#### Multiplayer
+
+- Fix multiple desync issues
+
+#### Stability / Performance / System
+
+- Various stability issues
+- Various item corruption issues
+- Various typos
+- Game freezing if low level hero interacts with the slain hero
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Mana Shield effectiveness decreasing with spell level
+- Torchant and Hellbat damage range being ignored
+- Monsters dying multiple times from Reflect + Thorn
+- Monk's staff did not take damage when blocking
+
+#### Graphics / Audio
+
+- Blocked arrows always rotate south
+
+#### Multiplayer
+
+- Main quest items disappearing
+- Cow quest getting stuck
+- Auric amulet affecting all players
+
+### Known issues
+
+#### Platform
+
+- PS4: The games fail to launch without a default ini, please see https://github.com/diasurgical/devilutionX/issues/4443
+- Clicking an empty hero slot will crash the game
+- Xbo/s: Missing translation files (download and add [devilutionx.mpq](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/devilutionx.mpq))
+
+## DevilutionX 1.3.0
+
+### Features
+
+#### Platforms
+
+- Added support for [Android](https://play.google.com/store/apps/details?id=org.diasurgical.devilutionx) (please leave us a review 🤗)
+- Added support for the original Nintendo 3DS
+- Added support for Lepus - jz4760/RG300 with multiplayer support
+- Switch: Added TCP/IP multiplayer support
+- Vita: Added TCP/IP multiplayer support
+- OpenDingux: Added TCP/IP multiplayer support
+- 3DS: Added TCP/IP multiplayer support
+- 3DS: Add launcher sound
+
+#### Graphics / Audio
+
+- Animations are now updated at render time for high fps visuals
+- Added support for hardware cursor (solves cursor lag)
+- Quests being ordered logically in the quest panel
+- Quest panel now lists completed quests
+- More fine grained volume slider
+- Added option for pickup sound
+- Shrine reveals map in a different color than your own exploration
+- Automap has drop shadow for better contrast in some levels
+- Added font with support for Extended Latin, Greek, Coptic, Cyrillic, [Chinese, Japanese, and Korean](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/fonts.mpq)
+- Item outline color now matches rarity
+- Use gold color to indicate unique items in stores
+- Improved XP bar visuals
+- More widescreen loading scenes
+- Mac: Icon now follow Big Sur style guide
+
+#### Multiplayer
+
+- Added built in support for ZeroTier (no need for port forwarding, no need for an extra application)
+- Added support for unencrypted public games
+- Added auto discovery of public games over ZeroTier
+- Share map exploration (in a different color than your own exploration)
+
+#### Controls
+
+- Press alt to show items on ground with labels
+- Added option for stopping the hero with a key-press
+- Hold click to continue to attack/walk/consume
+- Click ctrl-click to drop an item
+- Click shift-click to swap to the clicked weapon
+- Limit the max width between panels
+- Center align panels
+- Rune bomb and crypt map can be used when standing next to target
+- Added option for disabling crippling shrines
+- Improve inventory filling order
+- Added option to refill belt automatically
+- gamepad: Equip equipment when pressing [use]
+- gamepad: Operate object as last option for primary controller action
+- gamepad: Allow applying oils with secondary action button
+- gamepad: Inventory now takes object size into consideration
+- gamepad: Add joystick dead zone range to ini
+- touch: Add input hint to virtual keyboards
+
+#### Stability / Performance / System
+
+- Add support for translations
+- Run in self-contained (portable) mode if diablo.ini is in the same folder as DevilutionX
+- Chat now supports Unicode, including emojis
+- Several actions can now have their key bindings remapped in the ini
+- Added key bind options for quick save/load
+- Show additional logging with `--verbose`
+- Start directly in Hellfire mode with `--hellfire`
+- Support for MPQs with compressed audio
+- Log errors to the terminal as well
+- Added options to adjust audio quality to ini
+- Update Shareware help text to match retail version
+- Automatically pause and mute the game when put in the background
+- Allow for multiple heroes with the same name
+- Only update diablo.ini if there are changes
+- Windows: Auto detect location of MPQ files from GOG installation
+
+#### Translations
+
+- Added Brazilian Portuguese
+- Added Bulgarian
+- Added Czech
+- Added French
+- Added German
+- Added Italian
+- Added Korean (requires the [additional fonts](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/fonts.mpq))
+- Added Polish ([optional dub](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/pl.mpq) by professional voice actors)
+- Added Russian
+- Added Simplified Chinese (requires the [additional fonts](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/fonts.mpq))
+- Added Spanish
+- Added Traditional Chinese (requires the [additional fonts](https://github.com/diasurgical/devilutionx-assets/releases/latest/download/fonts.mpq))
+
+### Bugfixes
+
+#### Gameplay
+
+- Fix small rooms missing from some levels
+- Golem's to-hit being incorrect after loading a save game
+- Diablo: Correct spells mana cost for the Sorcerer
+- Diablo: Armor piercing was 2x of what it should be
+- Diablo: Barbarian missing his armor piercing bonus
+- Hellfire: Elemental spell was missing
+- Hellfire: Firering spell not creating the correct shape
+
+#### Platforms
+
+- Switch: No longer reacts to touch events
+
+#### Graphics / Audio
+
+- Corrected directional sounds for distant sources
+- Fix sound cut off when exiting game or starting the intro video
+- Entirely new audio mixer to solve audio issues and lower memory usage
+- Fixed rendering issues on 8bit outputs
+- Hellfire: Clearly indicate if it's in shareware mode
+
+#### Multiplayer
+
+- Reverted melee damage, when friendly fire and friendly mode is on
+- Do not show XP bar when chat is open
+- Do not show unbound status in place of game name
+- Show host version when incompatible
+
+#### Controls
+
+- Gamepad: Prevent wasting stat points on maxed out stats
+- Gamepad: Do not reset cursor position when switching between mouse and gamepad
+- Gamepad: Unable to open crypt and hive
+- Gamepad: Close cathedral map when pressing B-button
+- Touch: Open virtual keyboard when text input is needed
+
+#### Stability / Performance / System
+
+- Correctly reset game state if not saved
+- Compatibility with shareware save games
+- Correctly handle folders with non English symbols in them
+- Free network connection after ending game
+- Never require write mode for MPQ files
+- Allow for comments in ini file
+- Load assets from a folder called `assets` next to the application if not found in data paths
+- Added listfile to our MPQs
+- Add ini option for showing FPS
+- Fix name filtering
+- Correct minor memory leaks
+- Further reduced memory usage
+- Performance improvements
+- Windows: Only show network errors once
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Player becoming immune to stun while using manashield at low health
+- Monsters and players are no-longer immune to missiles when moving horizontally
+- Fix missiles hitting multiple times
+- Fix missiles sometimes skipping hit checks when passing a target
+- Fix charging monsters disappearing from the game if changing levels while they were charging
+- Fix negative AC bonus resulting in +1 AC
+- Do not attack dead monsters
+- Show more accurate `To hit` value in char panel
+- Wake up minions when their leader wakes up
+- Disallow swapping gear while not standing/walking to avoid animation lock
+- Switching of spells during casting changing the cost of the cast
+- Not being able to pick up items after starting a new game for a short amount of time
+- Persist shop inventory shop items when saving and loading
+- Diablo's chamber opening with one lever after level loading
+- Thaumaturgic shrine not restocking trapped chests
+- Scavengers/Gravedigger were only able to search for corpses south of them
+- Scavenger leaders getting stuck if minions started eating
+- Quest monsters level being increased twice
+- Fix gold piles with 0 gold from incorrect treasure room generation
+- Avoid using temporary missiles for game state tracking
+- Object interactions stacking while other actions are being performed
+- Quest items sometimes not being picked up when clicked
+- Teleport spell failing for some valid positions
+- Phasing spell sometime failing or sending you outside the level
+- Phasing not working in Lazarus' chamber
+- Too many monster slots being allocated for golems on levels with quests
+- Golems spawning on top of the player
+- Fix Zhar's bookcase resetting a golem instead of Zhar
+- Zhar saying his line twice in a game
+- Fix stairs up to level 8 sometimes taking the player to town instead
+- Fix random tiles being explored on automap
+- Fixed various typos
+
+#### Graphics / Audio
+
+- Monster light not updating when monster teleports
+- Correctly shorten item names depending on visual length
+- Missing dirt corners on map
+- Wobbling map indicator when walking
+- Fix screen position jumping after loading some saves
+- Some lava still animated despite game pause
+- Fully close the dialog screen when pausing game
+- Changed player saying "Not enough mana" to a more fitting message when using a level 0 spell
+- Draw belt item number for unusable scrolls
+
+#### Multiplayer
+
+- Correct desync caused by incorrect vision range for other players
+- Sync monster active state
+- Player attack speed being out of sync
+- Desync when switching items without sufficient inventory space
+- Compensate for desync cause related to player movement
+- Golem desyncing if owner leaves level
+- Prevent golems from fighting each other
+- Play the correct sound when a player is hit by missiles
+
+#### Controls
+
+- Controls [ + ] stat point buttons sometimes not responding to clicks
+
+#### Stability / Performance / System
+
+- Keyboard layout is now correct when entering chat messages
+- Validate network messages to harden security
+- Fix corrupt save games for levels with large amount of entities
+- Game now remembers the last selected hero
+- Added menu for switching between Hellfire / Diablo
+- Make menu navigation wrapping consistent
+- Corrected multiple crashes and stability issues
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Range monsters cannot hit target at melee range
+- Monsters could not see firewalls if covered by lightning wall and vice versa
+- Armor piercing affix on ranged weapons decreasing hit chance instead of increasing it
+- Fix stuttering when running in town
+- Firering spell damage not being based on the caster
+- Firering spell giving XP to the wrong player
+- Solar shrine time was off by 1 hour, and did nothing between 4 and 5 am
+- Reflect spell not working after loading a save game
+- Potion trap was not degrading rejuvenation potion into mana or life
+- Barbarian's skill not correctly updating health points
+
+#### Graphics / Audio
+
+- Fix missing player lights when loading Hive level 3
+- Apply lights to all berserked monsters after loading save game
+- Remove light when killing a berserked monster
+- Blood star becoming invisible when blocked
+- Rotate arrows in the appropriate direction when blocking
+- Candles around the storybook sometimes missing in Crypt
+- Celia now leaves after her quest ends
+- Update Celia and Complete Nut graphics when completing their quests
+- Only play "Uh uh" sound the first time you pick up the cathedral map
+- Glass breaking sound sometimes not playing for the potion trap
+
+#### Multiplayer
+
+- Open Crypt from the start
+- Restrict access to Hive and Crypt based on level
+- Reflect spell not being synced
+- Search spell affecting all players
+
+### Known issues
+
+- Switch/3DS: Polish dub produces static sounds
+- OpenDingux: Now requires Beta
+
+## DevilutionX 1.2.1
+
+### Bugfixes
+
+#### Gameplay
+
+- Gharbad not having to go out of vision before progressing his quest
+- Diablo: Items with negative AC morphing in multiplayer
+- Diablo: Griswold and Wirt selling unusually expensive items
+- Diablo: Gold not going directly to inventory
+- Hellfire: Some monsters having lower than intended HP
+- Hellfire: Auric Amulet not taking effect in most scenarios
+
+#### Graphics / Audio
+
+- Windows: Glitchy audio
+
+#### Controls
+
+- Vita: Inability to edit hero name on the creation screen
+
+#### Stability / Performance / System
+
+- Quest panel crashing the game for some quests
+- Windows: Some systems getting a sensor permission error
+- Windows: Stability issues and item morphing in Hellfire
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Rage/Search/Lightningwall not factoring in the hero level for the first player
+- Sparkling Shrine dealing an incorrect amount of damage
+- Items with negative AC morphing in multiplayer
+
+## DevilutionX 1.2.0
+
+### Features
+
+#### Gameplay
+
+- Hellfire support
+- Shareware support
+- Fully migrate saves between Diablo and Hellfire
+- Gold picked goes to stack even when inventory is open
+- Pepin automatically heals
+- Show other players on the map
+- Preserve list position when buying and selling items in stores
+- Preserve hotkeys and active spell across games
+- Set default active spell for new heroes
+- Experience bar (off by default)
+- Monster health bar (off by default)
+- Auto equip all item types on pickup or purchase (off by default)
+- Auto pickup gold (off by default)
+- Run in town (off by default) (also in multiplayer)
+- Disable friendly fire from arrows an spells (off by default)
+- Disable quest randomization (off by default)
+- Adria refills mana (off by default)
+- Barbarian and Bard heroes in Diablo (off by default)
+
+#### Controls
+
+- Use belt via the numpad
+- Close panels when pressing <kbd>ESC</kbd>
+- <kbd>Shift-click</kbd> to spend all stat points
+- <kbd>Shift-click</kbd> to clear readied spell
+- <kbd>Shift-click</kbd> consumables to move them between the belt and inventory
+- <kbd>Shift-click</kbd> equipment equip/unequip them
+- Controller mapping
+- <kbd>D-Pad</kbd> / Left stick navigation now works in all menus and is more responsive.
+- <kbd>START</kbd> + <kbd>SELECT</kbd> now opens the main menu.
+- Right stick mouse emulation has been improved.
+- Gamepads plugged in while the game is running can be used.
+- All connected gamepads can be used (previously, only the first one).
+
+#### Graphics / Audio
+
+- Widescreen menus
+- Scroll subtitles at the same speed as narration reader
+- Apply sound volume to videos
+- Improved transparency (on by default)
+- Auto-equip sounds (off by default)
+- Show monster type (off by default)
+- Disable walking sounds (off by default)
+
+#### Stability / Performance / System
+
+- Document [ini-file options](https://github.com/diasurgical/devilutionX/wiki/DevilutionX-diablo.ini-configuration-guide)
+- Reorganize ini-file
+- Allow for up to 99 save games of each type
+- Much lower memory usage (now in line with the original)
+- Configurable network port
+- Performance improvements
+- DIABDAT.MPQ may now be upper case
+- Support for portable installs
+- Support file paths longer than 259 characters
+- Add `--ttf-dir` and `--ttf-name` to allow for specifying a different UI font
+- Switch Windows releases to 64-bit
+- Added support for Nintendo 3DS
+- Added support for PlayStation Vita
+- Added support for DragonFly BSD
+- Added AppImage for Linux
+
+### Bugfixes
+
+#### Gameplay
+
+- Catacombs doors never having traps
+
+#### Graphics / Audio
+
+- Incorrect graphics under cave doors in multiplayer
+- Minor color issues in some videos
+- Command-line output missing on Windows
+- Correct visuals and function of the joining-game-dialog
+
+#### Controls
+
+- Mouse jumping to the top of the windows when using the menu
+- Mouse not releasing when exiting the window
+- Dragging on touch devices
+
+#### Stability / Performance / System
+
+- Multiplayer host crashing after beating the game
+
+### Bugfixes for original Diablo bugs
+
+#### Gameplay
+
+- Base damage not being updated when leveling up
+- Player vision radius not updating properly before changing level
+- Tiles not properly being marked as out of visibility when walking
+- Scavengers/Gravediggers taking damage when eating on higher difficulties
+- Flash only dealing 10% damage in some directions
+- Not getting XP for the first monster placed on a level
+- Not getting XP from monsters hit by golems
+- Monsters going inactive when fighting golems offscreen
+- Monsters with hiding ability fleeing in the wrong direction from golems
+- Fallen fleeing in the wrong direction
+- Monsters charge directions being biased for some angles
+- Monsters not being able to properly judge the location of firewalls
+- Some unique items morphing on a new game
+- Incorrectly seeing legit items as duplicates
+- Items being destroyed if held in cursor when entering dungeon
+- Being able to waste gold on red scrolls when not having room for them
+- Gaining mana from reading books despite wearing an item with corruption
+- Gold piles will be filled to their max, before starting a new one
+- Inconsistent repair prices caused by rounding errors
+- Arkaine's Valor brought from previous games breaking the game state
+- Several issues causing Arkaine's Valor to enter a broken state
+- Black Mushroom quest not resetting between games
+- Randomly being teleported from level 15 to Lazarus' chamber
+- Several bugs in Lazarus quest when re-entering the teleport
+- Town portals appearing on two levels when cast in a quest level
+
+#### Controls
+
+- Inconsistent mouse behavior when opening/closing various panels
+
+#### Graphics / Audio
+
+- Gold icons graphics are always correct
+- Arrows graphics not aligning with the move direction
+- Wrong death sound when monster/golem kills another monster
+- Lights not always following unique monsters
+- Lights added on map update not working (Arkaine's Valor, etc.)
+- Player light radius not readjusting when a player is knocked back
+- Loadscreen colors on entering the Poison Water quest
+- Lava pools sometimes having roof tiles in them
+- Doors sometimes missing in Halls of The Blind
+- Broken outline on some inventory items
+
+#### Stability / Performance / System
+
+- Fix more stability issues
+
+#### Bugfixes from Hellfire 1.00 - 1.01
+
+- Monster hitpoints overflowing in Nightmare/Hell difficulty
+- Gharbad the Weak not dropping his item when killed by a golem
+- Some stability issues
+
+### Bugfixes for original Hellfire bugs
+
+#### Gameplay
+
+- Firewall damage calculation being too low
+- Firewall/Lightningwall damage being based on the dungeon level instead of spell level for the first player
+- Right-hand item's decay suffix being applied to the left-hand item in multiplayer
+- Town Shrine would always cast TP from the first player instead of the user
+- Oily Shrine and Sparkling Shrine would cast their traps as if the first player was doing it
+- The farmer would always think he was talking to the local player
+- Scavenger/Gravedigger AI being stuck for a round after eating
+- Sync available quests in multiplayer
+- Correct spell level being ignored for Search and Rage
+
+#### Graphics / Audio
+
+- Monster attack sound sometimes not playing
+- Missing sounds when bards and barbarians talk to cows
+- "0 Gold" sometimes spawning on The Cornerstone
+- Minor typography corrections
+
+#### Bugfixes from Diablo 1.03 - 1.09
+
+- The Hidden Shrine freezes when not holding an applicable item
+- Memory corruption when casting town portal
+- Crashes associated with Black Death
+- Players getting stuck in a wall when using Town Portals
+- Some Hell difficulty monsters being too easy to hit
+- Mana Shield bugs that could make a player invulnerable and/or invisible
+- Disarming skill not working on levels 13 through 15
+- Mana Shield permanently using up level missiles
+- Corrected behaviour of Thieves, Speed/Haste, Balance/Stability/Harmony, and Piercing/Bashing/Puncturing
+- Mana Shield becoming less effective with increasing spell level
+- Excessive damage when a Mana Shield expired due to an attack
+- Bows with fire damage prevented the Gargoyles from healing
+- Right-clicking belt item 5-8 not working while the Spellbook is open
+- Mana Shield and Nova not appearing for other players
+- Shields disappearing when worn after wielding two-handed weapons
+- Adria's books appear white even when the player can't read them
+- Equipped shields not appear properly to other players
+- Monster health not appearing correctly on Nightmare and Hell difficulty
+- Diablo's scream being muted if you load a save game during his death throes
+- Multiplayer character files are now located in the data directory, and may be moved between computers
+- Some stability issues
+
+### Known issues
+
+- Save game difficulty does not carry over from 1.1.0
+- Amiga builds are currently unstable
+
+## DevilutionX 1.1.0
+
+### Features
+
+- Proper widescreen (and other aspects) support
+- Select difficulty in single player (remembered in the save game)
+- Adjustable game speed in-game
+- V-sync can now be disabled in the ini
+- Better line drawing function used for the automap
+- Support for loading custom Hell level maps
+- Make all objects and monsters available to custom maps
+- Added support for joining a game via hostname instead of IP
+
+### Bugfixes
+
+- You can now enter and exit fullscreen also when the game is paused
+- [Amiga] Fix double-clicking in menu
+
+### Original Diablo bugs
+
+- Fix some monsters AC and to-hit values on Nightmare/Hell ending up as 0
+- Fix player base block resetting to 0 after loading a save game
+- Correctly render trees in front of the player
+- Fully render sprites that are larger than the floor tiles
+- Fix objects disappearing when walking on the opposite wall
+- Duping via belt has been fixed
+- Correctly detect if the mouse is clicking the world or UI in some areas
+- Minor typography corrections
+- Corrected name of Chamber of Bone in automap
+- Correctly align the inventory slots
+
+## DevilutionX 1.0.3
+
+### Bugfixes
+
+- Fix keyboard input in the menu
+
+## DevilutionX 1.0.2
+
+### Features
+
+- Support for integer scaling
+- Controller: Map Start + L1/R1 to char/inventory
+- Added `--save-dir` to allow for specifying the save game folder
+- Correctly scale the game on systems with a non-standard DPI setting
+
+### Bugfixes
+
+- Some cave levels were generated with an incorrect layout
+- Firebolt mana cost is now correct
+- Allow players to join Nightmare/Hell games without first creating a game
+- Correctly load the full white color
+- Correct navigation in the difficulty select screen
+- The window can now be resized after exiting fullscreen mode
+- Fix memory leak in audio code
+- Fix hanging for 20 sec on the error screen
+
+## DevilutionX 1.0.1
+
+### Features
+
+- Toggle fullscreen at any point by hitting alt+enter (mouse grab can be disabled in diablo.ini)
+- Controller: B button closes the currently active panel.
+- Added a navigation menu for controllers
+- Focus on the exit item before quitting.
+- Minor performance improvements (save/load time and main menu).
+- Add a list of [known mods](https://github.com/diasurgical/devilutionX/blob/master/docs/mods.md)
+
+### Platforms
+
+- Added support for 32bit PowerPc
+- Added support for Amiga
+- Added support Clockwork PI GameShell
+- Added support for GKD350h
+- Switch to OPK for RetroFW (requires 2.0)
+- Update OpenDingux/RetroFW build root
+
+### Bugfixes
+
+- Game crashing on systems that do not report monitor refresh rate.
+- Fixed belt not working correctly when holding shift on us keyboard layouts
+- Always keep track of the latest hero level when selecting difficulty.
+- Correct screenshot path
+- Turn the screen red for 200ms when taking screenshots.
+- Fix town load screen missing on the first load.
+- Fix minor HOM issue at some houses in town.
+- Allow for space as text input
+- Fixed a couple of typos in error messages
+
+### Original Diablo bugs
+
+- Fix belt not working correctly when holding shift on *non-*us keyboard layouts
+- Fix one more rare crash.
+
+## DevilutionX 1.0.0
+
+### Features
+
+- FPS no longer capped at 20hz; smoother mouse and transitions
+- Full-featured gamepad support
+- All movies can now be skipped via ESC
+- Implement `--help`, `--version` and `--data-dir`
+- Implement FPS counter (`-f`)
+- Force windowed mode with `-x`
+- Skip startup movies with `-n`
+- Implement scroll wheel navigation
+- Implement touch support
+- Load assets from the same folder as the mpq
+- Faster loading
+
+### Platforms
+
+- Added Nintendo Switch support
+- Added Retro Gamer Handheld (OpenDingux/Retrofw) support
+- Added OpenBSD support
+- Windows version is now build as GUI an app and has an icon
+
+### Bugfixes
+
+- Fixed random missing sounds
+- Fixed NPCs not talking about the right quest
+- Error messages implemented in GUI
+- Fixed having to restart the game between network sessions
+- Fixed game not working on some Radeon GPUs
+- Fixed panel missing after minimizing game if upscaling is disabled
+- Fixed clicks in the left letterbox being incorrectly handled
+- Fixed end movie not looping
+
+### Original Diablo bugs
+
+- Fixed a large number of rare stability issues from the original game
+- Correctly take open panels into account when casting spells
+- Fix sound some times being muted after Diablo dies
+
+## DevilutionX 0.5.0
+
+### Features
+
+- Sound is now accurate to the original
+- All in-game issues fixed
+- Delete hero, inline dialogs and scrollbars are now implemented
+- Screenshots now have different names
+- Multiple simultaneous dialogs fixed
+- All builds are now 64bit (except for Windows and Raspberry Pi)
+- Memory leaks and crashes fixed
+- All keys are now mapped
+- UI text now has correct shadows
+- Much lower CPU usage
+- diabdat.mpq can now be loaded with read-only access
+
+### Known issues
+
+- Error dialogs not implemented in main UI
+- The game must restart after hosting multiplayer
+
+## [0.10.0](https://github.com/diasurgical/devilution/compare/0.9.6...0.10.0)
+
+### June 22, 2019
+
+- [All functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- Fix buying from Wirt
+- Replace many magic numbers with constants
+- Fix a handful of minor issues
+- Add toggle fullscreen with alt+enter in debug builds
+
+### June 21, 2019
+
+- All functions are now [binary identical](https://github.com/diasurgical/devilution/milestone/3) to Diablo 1.09b
+
+### June 1, 2019
+
+- MVG posts [a video about the project](https://www.youtube.com/watch?v=5tADL_fmsHQ) and releases a Nintendo Switch port
+
+## DevilutionX 0.4.0
+
+### May 20, 2019
+
+- Fixed flickering mouse in caves
+- 32bit ARM build (Raspberry Pi)
+- 32bit FreeBSD build
+- 32bit Haiku support (see HaikuDepot)
+- Included font for rendering credits and progress screen
+- Upscaling quality can be adjusted or fully disabled in diablo.ini
+- Windowed mode can be set in diablo.ini
+- Mouse capture can be set in diablo.ini
+- Direct file access implemented (mods won't need to pack their files in an MPQ)
+- Music and speech memory leaks fixed
+
+## [0.9.6](https://github.com/diasurgical/devilution/compare/0.9.0...0.9.6)
+
+### May 19, 2019
+
+- [96% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- Fix several item corruption issues introduced in 0.9.0
+
+## [0.9.0](https://github.com/diasurgical/devilution/compare/0.8.0...0.9.0)
+
+### May 2, 2019
+
+- [90% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- Mute buttons now work correctly
+
+### April 15, 2019
+
+- Code is once again compiled as C++ as some parts appear to require despite the indications in Rich header
+
+## [0.8.0](https://github.com/diasurgical/devilution/compare/0.7.0...0.8.0)
+
+### April 12, 2019
+
+- [80% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- Fixes a few minor issues with generated items
+
+## [0.7.0](https://github.com/diasurgical/devilution/compare/0.6.0...0.7.0)
+
+### April 9, 2019
+
+- [70% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+
+### April 9, 2019
+
+- The last of the compiler flags are figured out
+
+### March 22, 2019
+
+- Devilution appears on [Phoronix](https://www.phoronix.com/scan.php?page=news_item&px=DeviluitionX-Open-Diablo)
+
+## DevilutionX 0.3.0
+
+### March 20, 2019
+
+- Fix dialog volume
+- 32bit macOS build
+- Fix crash in town during multiplayer
+- Screenshot implemented
+
+## [0.6.0](https://github.com/diasurgical/devilution/compare/v0.5.0...0.6.0)
+
+### March 19, 2019
+
+- [60% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- Added a guide for people wanting to join in [Cleaning the code](https://github.com/diasurgical/devilution/wiki/Cleaning-Code)
+- File size is now only 968 bytes (0.13%) larger than the original Diablo 1.09b.
+
+## DevilutionX 0.2.0
+
+### March 17, 2019
+
+- Fully implemented audio (all issues from 0.1.0 fixed)
+- Fully implemented multiplayer
+- Windows 32bit build
+- Gameplay is fully featured and plays like the original
+- Memory leaks fixed
+- Most known crashes have been fixed
+
+### March 7, 2019
+
+- [GOG re-release Diablo](https://www.gog.com/news/release_diablo)
+
+## DevilutionX 0.1.0
+
+### February 27, 2019
+
+- Linux 32bit build
+- Basic audio
+- Video playback
+- Basic menus
+- Graphics
+- Gameplay
+- Basic multiplayer over TCP/UDP
+- Persistent settings
+- Encrypted network connection with password protection
+
+## [0.5.0](https://github.com/diasurgical/devilution/compare/0.4...v0.5.0)
+
+### January 14, 2019
+
+- [50% of functions are now binary identical](https://github.com/diasurgical/devilution/milestone/3) to the 1.09b version
+- [#456](https://github.com/diasurgical/devilution/pull/456) Assets can now be loaded directly from disk (no need for MPQ-files when modding)
+- [#528](https://github.com/diasurgical/devilution/pull/528) Code ported to C (can still be compiled as C++)
+- [#111](https://github.com/diasurgical/devilution/pull/111) Rich Header no longer contains incorrect sections
+- [#182](https://github.com/diasurgical/devilution/pull/182) defined a [Code Style](https://github.com/diasurgical/devilution/wiki/Code-style-guide) with accompanying clang-format definition
+- `Diabloui.dll` is now also part of the source tree
+- Added [Contribution Guide](https://github.com/diasurgical/devilution/blob/master/docs/CONTRIBUTING.md)
+- Added PDB build option for comparing with [devilution-comparer](https://github.com/diasurgical/devilution-comparer)
+- CI now runs the original build chain
+- Most magic numbers are now replaced by enums
+- The code was reduced by 10,000 lines
+- Fix a few issues, mostly relating to multiplayer
+
+### November 17, 2018
+
+- An older and more original PSX symbol file is discovered
+
+### October 1, 2018
+
+- Compiler version is confirmed to be correct by discovery of the [Rich header](https://bytepointer.com/articles/the_microsoft_rich_header.htm)
+
+### September 18, 2018
+
+- Merge nightly back into devilution
+
+### September 3, 2018
+
+- Travis is configured to report the overall project delta to 1.09b on every change
+
+### September 1, 2018
+
+- Devilution-comparer is developed for comparing binary diff in compiled functions
+
+### August 28, 2018
+
+- The correct compiler combination is found by trial and error plus a bit of luck
+
+## [0.4.0](https://github.com/diasurgical/devilution/compare/0.3...0.4)
+
+### September 16, 2018
+
+- Fix crash
+- Get the first functions bin exact
+- Fix render issues
+- Introduce debug functions from the 1.00 debug release
+- Fix missiles
+- More consts, sizeof and defines
+- Fix several issues with dungeon generation code
+- Fix multiplayer
+- Fix error messages
+- Correct names based on PSX symbols and DX SDK
+
+### August 20, 2018
+
+- Created nightly fork where code clean up can take place until major bugs are fixed in the main project
+
+### July 6, 2018
+
+- Setup a Discord channel
+
+### July 1, 2018
+
+- Diablo 1.09b is determined to have been compiled with the /O1 flag
+
+## [0.3.0](https://github.com/diasurgical/devilution/compare/0.1.0...0.3)
+
+### June 28, 2018
+
+- Windows binary can now be compiled under Linux and Mac OS X
+- Windows binary can now be compiled under VS 5.10
+- Fix multiple crashes
+- Remove cheesy copyright notice
+- Set up continuous building via Travis and AppVeyor
+- Icon added
+- Fix Zhar quest, monster squelching and golems
+- Use consts for various values
+
+### June 20, 2018
+
+- The [media](https://www.pcgamer.com/a-coder-spent-1200-hours-reverse-engineering-diablos-source-code/) catches wind and [several](https://bloody-disgusting.com/video-games/3505673/fan-completes-reverse-engineering-source-code-diablo/) [articles](https://kotaku.com/coder-spends-1-200-hours-piecing-together-diablos-sourc-1827001247) [appear](https://www.diabloii.net/blog/comments/reverse-engineered-diablo-source-code-released)
+
+### June 18, 2018
+
+- Devilution gets posted on [Y Combinator](https://news.ycombinator.com/item?id=17338886)
+
+## 0.1.0
+
+### June 6, 2018
+
+- Devilution is unleashed upon the world! Version 0.1.0!
+
+### June 3, 2018
+
+- Polishing things up for final release
+- Added a cheesy fake copyright notice to dissuade monetary gain
+- Properly integrated Storm and DiabloUI into the project
+
+### May 28, 2018
+
+- Fixed bugs with save files
+- You can now load Devilution saves in the vanilla game
+
+### May 25, 2018
+
+- Finally! Figured it out and now monsters spawn correctly
+- The game can be completed from start to finish with a few tricks
+
+### May 21, 2018
+
+- Took a week break, begin working on monster code again
+- Nearly all quests work now
+- Fixed a bug with Adria
+
+### May 8, 2018
+
+- Fix bugs with character drawing
+- Fix bugs relating to item affix generation
+- Towners no longer crash the game
+
+### May 7, 2018
+
+- Port debugging functions from the debug release
+- Still can't figure out the zombie problem
+
+### May 5, 2018
+
+- Begin fixing quest code and testing completion
+
+### April 26, 2018
+
+- Zombies are spawning in all dungeon types... sigh
+
+### April 20, 2018
+
+- Split code from IDA's C file into separate CPP files
+- All dungeon types can now be entered
+- Objects are now mostly working
+- Begin uncommenting monster code and fixing them
+
+### April 11, 2018
+
+- Begin fixing up dungeon generation and objects
+
+### April 4, 2018
+
+- Fixed many crashing bugs when in town and dungeon
+- Items, missiles, and spells are now drawn
+
+### April 1, 2018
+
+- Finally fixed the render bug, everything draws correctly!
+- Character animation now draws correctly
+- The cathedral is now mostly working
+
+### March 29, 2018
+
+- Fixed tons of bugs
+- You can now walk around in town
+- Entering the dungeon almost always crashes
+
+### March 27, 2018
+
+- Uncommented and fixed lots of broken code
+- The game screen now appears, although very glitchy
+
+### March 22, 2018
+
+- Control panel and inventory now work almost flawlessly
+
+### March 21, 2018
+
+- Temporarily commented out tons of broken code
+- You can now get past the loading screen and into town
+- Music also works
+- Control panel mostly works but game screen is black
+
+### March 18, 2018
+
+- The title screen now works
+- Freezes during the loading screen
+
+### March 16, 2018
+
+- Fixed enough bugs that you can now launch binary
+- Crashes during title screen
+
+### March 14, 2018
+
+- Fix remaining errors in code
+- Code now compiles and produces a non-working binary
+
+### March 13, 2018 -- *!  SPECIAL DAY  !*
+
+- Dump the database to C code via IDA
+
+### March 8, 2018
+
+- Correct various function signatures
+- Correct struct names and types
+- Plug in enumerates
+- Finish correcting and documenting data sections
+
+### February 26, 2018
+
+- Finish documenting functions
+- Begin correcting names to match PSX
+
+### February 18, 2018
+
+- Begin adding enumerates
+- Add more minor structs
+- Clean up data sections
+
+### February 15, 2018
+
+- Almost finished adding every function
+- Begin working on major structs
+
+### February 8, 2018
+
+- Add more functions
+- Begin adding data from Sanctuary project
+
+### February 4, 2018
+
+- IDA disassembly begin
+- Start adding function names from [Sanctuary project](https://github.com/sanctuary/notes)
+
+### January 15, 2018
+
+- The concept of Devilution is born
+- Research into Diablo's code and mechanics
+- Research from [Jarulf's guide](http://www.bigd-online.com/JG/JGFrame.html)
