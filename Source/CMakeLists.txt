@@ -1032,9 +1032,14 @@ if(SCREEN_READER_INTEGRATION)
   )
 endif()
 
-if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PCX)
-  list(APPEND libdevilutionx_SRCS
+if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PCX OR BUILD_TESTING)
+  add_devilutionx_object_library(libdevilutionx_surface_to_pcx
     utils/surface_to_pcx.cpp
+  )
+  target_link_dependencies(libdevilutionx_surface_to_pcx
+    PUBLIC
+    DevilutionX::SDL
+    libdevilutionx_surface
   )
 endif()
 
@@ -1144,6 +1149,8 @@ target_link_dependencies(libdevilutionx PUBLIC
 )
 if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PNG)
   target_link_dependencies(libdevilutionx PUBLIC libdevilutionx_surface_to_png)
+elseif(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PCX)
+  target_link_dependencies(libdevilutionx PUBLIC libdevilutionx_surface_to_pcx)
 endif()
 
 # Use file GENERATE instead of configure_file because configure_file
