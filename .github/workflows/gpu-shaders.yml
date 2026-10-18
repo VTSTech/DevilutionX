@@ -88,6 +88,32 @@
 # job's GLIBC 2.36 portability gate is kept (now covering the .so too);
 # its GLIBCXX absence check is inverted (the dynamic build REQUIRES
 # GLIBCXX_ from the shipped libstdc++).
+#
+# NONSTATIC SDL3 (2026-10-18): both nonstatic jobs now also build the vendored
+# SDL3 stack as shared libraries (-DDEVILUTIONX_STATIC_SDL3=OFF and
+# -DDEVILUTIONX_STATIC_SDL_MIXER=OFF; SDL3_image follows SDL3 - the
+# 3rdParty/SDL3_image glue forces them equal - and SDLIMAGE_PNG_SHARED stays
+# OFF so png+zlib remain static INSIDE the image lib and LOAD_PNG_DYNAMIC
+# never dlopens a missing DLL). SYSTEM_* stay OFF: same pinned sources, only
+# the linkage changes. The exe imports SDL3.dll/SDL3_image.dll/SDL3_mixer.dll
+# (Windows) / libSDL3.so.0/libSDL3_image.so.0/libSDL3_mixer.so.0 (Linux); the
+# Package steps copy them out of the FetchContent build trees beside the exe
+# and the gates scan their import tables / ldd closure like libslangvk's. On
+# Linux the SDL .so carry $ORIGIN via the root CMAKE_BUILD_RPATH set under
+# GPU_SCALER_SHARED (FetchContent targets inherit the variable; their
+# inter-deps, e.g. SDL3_image -> SDL3, need it), and the ldd allowlist gains
+# SDL3's backend system libs (X11/Wayland/audio/udev/dbus) - the same libs
+# the vendored-static SDL dlopens at runtime, so the user-facing requirement
+# set is unchanged. The SDL3_mixer codec set is fully internal (drmp3), so
+# the mixer library adds no system deps.
+#
+# NONSTATIC STRIP (2026-10-18): both nonstatic Package steps strip the
+# symtab off the exe and every built library after the gates (PE keeps the
+# COFF symtab + string table unless stripped; ELF likewise - the pre-strip
+# telemetry lines stay, so the saving is measurable from the log). The gates
+# are unaffected: DT_NEEDED, import tables and symbol versions live in the
+# dynamic sections, which strip preserves. The smoke test then runs the
+# STRIPPED artifacts exactly as a user would.
 name: GPU Shader Scalers (Windows + Linux)
 
 on:
@@ -383,16 +409,22 @@ jobs:
   #     wiring is ever lost.
   #   - glibc is NEVER shipped (NSS/loader compatibility). The static job's
   #     GLIBC <= 2.36 gate still applies, now to the exe AND the .so.
-  #   - SDL3/SDL3_image/zlib/libpng stay vendored static (bookworm has no
-  #     SDL3 packages); bzip2 stays system-dynamic exactly as in the static
-  #     job (DEVILUTIONX_SYSTEM_BZIP2 default ON; libbz2.so.1.0 is universal).
+  #   - SDL3/SDL3_image/SDL3_mixer stay vendored (bookworm has no SDL3
+  #     packages) but build SHARED in this job (DEVILUTIONX_STATIC_SDL3=OFF;
+  #     SDL3_image follows SDL3 - the 3rdParty/SDL3_image glue forces them
+  #     equal - and SDL3_mixer follows its own flag). The zip ships
+  #     libSDL3.so.0/libSDL3_image.so.0/libSDL3_mixer.so.0 beside the exe;
+  #     png+zlib stay static INSIDE SDL3_image (SDLIMAGE_PNG_SHARED=OFF, so
+  #     LOAD_PNG_DYNAMIC never dlopens a missing DLL). bzip2 stays
+  #     system-dynamic exactly as in the static job (DEVILUTIONX_SYSTEM_BZIP2
+  #     default ON; libbz2.so.1.0 is universal).
   # Object code is identical to the `linux` job except the slang/scaler TUs
-  # (SLANGVK_SHARED + PIC change their defines), so the shared
-  # ccache-linux-x64- restore prefix warm-starts this job from the static
-  # job's cache; the primary key's -nonstatic- infix keeps the saved entries
-  # distinct (same pattern as the Windows pair).
+  # (SLANGVK_SHARED + PIC change their defines) and the SDL TUs (shared DLL
+  # builds), so the shared ccache-linux-x64- restore prefix warm-starts this
+  # job from the static job's cache; the primary key's -nonstatic- infix keeps
+  # the saved entries distinct (same pattern as the Windows pair).
   linux-nonstatic:
-    name: Linux x86_64 (SDL3 + GPU shader scaler, dynamic link - ships libslangvk.so + GCC 14 runtime)
+    name: Linux x86_64 (SDL3 + GPU shader scaler, dynamic link - ships libslangvk.so + SDL3 stack + GCC 14 runtime)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -433,8 +465,9 @@ jobs:
     - name: Install dependencies
       run: |
         # Same vendored-SDL3 dev stack as the static Linux job (the
-        # X11/Wayland/audio backends are required to configure; SDL3 itself
-        # stays vendored/static - bookworm has no SDL3 packages).
+        # X11/Wayland/audio backends are required to configure; SDL3 stays
+        # vendored but builds SHARED in this job - bookworm has no SDL3
+        # packages, so the .so files ship in the zip).
         # binutils = objdump for the gates below.
         apt-get install -y --no-install-recommends ninja-build gettext smpq zip patch cmake binutils ccache \
           libasound2-dev libpulse-dev \
@@ -447,19 +480,25 @@ jobs:
         g++ --version | head -1
 
     # Identical to the `linux` job's Configure except: GPU_SCALER_SHARED=ON
-    # (build + link libslangvk.so) and CMAKE_EXE_LINKER_FLAGS drops
-    # -static-libgcc/-static-libstdc++ (the shipped libstdc++.so.6 below is
-    # now the shared C++ runtime for exe and .so alike). shell: bash is
+    # (build + link libslangvk.so), the vendored SDL3 stack builds shared
+    # (DEVILUTIONX_STATIC_SDL3=OFF - SDL3_image follows SDL3 per the
+    # 3rdParty/SDL3_image glue; SDL3_mixer via its own flag; SYSTEM_*=OFF
+    # keeps the same pinned sources, only the linkage changes) and
+    # CMAKE_EXE_LINKER_FLAGS drops -static-libgcc/-static-libstdc++ (the
+    # shipped libstdc++.so.6 below is now the shared C++ runtime for exe and
+    # .so alike). shell: bash is
     # REQUIRED for the ${GITHUB_SHA:0:7} expansion (container steps run under
     # dash by default); the Package step stays POSIX-clean like the static
     # job's.
-    - name: Configure (same flags as the linux job, minus -static-*, plus GPU_SCALER_SHARED)
+    - name: Configure (same flags as the linux job, minus -static-*, plus GPU_SCALER_SHARED + shared SDL3)
       shell: bash
       run: >
         cmake -S. -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
         -DGPU_SCALER_SHARED=ON
+        -DDEVILUTIONX_STATIC_SDL3=OFF
+        -DDEVILUTIONX_STATIC_SDL_MIXER=OFF
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DBUILD_TESTING=OFF
@@ -506,6 +545,20 @@ jobs:
         fi
         cp "$slangvk_so" pkg/
 
+        # SDL3 stack ships as shared objects beside the exe
+        # (DEVILUTIONX_STATIC_SDL3=OFF; SDL3_image follows SDL3 in the glue):
+        # copy the exact sonames the exe's DT_NEEDED references verbatim out
+        # of the FetchContent build trees, like libslangvk.so above.
+        for so in libSDL3.so.0 libSDL3_image.so.0 libSDL3_mixer.so.0; do
+          src="$(find build -name "$so" -print -quit)"
+          if [ -z "$src" ]; then
+            echo "::error::$so not found in the build tree - the SDL trio did not build shared (DEVILUTIONX_STATIC_SDL3=OFF lost?)."
+            exit 1
+          fi
+          cp -L "$src" "pkg/$so"
+          echo "shipped SDL3 stack: $so <- $src"
+        done
+
         # Ship the GCC 14 C++ runtime the exe and the .so both need: Debian 12
         # ships GCC 12's libstdc++ (GLIBCXX_3.4.30) and this C++23 tree needs
         # newer versions. Same pattern as the Windows nonstatic job shipping
@@ -522,12 +575,14 @@ jobs:
         done
 
         # GATE 1 - RUNPATH wiring (Linux's substitute for Windows' exe-folder
-        # search): the exe AND libslangvk.so must carry $ORIGIN, or the shipped
-        # libs above are ignored on a user's machine. DT_RUNPATH is not
-        # inherited transitively, so the .so needs its own entry for its own
-        # libstdc++/libgcc dependencies. (Wired by CMAKE_BUILD_RPATH under
-        # GPU_SCALER_SHARED in CMakeLists.txt.)
-        for bin in build/devilutionx "$slangvk_so"; do
+        # search): the exe AND every built .so must carry $ORIGIN, or the
+        # shipped libs above are ignored on a user's machine. DT_RUNPATH is
+        # not inherited transitively, so each .so needs its own entry:
+        # libslangvk.so for its libstdc++/libgcc deps, the SDL .so for their
+        # inter-deps (SDL3_image -> SDL3). (Wired by CMAKE_BUILD_RPATH under
+        # GPU_SCALER_SHARED in CMakeLists.txt; FetchContent targets inherit
+        # the variable.)
+        for bin in build/devilutionx "$slangvk_so" pkg/libSDL3.so.0 pkg/libSDL3_image.so.0 pkg/libSDL3_mixer.so.0; do
           if ! objdump -x "$bin" | grep -E 'RPATH|RUNPATH' | grep -q '\$ORIGIN'; then
             echo "::error::$bin has no \$ORIGIN in RPATH/RUNPATH - the GPU_SCALER_SHARED RPATH wiring (CMAKE_BUILD_RPATH in CMakeLists.txt) was lost. The package would not launch on a user's machine."
             exit 1
@@ -548,8 +603,8 @@ jobs:
         fi
 
         # GATE 3 - glibc floor unchanged (2.36): now enforced for the exe AND
-        # libslangvk.so (glibc itself is never shipped).
-        for bin in build/devilutionx "$slangvk_so"; do
+        # every built .so (glibc itself is never shipped).
+        for bin in build/devilutionx "$slangvk_so" pkg/libSDL3.so.0 pkg/libSDL3_image.so.0 pkg/libSDL3_mixer.so.0; do
           MAX_GLIBC=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
           echo "max GLIBC_ of $(basename "$bin"): ${MAX_GLIBC#GLIBC_} (floor: 2.36)"
           if [ "$(printf '%s\n2.36\n' "${MAX_GLIBC#GLIBC_}" | sort -V | tail -1)" != "2.36" ]; then
@@ -575,7 +630,7 @@ jobs:
         # universal on desktop distros). Anything else FAILS: the zip would
         # not launch on a clean Debian 12.
         fail=0
-        for bin in pkg/devilutionx pkg/libslangvk.so; do
+        for bin in pkg/devilutionx pkg/libslangvk.so pkg/libSDL3.so.0 pkg/libSDL3_image.so.0 pkg/libSDL3_mixer.so.0; do
           echo "== ldd $(basename "$bin") =="
           LD_LIBRARY_PATH="$PWD/pkg" ldd "$bin" > ldd_out.txt 2>&1 || true
           cat ldd_out.txt
@@ -596,6 +651,13 @@ jobs:
                 case "$base" in
                   ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libbz2.so*)
                     echo "  -> system (universal, not shipped): $base" ;;
+                  # SDL3's backend stack: the same libs the vendored-static
+                  # SDL dlopens at runtime, so the user-facing requirement
+                  # set is unchanged - they only appear as DT_NEEDED when
+                  # SDL links them instead of dlopening. All present on any
+                  # desktop distro with a graphics + audio session.
+                  libX*.so*|libxcb*.so*|libxkbcommon*.so*|libwayland*.so*|libEGL.so*|libGL.so*|libgbm.so*|libdrm.so*|libasound.so*|libpulse*.so*|libudev.so*|libdbus-1.so*)
+                    echo "  -> system (SDL3 backend stack, not shipped): $base" ;;
                   *)
                     echo "::error::$(basename "$bin") needs system lib $base which the package does not ship and the allowlist does not cover. Either ship it beside the exe (like libstdc++/libgcc above) or extend the allowlist with justification."
                     fail=1 ;;
@@ -607,6 +669,16 @@ jobs:
           echo '::error::package is not self-contained - the zip would not launch on a clean Debian 12 install.'
           exit 1
         fi
+
+        # Size lever (2026-10-18): strip the symtab off the exe and every
+        # built .so (ELF keeps a full symtab + string table unless stripped;
+        # the pre-strip telemetry above makes the saving measurable). The
+        # gates are unaffected: DT_NEEDED, symbol versions and RUNPATH all
+        # live in the dynamic section, which strip preserves. The shipped
+        # libstdc++/libgcc come from the distro and are already stripped.
+        # The smoke test below then runs the STRIPPED artifacts exactly as
+        # a user would.
+        strip pkg/devilutionx pkg/libslangvk.so pkg/libSDL3.so.0 pkg/libSDL3_image.so.0 pkg/libSDL3_mixer.so.0
 
         # smoke test with ONLY the shipped libs: the exe's $ORIGIN RUNPATH
         # resolves libslangvk.so + the C++ runtime from pkg/ exactly as it
@@ -623,18 +695,20 @@ jobs:
         cat > pkg/LINUX-REQUIREMENTS.txt <<'EOT'
         devilutionx (GPU shader scaler build, dynamic link) - Linux x86_64
         Built on gcc:14-bookworm (Debian 12 base, glibc 2.36). Dynamically
-        linked: this zip ships libslangvk.so (libslang-vk: slang/glslang) and
-        the GCC 14 C++ runtime (libstdc++.so.6, libgcc_s.so.1) beside the exe;
-        SDL3 is vendored/static.
+        linked: this zip ships libslangvk.so (libslang-vk: slang/glslang),
+        the SDL3 stack (libSDL3.so.0, libSDL3_image.so.0, libSDL3_mixer.so.0)
+        and the GCC 14 C++ runtime (libstdc++.so.6, libgcc_s.so.1) beside the
+        exe; SDL3 is vendored but dynamically linked.
 
         Requires:
           glibc >= 2.36            Debian 12+, Ubuntu 24.04+, Fedora 38+, Arch current
           libvulkan.so.1           (e.g. Debian/Ubuntu: mesa-vulkan-drivers or the NVIDIA driver)
           libbz2.so.1.0            present on every mainstream desktop distro
           X11 or Wayland session   SDL3 backends load at runtime
-        Keep devilutionx, libslangvk.so, libstdc++.so.6 and libgcc_s.so.1 in
-        the SAME folder: the exe and the .so resolve them via their $ORIGIN
-        RUNPATH (Linux does not search the exe's folder by default).
+        Keep devilutionx, libslangvk.so, the libSDL3*.so.0 files,
+        libstdc++.so.6 and libgcc_s.so.1 in the SAME folder: the exe and the
+        .so resolve them via their $ORIGIN RUNPATH (Linux does not search the
+        exe's folder by default).
         EOT
         cd pkg && zip -r ../devilutionx-gpu-shaders-linux-x64-nonstatic.zip . && cd ..
 
@@ -755,11 +829,14 @@ jobs:
   # Same MinGW cross build as the `windows` job but with NO -static linker
   # flags (see the WINDOWS-NONSTATIC JOB header note at the top). Everything
   # else is deliberately identical: the vendored deps stay static EXCEPT
-  # libslang-vk (-DGPU_SCALER_SHARED=ON), which ships as libslangvk.dll
-  # beside the exe; the remaining new imports are the MinGW runtime DLLs,
-  # which the Package step resolves from the cross toolchain and ships too.
+  # libslang-vk (-DGPU_SCALER_SHARED=ON -> libslangvk.dll) and the SDL3 trio
+  # (-DDEVILUTIONX_STATIC_SDL3=OFF + -DDEVILUTIONX_STATIC_SDL_MIXER=OFF ->
+  # SDL3.dll/SDL3_image.dll/SDL3_mixer.dll; SDL3_image follows SDL3 in the
+  # glue, png+zlib stay static inside it), all shipped beside the exe; the
+  # remaining new imports are the MinGW runtime DLLs, which the Package step
+  # resolves from the cross toolchain and ships too.
   windows-nonstatic:
-    name: Windows x64 (MinGW cross, SDL3, dynamic link — ships MinGW runtime DLLs)
+    name: Windows x64 (MinGW cross, SDL3, dynamic link — ships MinGW runtime + libslangvk + SDL3 DLLs)
     runs-on: ubuntu-24.04
     # MAINT-04: see the Linux job — release uploads need contents:write.
     permissions:
@@ -774,11 +851,12 @@ jobs:
       with:
         fetch-depth: 0
 
-    # Object code is identical to the static job (only link flags differ), so
-    # the shared ccache-windows-x64- prefix warm-starts this job from the
-    # static job's cache of the same push. The primary key has its own
-    # -nonstatic- infix so this job saves under a distinct key and the two
-    # jobs never race for the same cache entry.
+    # Object code is identical to the static job except the slang/scaler TUs
+    # (SLANGVK_SHARED) and the SDL TUs (shared DLL builds), so the shared
+    # ccache-windows-x64- prefix warm-starts this job from the static job's
+    # cache of the same push. The primary key has its own -nonstatic- infix
+    # so this job saves under a distinct key and the two jobs never race for
+    # the same cache entry.
     - name: Restore ccache
       uses: actions/cache@v4
       with:
@@ -796,7 +874,11 @@ jobs:
     # no -static, no -static-libgcc, no -static-libstdc++, plus
     # GPU_SCALER_SHARED=ON: libslang-vk also builds its slangvk::shared
     # variant and the exe links that (libslangvk.dll beside the exe) instead
-    # of the static embed. Nothing else adds static linkage: the toolchain
+    # of the static embed, and the vendored SDL3 trio builds shared
+    # (DEVILUTIONX_STATIC_SDL3=OFF + DEVILUTIONX_STATIC_SDL_MIXER=OFF ->
+    # SDL3.dll/SDL3_image.dll/SDL3_mixer.dll; SDL3_image follows SDL3 in the
+    # 3rdParty/SDL3_image glue, png+zlib stay static inside it). Nothing else
+    # adds static linkage: the toolchain
     # file (CMake/platforms/mingwcc64.toolchain.cmake) carries none, and
     # DEVILUTIONX_STATIC_CXX_STDLIB (the genex that would add
     # -static-libgcc/-static-libstdc++ per library) is force-disabled when sound
@@ -813,6 +895,8 @@ jobs:
         -DUSE_SDL3=ON
         -DUSE_GPU_SCALER=ON
         -DGPU_SCALER_SHARED=ON
+        -DDEVILUTIONX_STATIC_SDL3=OFF
+        -DDEVILUTIONX_STATIC_SDL_MIXER=OFF
         -DDEVILUTIONX_SYSTEM_SDL3=OFF
         -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF
         -DDEVILUTIONX_SYSTEM_ZLIB=OFF
@@ -852,17 +936,35 @@ jobs:
         # the same MinGW runtime DLLs the exe needs, and a regression there
         # must fail here instead of on a user's machine. Each import must be:
         #   1. a known Windows system DLL / API set  -> ok, not shipped
-        #   2. libslangvk.dll                        -> copied from the build tree above
+        #   2. libslangvk.dll / SDL3.dll / SDL3_image.dll / SDL3_mixer.dll
+        #                                      -> copied from the build tree above
         #   3. resolvable from the cross toolchain   -> copied into pkg/
-        #   4. anything else (e.g. a vendored dep that went dynamic, SDL3.dll,
-        #      zlib1.dll) -> FAIL, exactly what the static gate catches there.
+        #   4. anything else (e.g. a vendored dep that went dynamic, zlib1.dll)
+        #      -> FAIL, exactly what the static gate catches there.
         slangvk_dll="$(find build -name libslangvk.dll -print -quit)"
+        if [ -z "$slangvk_dll" ]; then
+          echo '::error::libslangvk.dll not found in the build tree - GPU_SCALER_SHARED=ON did not build the shared variant.'
+          exit 1
+        fi
+        cp "$slangvk_dll" pkg/
+        # SDL3 trio ships as DLLs beside the exe (DEVILUTIONX_STATIC_SDL3=OFF;
+        # SDL3_image follows SDL3 in the glue): copy the exact import names
+        # the exe references out of the FetchContent build trees, like
+        # libslangvk.dll above.
+        for want in SDL3.dll SDL3_image.dll SDL3_mixer.dll; do
+          want_dll="$(find build -name "$want" -print -quit)"
+          if [ -z "$want_dll" ]; then
+            echo "::error::$want not found in the build tree - the SDL trio did not build shared (DEVILUTIONX_STATIC_SDL3=OFF lost?)."
+            exit 1
+          fi
+          cp "$want_dll" "pkg/$want"
+        done
         {
           x86_64-w64-mingw32-objdump -p build/devilutionx.exe
-          if [ -n "$slangvk_dll" ]; then
-            cp "$slangvk_dll" pkg/
-            x86_64-w64-mingw32-objdump -p "$slangvk_dll"
-          fi
+          x86_64-w64-mingw32-objdump -p pkg/libslangvk.dll
+          x86_64-w64-mingw32-objdump -p pkg/SDL3.dll
+          x86_64-w64-mingw32-objdump -p pkg/SDL3_image.dll
+          x86_64-w64-mingw32-objdump -p pkg/SDL3_mixer.dll
         } | grep 'DLL Name' | sed 's/.*DLL Name: //' | tr -d '\r' | sort -u > dlls.txt
         if [ ! -s dlls.txt ]; then
           echo '::error::no DLL imports parsed from devilutionx.exe - objdump output format changed?'
@@ -891,6 +993,12 @@ jobs:
             # import table is gated through the same objdump above).
             libslangvk.dll)
               echo "shipped libslang-vk DLL: $imp" ;;
+            # The SDL3 trio: copied from the build tree above (their import
+            # tables are gated through the same objdump above). C libraries:
+            # no libstdc++ import; any MinGW runtime import (libssp/
+            # libwinpthread) resolves through the toolchain resolver below.
+            sdl3.dll|sdl3_image.dll|sdl3_mixer.dll)
+              echo "shipped SDL3 stack DLL: $imp" ;;
             *)
               p="$(resolve_dll "$name" || true)"
               if [ -n "$p" ]; then
@@ -906,6 +1014,13 @@ jobs:
           echo '::error::devilutionx.exe has imports that the package does not cover - the zip would not launch on a clean Windows install.'
           exit 1
         fi
+        # Size lever (2026-10-18): strip the symtab off the exe and every
+        # built DLL (PE keeps the COFF symtab + string table unless stripped;
+        # the pre-strip telemetry above makes the saving measurable). The
+        # import tables the gate reads live in the PE header data directories
+        # and survive strip. The MinGW runtime DLLs from the distro are
+        # already stripped.
+        x86_64-w64-mingw32-strip pkg/devilutionx.exe pkg/libslangvk.dll pkg/SDL3.dll pkg/SDL3_image.dll pkg/SDL3_mixer.dll
         ls -l pkg/
         cd pkg && zip -r ../devilutionx-gpu-shaders-windows-x64-nonstatic.zip . && cd ..
 
