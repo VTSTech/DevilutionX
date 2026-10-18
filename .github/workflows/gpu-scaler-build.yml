@@ -13,7 +13,9 @@
 #
 # Shape: Linux job is the upstream Linux_x86_64_SDL3_test.yml with
 # -DUSE_GPU_SCALER=ON added. Windows job is the upstream Windows_MSVC_x64.yml
-# (vcpkg manifest + CMakePresets) with the same SDL3/scaler flags. The scaler
+# (vcpkg manifest + CMakePresets) with the same SDL3/scaler flags plus
+# vendored sodium (MSVC FindSodium cannot resolve vcpkg's import lib, see
+# the configure step comment). The scaler
 # needs no Vulkan SDK at build time (libslang-vk loads the loader at runtime
 # through volk) and fetches libslang-vk + glslang itself at configure time.
 # USE_GPU_SCALER is passed explicitly even though it defaults ON for SDL3
@@ -124,8 +126,20 @@ jobs:
     # upstream SDL2 preset is reused as-is with SDL3 + the scaler switched on.
     # SDL3 and SDL3_image are built from source (FetchContent) exactly like
     # the Linux job; the vcpkg manifest keeps supplying the remaining deps.
+    #
+    # sodium: the manifest's `encryption` feature does install libsodium
+    # (that's why configure finds sodium.h), but DevilutionX's Findsodium.cmake
+    # MSVC branch only knows the old prebuilt-libsodium layout
+    # (x64/Release/v143/dynamic) and never resolves vcpkg's
+    # installed/x64-windows/lib/libsodium.lib, so find_package(sodium REQUIRED)
+    # dies with "Could NOT find sodium ... (found version ...)". Build the
+    # project's own vendored sodium instead (3rdParty/libsodium ->
+    # robinlinden/libsodium-cmake, SODIUM_MINIMAL) - the same
+    # DEVILUTIONX_SYSTEM_LIBSODIUM=OFF knob upstream's Linux_x86_64/aarch64
+    # CI jobs use. Static (DEVILUTIONX_STATIC_LIBSODIUM=ON) so no extra DLL
+    # is needed beside devilutionx.exe for the smoke test.
     - name: Configure (SDL3 + GPU scaler)
-      run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF
+      run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DDEVILUTIONX_STATIC_LIBSODIUM=ON
 
     - name: Build
       run: cmake --build --preset ninja-vcpkg-relwithdebinfo
