@@ -176,7 +176,7 @@ if(USE_GPU_SCALER)
   include(FetchContent)
   FetchContent_Declare(libslang-vk
     GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git
-    GIT_TAG 56c59e1b5cda144c609d5f7f998145e0a78d18d6 # M4.04 + 2637 load, 21 fail
+    GIT_TAG 31519c8d87bd028bbf3e14e33fd899e188b914b3 # M4.04 + 2637 load, 21 fail
     )
   FetchContent_MakeAvailable(libslang-vk)
 endif()
