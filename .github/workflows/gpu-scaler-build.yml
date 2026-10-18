@@ -1,0 +1,137 @@
+# Fork-only CI: GPU shader scaler build gate (Windows x64 + Linux x64, SDL3).
+#
+# Why this file exists: after the merge-plan-r3 cleanup the fork carries
+# upstream's own workflows, which only trigger on upstream's refs (push to
+# master, PRs into diasurgical/DevilutionX) - so a push to a fork branch
+# builds nothing. This workflow gives the fork branch a build gate without
+# touching any PR content.
+#
+# MERGE-PLAN-R3 RULE (section 6.4): no CI yml ever rides the upstream PR.
+# This file lives on fork-side branches only; the PR branch is cut fresh
+# from diasurgical:master and must not contain it. Do not add it to the
+# payload/overlay.
+#
+# Shape: Linux job is the upstream Linux_x86_64_SDL3_test.yml with
+# -DUSE_GPU_SCALER=ON added. Windows job is the upstream Windows_MSVC_x64.yml
+# (vcpkg manifest + CMakePresets) with the same SDL3/scaler flags. The scaler
+# needs no Vulkan SDK at build time (libslang-vk loads the loader at runtime
+# through volk) and fetches libslang-vk + glslang itself at configure time.
+# USE_GPU_SCALER is passed explicitly even though it defaults ON for SDL3
+# builds, so the gate cannot silently drift with the option default.
+
+name: GPU scaler build (fork-only)
+
+on:
+  push:
+    branches:
+      - master
+      - libslang-vk
+      - wav-mixer-fix
+      - 'gpu-*'
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    name: Linux x64 (SDL3 + GPU scaler)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y cmake curl g++-14 git libgtest-dev libgmock-dev libbenchmark-dev libsodium-dev libpng-dev libbz2-dev libasound2-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libxtst-dev libxkbcommon-dev wget
+
+    - name: Switch to GCC 14
+      run: |
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 --slave /usr/bin/g++ g++ /usr/bin/g++-14
+        sudo update-alternatives --set gcc /usr/bin/gcc-14
+
+    - name: Cache CMake build folder
+      uses: actions/cache@v6
+      with:
+        path: build
+        key: ${{ github.workflow }}-linux-v6-${{ github.sha }}
+        restore-keys: ${{ github.workflow }}-linux-v6-
+
+    # We specify `-DDEVILUTIONX_SYSTEM_BENCHMARK=OFF` to work around the following error:
+    # lto1: fatal error: bytecode stream in file '/usr/lib/x86_64-linux-gnu/libbenchmark_main.a' generated with LTO version 11.2 instead of the expected 11.3
+    - name: Configure (SDL3 + GPU scaler)
+      run: |
+        cmake -S. -Bbuild -G Ninja -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF -DDEVILUTIONX_STATIC_SDL3=ON -DDEVILUTIONX_SYSTEM_BENCHMARK=OFF
+
+    - name: Fetch test data
+      run: |
+        wget -qnc https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq -P build
+
+    - name: Build
+      run: |
+        cmake --build build -j $(nproc)
+
+    - name: Binary smoke test
+      run: |
+        ./build/devilutionx --version
+
+    - name: Run tests
+      run: |
+        cd build && ctest --output-on-failure
+
+  windows-x64:
+    name: Windows x64 (SDL3 + GPU scaler)
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+
+    - name: Install latest CMake
+      uses: lukka/get-cmake@latest
+
+    - name: Restore or setup vcpkg
+      uses: lukka/run-vcpkg@v11.6
+      with:
+        vcpkgGitCommitId: '40f3c709db80acf154ac4b17a1f83c564ebd022e'
+
+    - name: Fetch test data
+      run: |
+        mkdir build-ninja-vcpkg-relwithdebinfo
+        Invoke-WebRequest -Uri "https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq" -OutFile "build-ninja-vcpkg-relwithdebinfo/spawn.mpq" -Resume
+
+    - name: Get CMakePresets.json
+      run: cp Packaging/windows/CMakePresets.json .
+
+    # Command-line -D flags override the preset's cacheVariables, so the
+    # upstream SDL2 preset is reused as-is with SDL3 + the scaler switched on.
+    # SDL3 and SDL3_image are built from source (FetchContent) exactly like
+    # the Linux job; the vcpkg manifest keeps supplying the remaining deps.
+    - name: Configure (SDL3 + GPU scaler)
+      run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF
+
+    - name: Build
+      run: cmake --build --preset ninja-vcpkg-relwithdebinfo
+
+    - name: Binary smoke test
+      run: ./build-ninja-vcpkg-relwithdebinfo/devilutionx.exe --version
+
+    - name: Run tests
+      run: ctest --preset ninja-vcpkg-relwithdebinfo --output-on-failure
