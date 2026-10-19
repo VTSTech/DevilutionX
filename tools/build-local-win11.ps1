@@ -92,9 +92,17 @@
     time (e.g. "MSVC version 12.0."): cmake identified a cl.exe that is NOT a
     VS2022+ MSVC - typically a DDK/VC6-era compiler that is first on PATH.
     vcpkg locates Visual Studio itself, so the vcpkg stage succeeds while
-    cmake fails. Script v4 verifies the cl.exe banner, imports the VS dev
+    cmake fails. Script v5 verifies the cl.exe banner, imports the VS dev
     environment over a broken PATH cl, and drops the stale CMake cache the
     bad configure left behind - re-run and it self-heals.
+  - "add_subdirectory ... <repo>\dist does not contain a CMakeLists.txt" and
+    "install FILES given directory \"\" to install" at configure time: a
+    repo-root dist\ folder exists (script v4 put its package output there!).
+    devilutionX's CMakeLists.txt (line 16) treats ANY dist\ folder as a
+    release source-distribution payload: IS_DIRECTORY dist -> set(SRC_DIST
+    ON) + add_subdirectory(dist) -> ${DEVILUTIONX_MPQ} stays empty and the
+    install rules die. Script v5 packages into dist-local\ and migrates a
+    stray dist\ there automatically at startup.
 #>
 param(
     [string]$Repo = "",
@@ -244,6 +252,46 @@ if (Test-Path (Join-Path $gitUsrBin 'patch.exe')) {
     Write-Info "patch.exe: $gitUsrBin (SDL3_mixer WAV-decoder patch will apply)"
 } else {
     Write-Warn2 "patch.exe not found next to git - SDL3_mixer may build without the zero-length-RIFF WAV fix"
+}
+
+# ----------------------------------------------------------------------------
+# 1b. Package output folder: <repo>\dist-local (NEVER <repo>\dist)
+# ----------------------------------------------------------------------------
+# devilutionX's CMakeLists.txt treats a repo-root dist\ folder as a release
+# source-distribution payload:
+#   line 16: if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+#     -> set(SRC_DIST ON) + add_subdirectory(dist)
+# With the script's package output in dist\ (v4 behaviour) configure dies:
+#   "add_subdirectory ... dist does not contain a CMakeLists.txt" and
+#   "install FILES given directory \"\" to install" (${DEVILUTIONX_MPQ} empty).
+# So packages live in dist-local\ and a stray dist\ is migrated there once.
+$DistLocal = Join-Path $Repo 'dist-local'
+$RepoDist = Join-Path $Repo 'dist'
+if (Test-Path -LiteralPath $RepoDist -PathType Container) {
+    if (Test-Path -LiteralPath $DistLocal) {
+        Die "both dist\ and dist-local\ exist in the repo - move the contents of dist\ into dist-local\ (or delete dist\) and re-run: devilutionX's cmake misdetects a repo-root dist\ folder as a release source distribution (CMakeLists.txt:16 'IS_DIRECTORY dist' -> add_subdirectory(dist) -> configure fails)."
+    }
+    try {
+        Rename-Item -LiteralPath $RepoDist -NewName 'dist-local' -ErrorAction Stop
+        Write-Info "migrated <repo>\dist -> <repo>\dist-local (a repo-root dist\ makes cmake think this is a release source distribution)"
+    } catch {
+        Die "could not rename $RepoDist to dist-local ($($_.Exception.Message)).`n    Close anything using dist\ (a running devilutionx.exe, an Explorer window inside it) and re-run."
+    }
+}
+# Keep dist-local\ out of git status WITHOUT touching the tracked .gitignore:
+# append to the local-only exclude file (.git/info/exclude - never committed).
+$gitInfo = Join-Path $Repo '.git\info'
+$gitExclude = Join-Path $gitInfo 'exclude'
+if (Test-Path -LiteralPath (Join-Path $Repo '.git')) {
+    if (-not ((Test-Path -LiteralPath $gitExclude) -and ((Get-Content -LiteralPath $gitExclude -ErrorAction SilentlyContinue) -contains '/dist-local/'))) {
+        try {
+            New-Item -ItemType Directory -Force -Path $gitInfo | Out-Null
+            Add-Content -LiteralPath $gitExclude -Value "`n# local build packages (build-local-win11.ps1 v5)`n/dist-local/" -ErrorAction Stop
+            Write-Info "git:       /dist-local/ added to .git/info/exclude (local-only, never committed)"
+        } catch {
+            Write-Warn2 "could not update .git/info/exclude - dist-local\ may show in git status (harmless)"
+        }
+    }
 }
 
 # ----------------------------------------------------------------------------
@@ -473,7 +521,7 @@ function Build-Variant([string]$variant) {
     Write-Step "Configure ($variant)"
 
     $buildDir = Join-Path $Repo "build-local-win-$variant"
-    $dist = Join-Path $Repo "dist\windows-x64-$variant"
+    $dist = Join-Path $DistLocal "windows-x64-$variant"
 
     # ---- standalone manifest install BEFORE cmake: same roots/triplet/features
     # the vcpkg toolchain will use, so a failure surfaces here with vcpkg's own
@@ -518,7 +566,14 @@ function Build-Variant([string]$variant) {
         }
         $curCl = (Get-Command cl -ErrorAction SilentlyContinue).Source
         $staleWhy = $null
-        if ($cachedCl -and $curCl -and ($cachedCl.Trim() -ne $curCl.Trim())) {
+        # CMake caches the compiler path with forward slashes
+        # (C:/.../Hostx64/x64/cl.exe) while Get-Command reports the canonical
+        # backslash form (C:\...\HostX64\x64\cl.exe). PS string -ne is already
+        # case-insensitive, but the slash direction is not - normalize both,
+        # else the guard false-fires and wastes a full reconfigure.
+        $cachedClN = if ($cachedCl) { $cachedCl.Trim().Replace('/', '\') } else { $null }
+        $curClN = if ($curCl) { $curCl.Trim().Replace('/', '\') } else { $null }
+        if ($cachedClN -and $curClN -and ($cachedClN -ne $curClN)) {
             $staleWhy = "cached CMAKE_CXX_COMPILER is $cachedCl, now using $curCl"
         } elseif ($cachedVer) {
             $vp = $cachedVer.Split('.')
@@ -560,6 +615,12 @@ function Build-Variant([string]$variant) {
         $flags += '-DGPU_SCALER_SHARED=ON'
         $flags += '-DDEVILUTIONX_STATIC_SDL3=OFF'
         $flags += '-DDEVILUTIONX_STATIC_SDL_MIXER=OFF'
+        # The SDL3_image glue (3rdParty/SDL3_image/CMakeLists.txt) keys on
+        # DEVILUTIONX_STATIC_SDL_IMAGE, NOT on DEVILUTIONX_STATIC_SDL3, and
+        # dependency_options defaults it to STATIC when the lib comes from
+        # source - without this flag the nonstatic build has no SDL3_image.dll
+        # to ship (the CI nonstatic job's import-table gate expects the DLL).
+        $flags += '-DDEVILUTIONX_STATIC_SDL_IMAGE=OFF'
     }
     Write-Info "cmake $($flags -join ' ')"
     & cmake @flags
@@ -589,14 +650,17 @@ function Build-Variant([string]$variant) {
         }
     }
     if ($n -eq 0) {
-        $msg = @"
-no vcpkg SDL3 payload found under $root - either the manifest/sdl3 feature
-wiring changed, or the checkout's vcpkg.json lacks the sdl3 feature (tree
-predates 2026-10-15; git pull). Step needs review before continuing.
-"@
-        Die $msg
+        # Benign when the configure above already succeeded: nothing links
+        # vcpkg's SDL3 (DEVILUTIONX_SYSTEM_SDL3=OFF), so with no payload there
+        # is nothing left that could shadow the FetchContent SDL 3.5.0 headers.
+        Write-Warn2 "no vcpkg SDL3 payload found under $root - nothing to remove."
+        Write-Warn2 "  Safe: the configure succeeded and nothing links vcpkg's SDL3, so no older"
+        Write-Warn2 "  headers can shadow the FetchContent SDL 3.5.0 subbuild. Only if a build"
+        Write-Warn2 "  later dies on SDL3 version static-asserts, re-check the manifest's sdl3"
+        Write-Warn2 "  feature wiring (vcpkg.json + CMake/VcPkgManifestFeatures.cmake)."
+    } else {
+        Write-Info "removed $n vcpkg SDL3 payloads; FetchContent SDL 3.5.0 headers are now authoritative"
     }
-    Write-Info "removed $n vcpkg SDL3 payloads; FetchContent SDL 3.5.0 headers are now authoritative"
 
     Write-Step "Build ($variant)"
     & cmake --build $buildDir
@@ -626,7 +690,7 @@ predates 2026-10-15; git pull). Step needs review before continuing.
 
     if ($variant -eq 'nonstatic') {
         # Dynamic build: collect the DLLs the exe imports beside it
-        # (Windows searches the exe's own folder first, so the dist folder is
+        # (Windows searches the exe's own folder first, so the package folder is
         # self-contained exactly like the CI zip). libslang-vk ships as
         # libslangvk.dll (GPU_SCALER_SHARED=ON) and the SDL3 trio as shared
         # DLLs (DEVILUTIONX_STATIC_SDL3=OFF; SDL3_image follows SDL3 in the
@@ -636,7 +700,18 @@ predates 2026-10-15; git pull). Step needs review before continuing.
         $deps = Join-Path $buildDir '_deps'
         foreach ($dll in @('libslangvk.dll', 'SDL3.dll', 'SDL3_image.dll', 'SDL3_mixer.dll')) {
             $src = Get-BuiltFile $dll @((Join-Path $buildDir '_deps'), $buildDir)
-            if (-not $src) { Die "$dll not found under the build tree - the shared variant did not build (check the configure flags for $variant)" }
+            if (-not $src) {
+                if ($dll -eq 'SDL3_image.dll') {
+                    # Tolerate a statically linked SDL3_image (the glue's
+                    # dependency_options default): the exe links it directly
+                    # and no DLL needs shipping. The packaged --version smoke
+                    # test below is the real gate - a missing-but-needed DLL
+                    # fails there with a load error.
+                    Write-Warn2 "$dll not found under the build tree - SDL3_image was linked statically, nothing to ship"
+                    continue
+                }
+                Die "$dll not found under the build tree - the shared variant did not build (check the configure flags for $variant)"
+            }
             Copy-Item $src $dist -Force
             Write-Info "shipped $dll <- $src"
         }
@@ -660,11 +735,11 @@ try {
     Write-Step "All done"
     Write-Host @"
 
-    To play, drop your MPQs into one of the dist\windows-x64-* package folders:
+    To play, drop your MPQs into one of the dist-local\windows-x64-* package folders:
       diabdat.mpq      from your Diablo (GoG) install - required
       hellfire.mpq ... from your Hellfire install - optional expansion
       devilutionx.mpq  the assets pack from the DevilutionX releases page
-    Then run dist\windows-x64-<variant>\devilutionx.exe.
+    Then run dist-local\windows-x64-<variant>\devilutionx.exe.
 
     Vulkan: the GPU shader scaler needs a Vulkan loader at runtime
     (vulkan-1.dll - shipped with any GPU driver). Shader presets go into the
