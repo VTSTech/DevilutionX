@@ -476,3 +476,4 @@ uwp-project/Assets/ui_art
 /compile_commands.json
 /tools/tmp
 *.bak
+fix_eol.py
