@@ -196,7 +196,24 @@ void UpdateAvailableResolutions()
 	GraphicsOptions &graphicsOptions = GetOptions().Graphics;
 
 	std::vector<Size> sizes;
+#if defined(USE_SDL3) && (defined(__IOS__) || defined(__TVOS__) || defined(__VISIONOS__) || defined(__MACOS__))
+	// SDL3 Apple backends (UIKit, Cocoa) report display modes in points;
+	// the window display scale converts them to true pixel sizes.
 	const float scaleFactor = GetDpiScalingFactor();
+#elif defined(USE_SDL3)
+	// Windows, Linux and Android SDL3 backends report display modes in
+	// physical pixels, but SDL_GetWindowDisplayScale() is the OS UI scale
+	// (DPI/96 on Windows, compositor scale on Wayland), not pixel density:
+	// at 125% Windows scaling every mode got multiplied into phantom sizes
+	// (1920x1080 became 2400x1350, listed as "1350p"), hiding the native
+	// mode and offering above-panel resolutions that crash Integer Scaling.
+	// Physical pixel modes need no scaling.
+	constexpr float scaleFactor = 1.0F;
+#else
+	// SDL2: renderer output size vs window size (1.0 on Windows, 2.0 on
+	// Retina) - a true pixel-density ratio.
+	const float scaleFactor = GetDpiScalingFactor();
+#endif
 
 	// Add resolutions
 	bool supportsAnyResolution = false;
