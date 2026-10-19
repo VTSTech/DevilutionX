@@ -130,9 +130,10 @@ void CalculatePreferredWindowSize(int &width, int &height)
 		// 1920p-class entry on a 1080p desktop with Integer Scaling enabled).
 		// Clamp the factor to at least 1: the window falls back to the native
 		// desktop size, the largest integer scale that still fits. Interactive
-		// selections are already caught with a message by
-		// ClampResolutionForIntegerScaling(); this backstop also covers stale
-		// devilutionx.ini values carried over from other displays.
+		// selections are filtered out of the resolution list while Integer
+		// Scaling is on, and ClampResolutionForIntegerScaling() silently falls
+		// back; this backstop also covers stale devilutionx.ini values carried
+		// over from other displays.
 		const int factor = std::max(1, std::min(mode.w / width, mode.h / height));
 		if (width > mode.w || height > mode.h) {
 			static Size lastWarned { 0, 0 };
@@ -333,6 +334,18 @@ void UpdateAvailableResolutions()
 	std::erase_if(sizes, [](const Size &s) { return s.width < 640 || s.height < 480; });
 #endif
 
+	// Integer Scaling cannot scale an image beyond the native desktop
+	// resolution: the fit-to-screen factor would floor to zero and divide
+	// by zero (field crash). Above-native sizes (e.g. GPU driver VSR
+	// modes) are not offered while Integer Scaling is enabled; toggling
+	// it refreshes this list.
+	Size nativeResolution;
+	if (GetNativeDesktopResolution(nativeResolution)) {
+		std::erase_if(sizes, [nativeResolution](const Size &s) {
+			return s.width > nativeResolution.width || s.height > nativeResolution.height;
+		});
+	}
+
 	// Sort by width then by height
 	c_sort(sizes, [](const Size &x, const Size &y) -> bool {
 		if (x.width == y.width)
@@ -368,7 +381,16 @@ const auto OptionChangeHandlerFitToScreen = (GetOptions().Graphics.fitToScreen.S
 
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 const auto OptionChangeHandlerScaleQuality = (GetOptions().Graphics.scaleQuality.SetValueChangedCallback(ReinitializeTexture), true);
-const auto OptionChangeHandlerIntegerScaling = (GetOptions().Graphics.integerScaling.SetValueChangedCallback(ReinitializeIntegerScale), true);
+/** @brief Options have a single change-callback slot (SetValueChangedCallback):
+ * Integer Scaling needs both the stock renderer reinitialization and a
+ * refresh of the resolution list (above-native sizes are filtered while
+ * it is enabled), so dispatch both from one wrapper. */
+void OnIntegerScalingOptionChanged()
+{
+	ReinitializeIntegerScale();
+	ResizeWindowAndUpdateResolutionOptions();
+}
+const auto OptionChangeHandlerIntegerScaling = (GetOptions().Graphics.integerScaling.SetValueChangedCallback(OnIntegerScalingOptionChanged), true);
 /** @brief ROB-31: the FrameRateControl option has a single change-callback
  * slot, and a later registration silently overwrites an earlier one, so the
  * round-13 scaler registration was dead on arrival: the stock recreate
@@ -482,14 +504,17 @@ Size ClampResolutionForIntegerScaling(Size requested)
 	if (requested.width <= native.width && requested.height <= native.height)
 		return requested;
 	LogWarn(LogCategory::System, "Selected resolution {}x{} exceeds the native desktop resolution {}x{}; falling back to native (Integer Scaling)", requested.width, requested.height, native.width, native.height);
-	SDL_ShowSimpleMessageBox(
-	    SDL_MESSAGEBOX_WARNING, "DevilutionX",
-	    "The selected resolution is above your display's native resolution.\n"
-	    "\n"
-	    "Falling back to the native resolution: Integer Scaling cannot scale beyond the display.",
-	    ghMainWnd);
 	return native;
 #endif
+}
+
+bool IsResolutionAboveNative()
+{
+	Size native;
+	if (!GetNativeDesktopResolution(native))
+		return false;
+	const Size current = *GetOptions().Graphics.resolution;
+	return current.width > native.width || current.height > native.height;
 }
 
 #if SDL_VERSION_ATLEAST(2, 0, 0)

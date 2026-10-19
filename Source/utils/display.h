@@ -47,9 +47,13 @@ bool IsFullScreen();
 // Returns false when unavailable (e.g. before video initialization).
 bool GetNativeDesktopResolution(Size &size);
 
+// True when the current game resolution exceeds the native desktop
+// resolution (e.g. a hand-edited devilutionx.ini or a GPU driver VSR mode).
+bool IsResolutionAboveNative();
+
 // If Integer Scaling is active and the requested resolution exceeds the
-// native desktop resolution, warns the user and returns the native
-// resolution instead; otherwise returns the request unchanged.
+// native desktop resolution, logs a warning and silently returns the
+// native resolution instead; otherwise returns the request unchanged.
 Size ClampResolutionForIntegerScaling(Size requested);
 
 // Returns:
