@@ -5,7 +5,7 @@ Creates one branch per individual change, straight from the fork's payload
 blobs, with EOL normalization against upstream and attribution stamps applied
 to the scaler PR's new source files. Every branch = exactly one commit.
 
-Usage (inside a clone of VTSTech/DevilutionX):
+Usage (inside a clone of VTSTech/DevilutionX-libslang-vk):
     git remote add upstream https://github.com/diasurgical/DevilutionX.git  # if absent
     git fetch upstream master
     git fetch origin libslang-vk

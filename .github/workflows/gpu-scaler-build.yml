@@ -78,8 +78,28 @@ jobs:
       uses: actions/cache@v6
       with:
         path: build
-        key: ${{ github.workflow }}-linux-v6-${{ github.sha }}
-        restore-keys: ${{ github.workflow }}-linux-v6-
+        # github.repository (owner/name) is part of the runner workspace path
+        # (/home/runner/work/<repo-name>/<repo-name>). Keying on it keeps the
+        # cache key from ever matching an entry saved under a different repo
+        # name: restoring a pre-rename build tree made cmake abort with
+        # "The current CMakeCache.txt directory ... is different than the
+        # directory ... where CMakeCache.txt was created". v7 marks the key
+        # format change; the new prefix cannot match old v6 keys.
+        key: ${{ github.workflow }}-${{ github.repository }}-linux-v7-${{ github.sha }}
+        restore-keys: ${{ github.workflow }}-${{ github.repository }}-linux-v7-
+
+    # Backstop for any workspace path change the key cannot see (repo renamed
+    # again before the cache rolls over, runner image layout change): if the
+    # restored build tree was configured under a different path, cmake cannot
+    # reuse it, so discard it and let this run configure + save a fresh,
+    # path-correct cache. No-op when the path matches (the normal case), so
+    # incremental builds keep working.
+    - name: Drop build tree generated under a different workspace path
+      run: |
+        if [ -f build/CMakeCache.txt ] && ! grep -aq "For build in directory: ${GITHUB_WORKSPACE}/build" build/CMakeCache.txt; then
+          echo "build/CMakeCache.txt was generated under a different workspace path - discarding the restored build tree"
+          rm -rf build
+        fi
 
     # We specify `-DDEVILUTIONX_SYSTEM_BENCHMARK=OFF` to work around the following error:
     # lto1: fatal error: bytecode stream in file '/usr/lib/x86_64-linux-gnu/libbenchmark_main.a' generated with LTO version 11.2 instead of the expected 11.3
