@@ -23,6 +23,14 @@
 # through volk) and fetches libslang-vk + glslang itself at configure time.
 # USE_GPU_SCALER is passed explicitly even though it defaults ON for SDL3
 # builds, so the gate cannot silently drift with the option default.
+#
+# Tests/artifacts: the Windows job configures with -DBUILD_TESTING=OFF (no
+# gtest, no ~50 test executables, no ctest) because building the full test
+# suite on the 2-core hosted Windows runner pushed the job past 30 minutes.
+# Both jobs upload their build outputs as artifacts with if: always(), so a
+# failed or cancelled run still yields the binaries for local debugging. The
+# Linux job keeps ctest as the green regression signal; flip it off there the
+# same way if it ever becomes the bottleneck.
 
 name: GPU scaler build (fork-only)
 
@@ -95,10 +103,19 @@ jobs:
       run: |
         cd build && ctest --output-on-failure
 
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-linux-x64-sdl3-gpu-scaler
+        path: build/devilutionx
+        if-no-files-found: warn
+        retention-days: 7
+
   windows-x64:
     name: Windows x64 (SDL3 + GPU scaler)
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
     - name: Checkout
@@ -129,11 +146,6 @@ jobs:
       with:
         vcpkgGitCommitId: '40f3c709db80acf154ac4b17a1f83c564ebd022e'
 
-    - name: Fetch test data
-      run: |
-        mkdir build-ninja-vcpkg-relwithdebinfo
-        Invoke-WebRequest -Uri "https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq" -OutFile "build-ninja-vcpkg-relwithdebinfo/spawn.mpq" -Resume
-
     - name: Get CMakePresets.json
       run: cp Packaging/windows/CMakePresets.json .
 
@@ -142,6 +154,10 @@ jobs:
     # SDL3 and SDL3_image are built from source (FetchContent) exactly like
     # the Linux job; the vcpkg manifest keeps supplying the remaining deps
     # (and, unavoidably, an unused SDL3 copy that the next step removes).
+    #
+    # BUILD_TESTING=OFF skips gtest and the ~50 test executables (most of the
+    # 1426 targets) plus ctest; spawn.mpq is not fetched since only tests used
+    # it. Re-add -DBUILD_TESTING=ON + ctest when the build itself is trusted.
     #
     # sodium: the manifest's `encryption` feature does install libsodium
     # (that's why configure finds sodium.h), but DevilutionX's Findsodium.cmake
@@ -155,7 +171,7 @@ jobs:
     # CI jobs use. Static (DEVILUTIONX_STATIC_LIBSODIUM=ON) so no extra DLL
     # is needed beside devilutionx.exe for the smoke test.
     - name: Configure (SDL3 + GPU scaler)
-      run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DDEVILUTIONX_STATIC_LIBSODIUM=ON
+      run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DDEVILUTIONX_STATIC_LIBSODIUM=ON -DBUILD_TESTING=OFF
 
     # The manifest's `sdl3` feature also installs SDL3 (headers + config + libs)
     # into vcpkg_installed, and Dependencies.cmake's directory-scope
@@ -192,5 +208,14 @@ jobs:
     - name: Binary smoke test
       run: ./build-ninja-vcpkg-relwithdebinfo/devilutionx.exe --version
 
-    - name: Run tests
-      run: ctest --preset ninja-vcpkg-relwithdebinfo --output-on-failure
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: devilutionx-windows-x64-sdl3-gpu-scaler
+        path: |
+          build-ninja-vcpkg-relwithdebinfo/devilutionx.exe
+          build-ninja-vcpkg-relwithdebinfo/devilutionx.pdb
+          build-ninja-vcpkg-relwithdebinfo/*.dll
+        if-no-files-found: warn
+        retention-days: 7
