@@ -1221,7 +1221,7 @@ void SetApplicationVersions()
 	// Fork branding: the main-menu footer (mainmenu.cpp UiArtText) and
 	// Discord rich presence show this string verbatim. The 128-byte
 	// buffer fits a full-length GIT_COMMIT_HASH; Discord caps at 128.
-	*BufCopy(gszProductName, "github.com/VTSTech/DevilutionX-libslang-vk ", PROJECT_VERSION) = '\0';
+	*BufCopy(gszProductName, "DevilutionX-libslang-vk ", PROJECT_VERSION) = '\0';
 	*BufCopy(gszVersionNumber, "version ", PROJECT_VERSION) = '\0';
 }
 
