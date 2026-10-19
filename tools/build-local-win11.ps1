@@ -92,7 +92,7 @@
     time (e.g. "MSVC version 12.0."): cmake identified a cl.exe that is NOT a
     VS2022+ MSVC - typically a DDK/VC6-era compiler that is first on PATH.
     vcpkg locates Visual Studio itself, so the vcpkg stage succeeds while
-    cmake fails. Script v3 verifies the cl.exe banner, imports the VS dev
+    cmake fails. Script v4 verifies the cl.exe banner, imports the VS dev
     environment over a broken PATH cl, and drops the stale CMake cache the
     bad configure left behind - re-run and it self-heals.
 #>
@@ -269,14 +269,22 @@ function Get-ClInfo {
     # plain strings (PS 5.1 would otherwise wrap native stderr in ErrorRecords).
     $lines = cmd /c "cl 2>&1"
     $joined = $lines -join "`n"
-    if ($joined -match 'Compiler Version\s+(\d+)\.(\d+)') {
-        $banner = $lines | Where-Object { $_ -match 'Compiler Version' } | Select-Object -First 1
-        return [pscustomobject]@{ Major = [int]$Matches[1]; Minor = [int]$Matches[2]; Banner = $banner }
+    # Parse via [regex]::Match into explicit group objects - do NOT read
+    # $Matches after the pipeline below. Where-Object scriptblocks run in the
+    # CALLER's scope in Windows PowerShell (why "$sum += $_" works), so the
+    # groupless -match there REPLACES $Matches (keys 1/2 gone) and v3 parsed
+    # EVERY cl.exe as "MSVC 0.0" - the real VS2022/VS2026 compiler then failed
+    # the 19.30 check even though its banner was fine.
+    $m = [regex]::Match($joined, 'Compiler Version\s+(\d+)\.(\d+)')
+    if ($m.Success) {
+        $banner = $lines | Where-Object { $_ -and $_.Contains('Compiler Version') } | Select-Object -First 1
+        return [pscustomobject]@{ Major = [int]$m.Groups[1].Value; Minor = [int]$m.Groups[2].Value; Banner = $banner }
     }
     return $null
 }
 function Test-ClVersionSupported($cl) {
-    # devilutionX + libslang-vk build with C++20/23: VS2022 (MSVC 19.30) minimum.
+    # devilutionX + libslang-vk build with C++20/23: VS2022 (MSVC 19.30) or
+    # newer - VS2026's 19.5x toolsets (e.g. 19.51) pass this check too.
     return ($null -ne $cl -and ($cl.Major -gt 19 -or ($cl.Major -eq 19 -and $cl.Minor -ge 30)))
 }
 
@@ -317,11 +325,11 @@ if (Get-Command cl -ErrorAction SilentlyContinue) {
 if (-not $cl) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere)) {
-        Die "vswhere not found and no supported cl.exe is available. Install Visual Studio 2022 (Community or Build Tools) with the 'Desktop development with C++' workload."
+        Die "vswhere not found and no supported cl.exe is available. Install Visual Studio 2022 or 2026 (Community or Build Tools) with the 'Desktop development with C++' workload."
     }
     $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (-not $vs) {
-        Die "No Visual Studio with the C++ workload (Microsoft.VisualStudio.Component.VC.Tools.x86.x64) found. Install VS 2022 Community or Build Tools with 'Desktop development with C++'."
+        Die "No Visual Studio with the C++ workload (Microsoft.VisualStudio.Component.VC.Tools.x86.x64) found. Install VS 2022 / VS 2026 Community or Build Tools with 'Desktop development with C++'."
     }
     Write-Info "VS:        $vs"
     $devShell = Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
@@ -332,7 +340,7 @@ if (-not $cl) {
     $cl = Get-ClInfo
     if (-not (Test-ClVersionSupported $cl)) {
         $bannerLine = if ($cl) { $cl.Banner } else { '<no MSVC banner>' }
-        Die "cl.exe after Enter-VsDevShell is not a supported MSVC (need VS2022 / MSVC 19.30+).`n    path:   $((Get-Command cl).Source)`n    banner: $bannerLine"
+        Die "cl.exe after Enter-VsDevShell is not a supported MSVC (need MSVC 19.30+ - VS2022 19.3x/19.4x or VS2026 19.5x).`n    path:   $((Get-Command cl).Source)`n    banner: $bannerLine"
     }
 }
 Write-Info "cl.exe:    $((Get-Command cl).Source)"
@@ -364,6 +372,14 @@ Write-Info "cmake:     $((Get-Command cmake).Source)"
 Write-Info "ninja:     $((Get-Command ninja).Source)"
 $cmakeVer = (& cmake --version | Select-Object -First 1)
 Write-Info "cmake ver: $cmakeVer"
+$mv = [regex]::Match("$cmakeVer", 'cmake version (\d+)\.(\d+)')
+if ($mv.Success) {
+    $cmj = [int]$mv.Groups[1].Value; $cmn = [int]$mv.Groups[2].Value
+    if (($cmj -lt 3) -or (($cmj -eq 3) -and ($cmn -lt 21))) {
+        Write-Warn2 "cmake $cmj.$cmn is old - CMake >= 3.21 is needed to record cxx_std_23 for MSVC;"
+        Write-Warn2 "  if configure dies on 'cxx_std_23 not known', use the CMake bundled with Visual Studio."
+    }
+}
 
 # ----------------------------------------------------------------------------
 # 4. vcpkg at the manifest baseline (like the CI's lukka/run-vcpkg step)
