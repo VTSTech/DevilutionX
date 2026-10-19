@@ -43,6 +43,15 @@ void SetVideoModeToPrimary(bool fullscreen, int width, int height);
 
 bool IsFullScreen();
 
+// Native (desktop) resolution of the current display, in pixels.
+// Returns false when unavailable (e.g. before video initialization).
+bool GetNativeDesktopResolution(Size &size);
+
+// If Integer Scaling is active and the requested resolution exceeds the
+// native desktop resolution, warns the user and returns the native
+// resolution instead; otherwise returns the request unchanged.
+Size ClampResolutionForIntegerScaling(Size requested);
+
 // Returns:
 // SDL1: Video surface.
 // SDL2, no upscale: Window surface.

@@ -8,6 +8,7 @@
 #ifdef USE_SDL3
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_messagebox.h>
 #include <SDL3/SDL_rect.h>
 #include <SDL3/SDL_render.h>
 #include <SDL3/SDL_surface.h>
@@ -124,7 +125,22 @@ void CalculatePreferredWindowSize(int &width, int &height)
 	}
 
 	if (*GetOptions().Graphics.integerScaling) {
-		const int factor = std::min(mode.w / width, mode.h / height);
+		// A requested size above the native desktop resolution would floor the
+		// factor below to zero and divide by zero (field crash: selecting a
+		// 1920p-class entry on a 1080p desktop with Integer Scaling enabled).
+		// Clamp the factor to at least 1: the window falls back to the native
+		// desktop size, the largest integer scale that still fits. Interactive
+		// selections are already caught with a message by
+		// ClampResolutionForIntegerScaling(); this backstop also covers stale
+		// devilutionx.ini values carried over from other displays.
+		const int factor = std::max(1, std::min(mode.w / width, mode.h / height));
+		if (width > mode.w || height > mode.h) {
+			static Size lastWarned { 0, 0 };
+			if (lastWarned.width != width || lastWarned.height != height) {
+				lastWarned = { width, height };
+				LogWarn(LogCategory::System, "Requested resolution {}x{} exceeds the native desktop resolution {}x{}; falling back to native (Integer Scaling)", width, height, mode.w, mode.h);
+			}
+		}
 		width = mode.w / factor;
 		height = mode.h / factor;
 		return;
@@ -421,6 +437,60 @@ struct DisplayModeComparator {
 #endif
 
 } // namespace
+
+bool GetNativeDesktopResolution(Size &size)
+{
+#ifdef USE_SDL1
+	return false;
+#else
+	SDL_DisplayMode mode;
+#ifdef USE_SDL3
+	int numDisplays = 0;
+	SDL_DisplayID *displays = SDL_GetDisplays(&numDisplays);
+	if (numDisplays <= 0 || displays == nullptr)
+		return false;
+	const SDL_DisplayMode *modePtr = SDL_GetDesktopDisplayMode(displays[0]);
+	SDL_free(displays);
+	if (modePtr == nullptr)
+		return false;
+	mode = *modePtr;
+#else
+	if (SDL_GetDesktopDisplayMode(0, &mode) != 0)
+		return false;
+#endif
+	if (mode.w < mode.h) {
+		std::swap(mode.w, mode.h);
+	}
+	size = { mode.w, mode.h };
+	return true;
+#endif
+}
+
+Size ClampResolutionForIntegerScaling(Size requested)
+{
+#ifdef USE_SDL1
+	(void)requested;
+	return requested;
+#else
+	if (ghMainWnd == nullptr)
+		return requested; // before window creation: the resize-path backstop handles it
+	if (!*GetOptions().Graphics.integerScaling || !*GetOptions().Graphics.fitToScreen || !*GetOptions().Graphics.upscale)
+		return requested; // the crash path requires fit-to-screen integer scaling
+	Size native;
+	if (!GetNativeDesktopResolution(native))
+		return requested;
+	if (requested.width <= native.width && requested.height <= native.height)
+		return requested;
+	LogWarn(LogCategory::System, "Selected resolution {}x{} exceeds the native desktop resolution {}x{}; falling back to native (Integer Scaling)", requested.width, requested.height, native.width, native.height);
+	SDL_ShowSimpleMessageBox(
+	    SDL_MESSAGEBOX_WARNING, "DevilutionX",
+	    "The selected resolution is above your display's native resolution.\n"
+	    "\n"
+	    "Falling back to the native resolution: Integer Scaling cannot scale beyond the display.",
+	    ghMainWnd);
+	return native;
+#endif
+}
 
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 SDL_DisplayMode GetNearestDisplayMode(Size preferredSize,
