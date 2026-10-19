@@ -36,7 +36,7 @@ import subprocess
 import sys
 
 FORK = "origin/libslang-vk"   # validated payload source (see docstring)
-FORK_R3 = "6dc2a8713"         # r3 snapshot: still supplies the 3 lean-dropped docs/tools files
+FORK_R3 = "29d1fe27"         # r3 snapshot: still supplies the 3 lean-dropped docs/tools files
 BR1 = "pr/1-sdl3-build-fixes"
 
 ATTR_CPP = [
