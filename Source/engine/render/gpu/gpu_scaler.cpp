@@ -1,3 +1,7 @@
+// Written by VTSTech (Nigel Todman) (veritas@vts-tech.org)
+// AI Assisted by Super-Z (GLM-5.3-Flash)
+// License: MIT
+
 #include "engine/render/gpu/gpu_scaler.hpp"
 
 #ifdef USE_GPU_SCALER

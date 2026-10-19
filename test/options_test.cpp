@@ -1,3 +1,7 @@
+// Written by VTSTech (Nigel Todman) (veritas@vts-tech.org)
+// AI Assisted by Super-Z (GLM-5.3-Flash)
+// License: MIT
+
 /**
  * Options-layer regression tests (TEST-03): the ini round-trip and the
  * shader-filter self-heal logic the fork added to options.cpp, plus the

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Written by VTSTech (Nigel Todman) (veritas@vts-tech.org)
+# AI Assisted by Super-Z (GLM-5.3-Flash)
+# License: MIT
+
 # ============================================================
 #  clear_shader_cache.sh - delete shaders/cache/, the
 #  translated-shader compile cache. Linux equivalent of

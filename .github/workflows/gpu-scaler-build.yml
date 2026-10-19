@@ -13,9 +13,12 @@
 #
 # Shape: Linux job is the upstream Linux_x86_64_SDL3_test.yml with
 # -DUSE_GPU_SCALER=ON added. Windows job is the upstream Windows_MSVC_x64.yml
-# (vcpkg manifest + CMakePresets) with the same SDL3/scaler flags plus
-# vendored sodium (MSVC FindSodium cannot resolve vcpkg's import lib, see
-# the configure step comment). The scaler
+# (vcpkg manifest + CMakePresets) with the same SDL3/scaler flags plus vendored
+# sodium (MSVC FindSodium cannot resolve vcpkg's import lib, see the configure
+# step comment), an explicit MSVC dev environment (upstream gets one implicitly
+# from lukka/run-cmake@v10, which this workflow bypasses to pass extra -D
+# flags), and removal of vcpkg's SDL3 payload whose older headers shadow the
+# FetchContent SDL 3.5.0 build (see the remove step comment). The scaler
 # needs no Vulkan SDK at build time (libslang-vk loads the loader at runtime
 # through volk) and fetches libslang-vk + glslang itself at configure time.
 # USE_GPU_SCALER is passed explicitly even though it defaults ON for SDL3
@@ -103,6 +106,18 @@ jobs:
       with:
         fetch-depth: 0
 
+    # Upstream's Windows_MSVC_x64.yml never puts cl.exe on PATH itself: it runs
+    # everything through lukka/run-cmake@v10, which wraps the preset calls in
+    # the `vcpkg env` MSVC environment on Windows. This workflow invokes cmake
+    # directly (it needs extra -D flags run-cmake cannot pass), so without an
+    # explicit dev prompt CMake silently falls back to the MinGW GCC that ships
+    # on the runner image - the wrong compiler for the x64-windows (MSVC ABI)
+    # triplet. Set the MSVC x64 environment for all subsequent steps instead.
+    - name: Setup MSVC dev environment (x64)
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
     - name: ccache
       uses: hendrikmuhs/ccache-action@v1.2
 
@@ -125,7 +140,8 @@ jobs:
     # Command-line -D flags override the preset's cacheVariables, so the
     # upstream SDL2 preset is reused as-is with SDL3 + the scaler switched on.
     # SDL3 and SDL3_image are built from source (FetchContent) exactly like
-    # the Linux job; the vcpkg manifest keeps supplying the remaining deps.
+    # the Linux job; the vcpkg manifest keeps supplying the remaining deps
+    # (and, unavoidably, an unused SDL3 copy that the next step removes).
     #
     # sodium: the manifest's `encryption` feature does install libsodium
     # (that's why configure finds sodium.h), but DevilutionX's Findsodium.cmake
@@ -140,6 +156,35 @@ jobs:
     # is needed beside devilutionx.exe for the smoke test.
     - name: Configure (SDL3 + GPU scaler)
       run: cmake --preset ninja-vcpkg-relwithdebinfo -DUSE_SDL3=ON -DUSE_GPU_SCALER=ON -DDEVILUTIONX_SYSTEM_SDL3=OFF -DDEVILUTIONX_SYSTEM_SDL_IMAGE=OFF -DDEVILUTIONX_SYSTEM_LIBSODIUM=OFF -DDEVILUTIONX_STATIC_LIBSODIUM=ON
+
+    # The manifest's `sdl3` feature also installs SDL3 (headers + config + libs)
+    # into vcpkg_installed, and Dependencies.cmake's directory-scope
+    # include_directories(${LUA_INCLUDE_DIR}) puts the vcpkg include root at the
+    # FRONT of every target's include path - including the FetchContent'd
+    # SDL3 3.5.0 subbuild. Its SDL_internal.h then picks up vcpkg's older
+    # SDL3/SDL.h and the compile dies on version static-asserts and missing new
+    # types (SDL_GamepadCapSenseType, SDL_FormFactor, ...). Nothing links
+    # vcpkg's SDL3 (DEVILUTIONX_SYSTEM_SDL3=OFF), so remove its payload after
+    # configure; the in-tree 3.5.0 headers become authoritative. vcpkg will not
+    # reinstall them: the manifest is unchanged and its status file already
+    # lists sdl3 as installed, so the next `vcpkg install` is a no-op.
+    - name: Remove vcpkg SDL3 (older headers shadow FetchContent SDL 3.5.0)
+      shell: pwsh
+      run: |
+        $root = "build-ninja-vcpkg-relwithdebinfo/vcpkg_installed/x64-windows"
+        if (-not (Test-Path -LiteralPath $root)) { throw "missing $root" }
+        $n = 0
+        foreach ($sub in @("include", "debug/include", "share", "debug/share", "lib", "debug/lib", "bin", "debug/bin")) {
+          $dir = Join-Path $root $sub
+          if (Test-Path -LiteralPath $dir) {
+            Get-ChildItem -LiteralPath $dir -Filter "SDL3*" -ErrorAction SilentlyContinue | ForEach-Object {
+              Remove-Item -LiteralPath $_.FullName -Recurse -Force
+              $n++
+            }
+          }
+        }
+        if ($n -eq 0) { throw "no vcpkg SDL3 payload found - step needs review" }
+        Write-Host "removed $n vcpkg SDL3 payloads; FetchContent SDL 3.5.0 headers are now authoritative"
 
     - name: Build
       run: cmake --build --preset ninja-vcpkg-relwithdebinfo
