@@ -88,6 +88,13 @@
     vcpkg error: not a tooling problem - it is CMake cascade noise from the
     vcpkg toolchain failure. Fix the vcpkg error (see the log tail the script
     prints) and the rest disappears.
+  - "target_compile_features no known features for CXX compiler" at generate
+    time (e.g. "MSVC version 12.0."): cmake identified a cl.exe that is NOT a
+    VS2022+ MSVC - typically a DDK/VC6-era compiler that is first on PATH.
+    vcpkg locates Visual Studio itself, so the vcpkg stage succeeds while
+    cmake fails. Script v3 verifies the cl.exe banner, imports the VS dev
+    environment over a broken PATH cl, and drops the stale CMake cache the
+    bad configure left behind - re-run and it self-heals.
 #>
 param(
     [string]$Repo = "",
@@ -245,18 +252,72 @@ if (Test-Path (Join-Path $gitUsrBin 'patch.exe')) {
 Write-Step "MSVC x64 environment"
 
 $vs = $null
+
+# ---------------------------------------------------------------------------
+# Compiler sanity: CMake's Ninja generator identifies whatever cl.exe is FIRST
+# on PATH. A DDK/VC6-era cl (banner "Compiler Version 12.00...") identifies as
+# "MSVC 12.0", for which CMake records NO C++ features, and every cxx_std_23
+# target (libslang-vk's slangvk_add_library) then dies at generate time with
+# "target_compile_features no known features for CXX compiler". vcpkg is
+# immune - it locates Visual Studio itself - which is exactly why the vcpkg
+# stage can pass while cmake fails. So: verify the cl.exe banner and the dev
+# environment, never reuse PATH blindly; on mismatch import VS, which
+# PREPENDS the real toolchain to PATH and shadows the broken cl.
+# ---------------------------------------------------------------------------
+function Get-ClInfo {
+    # cl.exe prints its banner on stderr; merge inside cmd so PowerShell sees
+    # plain strings (PS 5.1 would otherwise wrap native stderr in ErrorRecords).
+    $lines = cmd /c "cl 2>&1"
+    $joined = $lines -join "`n"
+    if ($joined -match 'Compiler Version\s+(\d+)\.(\d+)') {
+        $banner = $lines | Where-Object { $_ -match 'Compiler Version' } | Select-Object -First 1
+        return [pscustomobject]@{ Major = [int]$Matches[1]; Minor = [int]$Matches[2]; Banner = $banner }
+    }
+    return $null
+}
+function Test-ClVersionSupported($cl) {
+    # devilutionX + libslang-vk build with C++20/23: VS2022 (MSVC 19.30) minimum.
+    return ($null -ne $cl -and ($cl.Major -gt 19 -or ($cl.Major -eq 19 -and $cl.Minor -ge 30)))
+}
+
+$cl = $null
 if (Get-Command cl -ErrorAction SilentlyContinue) {
-    Write-Info "cl.exe already on PATH - reusing the open developer prompt"
-    # Best effort: still locate the VS install so the bundled cmake/ninja
-    # fallback below can kick in if no standalone copies exist.
-    $vswhere0 = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (Test-Path -LiteralPath $vswhere0) {
-        $vs = & $vswhere0 -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $cl = Get-ClInfo
+    if ((Test-ClVersionSupported $cl) -and $env:INCLUDE) {
+        Write-Info "cl.exe on PATH is a supported MSVC and the dev env is initialized - reusing it"
+        # Best effort: still locate the VS install so the bundled cmake/ninja
+        # fallback below can kick in if no standalone copies exist.
+        $vswhere0 = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere0) {
+            $vs = & $vswhere0 -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        }
+    } else {
+        if ($cl -and -not $env:INCLUDE) {
+            Write-Warn2 "cl.exe on PATH is a supported MSVC but INCLUDE is empty - the developer"
+            Write-Warn2 "  environment is not initialized in this prompt. Importing VS instead."
+        } elseif ($cl) {
+            Write-Warn2 "cl.exe FIRST ON PATH is NOT a supported MSVC - ignoring it:"
+            Write-Warn2 "  path:   $((Get-Command cl).Source)"
+            Write-Warn2 "  banner: $($cl.Banner)"
+            Write-Warn2 "  CMake would identify it as MSVC $($cl.Major).$($cl.Minor): an empty C++ feature"
+            Write-Warn2 "  table -> 'target_compile_features no known features for CXX compiler'."
+        } else {
+            Write-Warn2 "cl.exe FIRST ON PATH has no MSVC banner - not a real MSVC. Importing VS instead:"
+            Write-Warn2 "  path:   $((Get-Command cl).Source)"
+        }
+        Write-Warn2 "  (vcpkg finds Visual Studio by itself, which is why the vcpkg stage passed)"
+        $cl = $null
+        # fall through: the VS import below PREPENDS the real toolchain to PATH,
+        # shadowing whatever cl.exe the ambient PATH exposed
     }
 } else {
+    Write-Info "no cl.exe on PATH - importing the VS developer environment"
+}
+
+if (-not $cl) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere)) {
-        Die "vswhere not found and cl.exe is not on PATH. Install Visual Studio 2022 (Community or Build Tools) with the 'Desktop development with C++' workload."
+        Die "vswhere not found and no supported cl.exe is available. Install Visual Studio 2022 (Community or Build Tools) with the 'Desktop development with C++' workload."
     }
     $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (-not $vs) {
@@ -268,8 +329,14 @@ if (Get-Command cl -ErrorAction SilentlyContinue) {
     Import-Module $devShell
     Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
     if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { Die "cl.exe is still not on PATH after Enter-VsDevShell - VS install looks incomplete" }
+    $cl = Get-ClInfo
+    if (-not (Test-ClVersionSupported $cl)) {
+        $bannerLine = if ($cl) { $cl.Banner } else { '<no MSVC banner>' }
+        Die "cl.exe after Enter-VsDevShell is not a supported MSVC (need VS2022 / MSVC 19.30+).`n    path:   $((Get-Command cl).Source)`n    banner: $bannerLine"
+    }
 }
 Write-Info "cl.exe:    $((Get-Command cl).Source)"
+Write-Info "cl:        $($cl.Banner)"
 
 # ----------------------------------------------------------------------------
 # 3. cmake + ninja (standalone preferred, VS-bundled as fallback)
@@ -295,6 +362,8 @@ if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
 }
 Write-Info "cmake:     $((Get-Command cmake).Source)"
 Write-Info "ninja:     $((Get-Command ninja).Source)"
+$cmakeVer = (& cmake --version | Select-Object -First 1)
+Write-Info "cmake ver: $cmakeVer"
 
 # ----------------------------------------------------------------------------
 # 4. vcpkg at the manifest baseline (like the CI's lukka/run-vcpkg step)
@@ -409,6 +478,45 @@ function Build-Variant([string]$variant) {
     Write-Info "vcpkg $($vcpkgArgs -join ' ')"
     & $vcpkgExe @vcpkgArgs
     if ($LASTEXITCODE -ne 0) { Die "vcpkg install failed ($variant) - fix the vcpkg error above and re-run" }
+
+    # ---- stale compiler-state guard ----------------------------------------
+    # A configure that identified a WRONG cl.exe (e.g. a DDK/VC6-era compiler
+    # first on PATH -> "MSVC version 12.0", empty C++ feature table, fatal
+    # "target_compile_features no known features" at generate time) bakes that
+    # compiler into CMakeCache.txt + CMakeFiles\CMakeCXXCompiler.cmake, and
+    # CMake keeps trusting it on every re-run even after PATH is fixed.
+    # Detect such a cache and drop ONLY the CMake-side state: vcpkg_installed\
+    # keeps the already-built packages, so the re-configure stays fast.
+    $cache = Join-Path $buildDir 'CMakeCache.txt'
+    if (Test-Path -LiteralPath $cache) {
+        $cachedCl = $null
+        foreach ($line in (Get-Content -LiteralPath $cache)) {
+            if ($line -match '^CMAKE_CXX_COMPILER:FILEPATH=(.+)$') { $cachedCl = $Matches[1]; break }
+        }
+        $cachedVer = $null
+        $ccFile = Get-ChildItem (Join-Path $buildDir 'CMakeFiles') -Filter 'CMakeCXXCompiler.cmake' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($ccFile) {
+            foreach ($line in (Get-Content -LiteralPath $ccFile.FullName)) {
+                if ($line -match 'set\(CMAKE_CXX_COMPILER_VERSION\s+"([^"]+)"\)') { $cachedVer = $Matches[1]; break }
+            }
+        }
+        $curCl = (Get-Command cl -ErrorAction SilentlyContinue).Source
+        $staleWhy = $null
+        if ($cachedCl -and $curCl -and ($cachedCl.Trim() -ne $curCl.Trim())) {
+            $staleWhy = "cached CMAKE_CXX_COMPILER is $cachedCl, now using $curCl"
+        } elseif ($cachedVer) {
+            $vp = $cachedVer.Split('.')
+            if (([int]$vp[0] -lt 19) -or (([int]$vp[0] -eq 19) -and ([int]$vp[1] -lt 30))) {
+                $staleWhy = "cached compiler version $cachedVer is not a supported MSVC (need >= 19.30)"
+            }
+        }
+        if ($staleWhy) {
+            Write-Warn2 "stale CMake state in $buildDir - $staleWhy"
+            Write-Info "dropping CMakeCache.txt + CMakeFiles\ (vcpkg_installed\ is kept)"
+            Remove-Item -LiteralPath $cache -Force
+            Remove-Item (Join-Path $buildDir 'CMakeFiles') -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     # Same flags as the CI's Configure step (the preset ninja-vcpkg-relwithdebinfo
     # expanded: toolchain from VCPKG_ROOT, RelWithDebInfo, DISABLE_LTO=ON) plus
