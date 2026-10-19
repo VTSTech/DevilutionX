@@ -179,6 +179,33 @@ if(USE_GPU_SCALER)
     GIT_TAG c3567b037441e8610ccd70523484e4d6a0776909 # M4.05
     )
   FetchContent_MakeAvailable(libslang-vk)
+
+  # Windows/MSVC: libslang-vk always builds the static "slangvk" target, and
+  # with SLANGVK_BUILD_SHARED=ON (GPU_SCALER_SHARED=ON) the shared
+  # "slangvk-shared" variant reuses the same OUTPUT_NAME "slangvk". On DLL
+  # platforms the shared variant's IMPORT library then collides with the
+  # static archive - both targets generate
+  # _deps/libslang-vk-build/slangvk.lib, and Ninja refuses the build graph
+  # with "multiple rules generate slangvk.lib" (Linux never sees this:
+  # libslangvk.a vs libslangvk.so). Fixed here, from the consumer side, so
+  # the libslang-vk pin can stay at M4.05: on WIN32 the shared variant gets
+  # the documented libslangvk artifact name (libslangvk.dll - the name the
+  # packaging comments and the local build script's DLL collection expect)
+  # and its import library (the ARCHIVE output) moves into its own folder,
+  # out of the static lib's way. Distinct PDB names keep the static lib's
+  # compile PDB (slangvk.pdb) and the DLL's link PDB from racing on the same
+  # path when the two targets build in parallel. Linux/macOS are untouched
+  # (libslangvk.so keeps its name), and slangvk::shared consumers link
+  # through the target, so the relocated import library resolves
+  # automatically.
+  if(WIN32 AND TARGET slangvk-shared)
+    set_target_properties(slangvk-shared PROPERTIES
+      OUTPUT_NAME libslangvk
+      ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/slangvk-shared-implib"
+      PDB_NAME libslangvk
+      COMPILE_PDB_NAME libslangvk
+      )
+  endif()
 endif()
 
 if(USE_SDL1)
