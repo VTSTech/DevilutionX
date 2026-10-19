@@ -621,6 +621,17 @@ function Build-Variant([string]$variant) {
         # source - without this flag the nonstatic build has no SDL3_image.dll
         # to ship (the CI nonstatic job's import-table gate expects the DLL).
         $flags += '-DDEVILUTIONX_STATIC_SDL_IMAGE=OFF'
+        # Repo-state preflight: the MSVC nonstatic build needs the slangvk
+        # import-lib fix on the checkout (0002-nonstatic-slangvk-implib-fix.patch).
+        # Without it, ninja aborts with "multiple rules generate
+        # _deps/libslang-vk-build/slangvk.lib" - the static libslang-vk archive
+        # and the shared variant's import lib are one and the same file.
+        if (-not ((Get-Content -LiteralPath (Join-Path $Repo 'CMakeLists.txt') -Raw).Contains('slangvk-shared-implib'))) {
+            Write-Warn2 "this checkout is missing the slangvk-shared-implib fix (0002 patch) -"
+            Write-Warn2 "  the nonstatic build is expected to die with 'multiple rules generate"
+            Write-Warn2 "  _deps/libslang-vk-build/slangvk.lib'. Apply the 0002 patch to the repo first:"
+            Write-Warn2 "    git am --keep-cr <download-dir>\0002-nonstatic-slangvk-implib-fix.patch"
+        }
     }
     Write-Info "cmake $($flags -join ' ')"
     & cmake @flags
