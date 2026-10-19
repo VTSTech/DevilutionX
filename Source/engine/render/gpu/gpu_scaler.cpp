@@ -1209,13 +1209,15 @@ void PresentFrame(const SDL_Surface &frame)
 		}
 	}
 
-	// Keep the chain's pass FBOs sized for the current input and output.
+	// Keep the chain's output target sized to the current swapchain extent
+	// (libslang-vk M4.05 API: resize() stores the output size only; pass FBOs,
+	// the history ring and the mip copy are re-derived by render() from the
+	// per-frame InputFrame size, so an input-size-only change is a no-op here).
 	if (gChainInputWidth != static_cast<uint32_t>(gameWidth)
 	    || gChainInputHeight != static_cast<uint32_t>(gameHeight)
 	    || gChainOutputWidth != gSwapchainExtent.width
 	    || gChainOutputHeight != gSwapchainExtent.height) {
-		auto resized = gChain->resize(static_cast<uint32_t>(gameWidth), static_cast<uint32_t>(gameHeight),
-		    gSwapchainExtent.width, gSwapchainExtent.height);
+		auto resized = gChain->resize(gSwapchainExtent.width, gSwapchainExtent.height);
 		if (!resized) {
 			LogFailHard(StrCat("chain resize failed: ", resized.error().message));
 			return;
