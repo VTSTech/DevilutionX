@@ -8,9 +8,17 @@ to the scaler PR's new source files. Every branch = exactly one commit.
 Usage (inside a clone of VTSTech/DevilutionX):
     git remote add upstream https://github.com/diasurgical/DevilutionX.git  # if absent
     git fetch upstream master
-    git fetch origin libslang-vk          # provides 6dc2a8713 / 78113c7c6
+    git fetch origin libslang-vk
     python3 build_r4_branches.py [--repo PATH] [--worktree-root PATH]
                                  [--upstream upstream/master] [--force] [--verify-only]
+
+Payload source: origin/libslang-vk at its CURRENT tip - the CI-green,
+hardware-validated tree (first refresh basis: 29d1fe278, libslang-vk M4.05
+pin, 2-arg Chain::resize, WinMain SDL_main.h include, EOL-normalized).
+Re-running with --force refreshes the branches to whatever the tip carries;
+force-push the pr/* branches afterwards. docs/GPU_SHADERS.md,
+docs/SLANG_SPEC.md and tools/audit_slang_presets.py are lean-dropped from
+libslang-vk and still come from the r3 snapshot (6dc2a8713).
 
 Branches produced:
     pr/1-sdl3-build-fixes        (base: upstream/master)
@@ -27,8 +35,8 @@ import shutil
 import subprocess
 import sys
 
-FORK = "6dc2a8713"          # r3 payload blob source
-FORK_CMAKE = "78113c7c6"    # CMakeLists.txt: libslang-vk pin bumped to b91b0499
+FORK = "origin/libslang-vk"   # validated payload source (see docstring)
+FORK_R3 = "6dc2a8713"         # r3 snapshot: still supplies the 3 lean-dropped docs/tools files
 BR1 = "pr/1-sdl3-build-fixes"
 
 ATTR_CPP = [
@@ -80,8 +88,10 @@ OPTIONS_TEST_BLOCK = [
 ]
 
 MAIN_CPP_INSERT = [
-    "// SDL3: SDL.h no longer includes SDL_main.h; without this, WIN32",
-    "// GUI-subsystem builds fail to link (unresolved WinMain).",
+    "// SDL3: SDL.h no longer includes SDL_main.h. Including it here renames main()",
+    "// to SDL_main() and emits the WinMain()/main() entry points that call into",
+    "// SDL_RunApp(); without it, WIN32 GUI-subsystem executables fail to link",
+    "// (LNK2019 unresolved external symbol WinMain).",
     "#include <SDL3/SDL_main.h>",
 ]
 
@@ -191,13 +201,19 @@ def changelog_add_bullet(data: bytes, section: bytes, subsection: bytes, bullet:
 
 
 def stamp(data: bytes, token: bytes, after_shebang: bool = False) -> bytes:
-    """Prepend the attribution lines with the given comment token."""
+    """Prepend the attribution lines with the given comment token.
+
+    Idempotent: fork-tip blobs already carry the stamps (they were validated
+    on CI/hardware there), so detect and pass through unchanged.
+    """
+    lines = split_lines(data)
+    if any(b"Written by VTSTech" in strip_eol(l) for l in lines[:6]):
+        return data
     eol = dominant_eol(data)
     attr = [t + b" " + line + eol for t in (token,) for line in
             [b"Written by VTSTech (Nigel Todman) (veritas@vts-tech.org)",
              b"AI Assisted by Super-Z (GLM-5.3-Flash)",
              b"License: MIT"]]
-    lines = split_lines(data)
     if after_shebang:
         if not lines or not strip_eol(lines[0]).startswith(b"#!"):
             raise RuntimeError("stamp: expected shebang first line")
@@ -218,13 +234,13 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
                             new_lines=GMOCK_BLOCK, eol=tests_eol, prefix=True)
     up_cmake = up("CMakeLists.txt")
     cmake_eol = eol_of(up_cmake)
-    wav_line = [l for l in split_lines(repo.blob(FORK_CMAKE, "CMakeLists.txt"))
+    wav_line = [l for l in split_lines(repo.blob(FORK, "CMakeLists.txt"))
                 if strip_eol(l).startswith(b"option(DEVILUTIONX_WAV_FALLBACK")]
-    assert len(wav_line) == 1, "wav option line not found in 78113c7c6:CMakeLists.txt"
+    assert len(wav_line) == 1, "wav option line not found in fork-tip CMakeLists.txt"
     pr2_cmake = insert_once(split_lines(up_cmake),
                             before=b"set(STREAM_ALL_AUDIO_MIN_FILE_SIZE",
                             new_lines=[strip_eol(wav_line[0])], eol=cmake_eol, prefix=True)
-    fk_cmake_lines = split_lines(repo.blob(FORK_CMAKE, "CMakeLists.txt"))
+    fk_cmake_lines = split_lines(repo.blob(FORK, "CMakeLists.txt"))
     pr5_cmake_src = remove_lines(fk_cmake_lines, b"option(DEVILUTIONX_WAV_FALLBACK")
 
     pr5_tests_base = None  # filled at runtime from the pr/1 branch
@@ -248,6 +264,8 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
               "spell_ui", "stash", "store_transaction", "visual_store"]
 
     def norm(p): return normalize_to_upstream(up(p), fk(p))
+
+    fk_r3 = lambda p: repo.blob(FORK_R3, p)  # lean-dropped docs/tools source
 
     def stamped_add(p, token: bytes, after_shebang=False):
         return stamp(fk(p), token, after_shebang)
@@ -345,10 +363,10 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
         "Packaging/windows/clear_shader_cache.cmd": stamped_add("Packaging/windows/clear_shader_cache.cmd", b"rem"),
         "Packaging/windows/install_git.cmd": stamped_add("Packaging/windows/install_git.cmd", b"rem"),
         "Packaging/windows/install_shaders.cmd": stamped_add("Packaging/windows/install_shaders.cmd", b"rem"),
-        "docs/GPU_SHADERS.md": fk("docs/GPU_SHADERS.md"),
-        "docs/SLANG_SPEC.md": fk("docs/SLANG_SPEC.md"),
+        "docs/GPU_SHADERS.md": fk_r3("docs/GPU_SHADERS.md"),
+        "docs/SLANG_SPEC.md": fk_r3("docs/SLANG_SPEC.md"),
         "test/options_test.cpp": stamped_add("test/options_test.cpp", b"//"),
-        "tools/audit_slang_presets.py": stamped_add("tools/audit_slang_presets.py", b"#"),
+        "tools/audit_slang_presets.py": stamp(repo.blob(FORK_R3, "tools/audit_slang_presets.py"), b"#"),
     }
     for rel in presets:
         pr5_adds[f"test/fixtures/preset_smoke/{rel}"] = fk(f"test/fixtures/preset_smoke/{rel}")
@@ -457,7 +475,7 @@ def main() -> int:
     wt_root = args.worktree_root or os.path.join(os.path.dirname(repo.path), "r4-worktrees")
 
     # Preflight
-    for rev in (args.upstream, FORK, FORK_CMAKE):
+    for rev in (args.upstream, FORK, FORK_R3):
         repo.git("rev-parse", "--verify", f"{rev}^{{commit}}")
     prs = build_prs(repo, args.upstream)
 
