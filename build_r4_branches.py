@@ -7,18 +7,42 @@ to the scaler PR's new source files. Every branch = exactly one commit.
 
 Usage (inside a clone of VTSTech/DevilutionX-libslang-vk):
     git remote add upstream https://github.com/diasurgical/DevilutionX.git  # if absent
-    git fetch upstream master
-    git fetch origin libslang-vk
     python3 build_r4_branches.py [--repo PATH] [--worktree-root PATH]
                                  [--upstream upstream/master] [--force] [--verify-only]
+    python3 build_r4_branches.py --recut          # refresh: delete old local pr/1..6, cut new
+    python3 build_r4_branches.py --recut --push   # ... and force-push (lease) them to origin
+    python3 build_r4_branches.py --recut --prune  # ... and drop the superseded fix-stage branches
 
-Payload source: origin/libslang-vk at its CURRENT tip - the CI-green,
-hardware-validated tree (first refresh basis: 29d1fe278, libslang-vk M4.05
-pin, 2-arg Chain::resize, WinMain SDL_main.h include, EOL-normalized).
-Re-running with --force refreshes the branches to whatever the tip carries;
-force-push the pr/* branches afterwards. docs/GPU_SHADERS.md,
-docs/SLANG_SPEC.md and tools/audit_slang_presets.py are lean-dropped from
-libslang-vk and still come from the r3 snapshot (6dc2a8713).
+    --recut fetches origin/libslang-vk + upstream/master first, then rebuilds
+    every pr/* branch from the fetched tip (implies --force). Branches whose
+    derived tree AND base are unchanged keep their existing tip, so re-runs
+    only rewrite what actually moved and --push does not spam force-pushes.
+
+Payload source: origin/libslang-vk at its CURRENT tip - the hardware-
+validated tree the user tests on. (The fork branch's own Linux CI is red
+until fix/sdl-compat-scaler-decl is merged into libslang-vk; the PR branches
+are unaffected - sdl_compat.h is sanitized on the way out, see below.)
+
+As of 994bdb57a the tip carries the two out-of-plan fixes already squashed
+on the branch, and the recut folds both into pr/5:
+  * 694109544 nonstatic MSVC implib fix -> rides in pr/5's CMakeLists.txt
+    (slangvk-shared-implib/ import-library split, DLL named libslangvk.dll);
+  * 994bdb57a scaler mouse-mapping fix -> rides in pr/5 via gpu_scaler.* plus
+    two NEW pr/5 mods: Source/utils/display.h (OutputToLogical /
+    LogicalToOutput hooks) and Source/utils/sdl_compat.h
+    (SDLC_ConvertEventToRenderCoordinates hook). sdl_compat.h is emitted with
+    its two hook call sites QUALIFIED (devilution::gpu_scaler::...) so the
+    Linux CI failure "'gpu_scaler' has not been declared"
+    (sdl_compat.h:430/432) cannot recur on the PR branches even before the
+    fork branch itself is fixed.
+
+docs/GPU_SHADERS.md, docs/SLANG_SPEC.md and tools/audit_slang_presets.py are
+lean-dropped from libslang-vk and still come from the r3 snapshot (29d1fe278).
+
+Superseded by a --recut: the fix-stage branches pr/nonstatic-slangvk-implib
+and pr/scaler-mouse-mapping (their content now lives inside pr/5) - remove
+them with --prune. fix/sdl-compat-scaler-decl stays until merged into
+libslang-vk (it restores the fork branch's own Linux CI).
 
 Branches produced:
     pr/1-sdl3-build-fixes        (base: upstream/master)
@@ -112,7 +136,9 @@ class Repo:
         return self.git("show", f"{rev}:{path}", check=False)
 
     def has_blob(self, rev: str, path: str) -> bool:
-        return self.git("cat-file", "-e", f"{rev}:{path}", check=False).returncode == 0
+        return subprocess.run(["git", "-C", self.path, "cat-file", "-e", f"{rev}:{path}"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                              ).returncode == 0
 
 
 # ------------------------------------------------------------- text helpers
@@ -219,6 +245,31 @@ def stamp(data: bytes, token: bytes, after_shebang: bool = False) -> bytes:
             raise RuntimeError("stamp: expected shebang first line")
         return render(lines[:1] + attr + lines[1:])
     return render(attr + lines)
+
+
+def sanitize_sdl_compat(data: bytes) -> bytes:
+    """Qualify the two gpu_scaler::MapWindowToGame() call sites inside the
+    global-scope SDLC_ConvertEventToRenderCoordinates() hook.
+
+    The hook sits outside namespace devilution, so unqualified lookup cannot
+    reach devilution::gpu_scaler even though this header carries the
+    forward-declaration block - TUs that include sdl_compat.h without
+    display.h (e.g. engine/assets.cpp) fail with "'gpu_scaler' has not been
+    declared" (Linux CI, sdl_compat.h:430/432). Idempotent: already-qualified
+    input passes through unchanged.
+    """
+    qual = b"devilution::gpu_scaler::MapWindowToGame("
+    raw = b"gpu_scaler::MapWindowToGame("
+    if qual in data:
+        if data.count(qual) != 2 or data.count(raw) != 2:
+            raise RuntimeError("sdl_compat.h: inconsistent qualified call sites")
+        return data
+    if b"bool MapWindowToGame(float *x, float *y);" not in data:
+        raise RuntimeError("sdl_compat.h: forward-declaration block missing")
+    if data.count(raw) != 2:
+        raise RuntimeError(
+            f"sdl_compat.h: expected 2 unqualified calls, found {data.count(raw)}")
+    return data.replace(raw, qual)
 
 
 # ------------------------------------------------------------ PR definitions
@@ -380,6 +431,8 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
         "Source/options.cpp": norm("Source/options.cpp"),
         "Source/options.h": norm("Source/options.h"),
         "Source/utils/display.cpp": norm("Source/utils/display.cpp"),
+        "Source/utils/display.h": norm("Source/utils/display.h"),
+        "Source/utils/sdl_compat.h": sanitize_sdl_compat(fk("Source/utils/sdl_compat.h")),
         "Source/engine/dx.cpp": norm("Source/engine/dx.cpp"),
         "Source/engine/render/scrollrt.cpp": norm("Source/engine/render/scrollrt.cpp"),
         "Source/interfac.cpp": norm("Source/interfac.cpp"),
@@ -394,10 +447,16 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
               "no Vulkan SDK is needed at build time).\n"
               "The adapter (Source/engine/render/gpu) handles window/swapchain lifecycle, "
               "present-path integration, filter OSD and graceful fallback to the stock renderer "
-              "on any GPU-path failure. Options/settings UI add a shader-filter entry with a "
+              "on any GPU-path failure. When the scaler owns the window there is no SDL "
+              "renderer for SDL to convert events with, so mouse/highlight coordinates are "
+              "mapped between window and game space through the scaler's last present rect "
+              "(MapWindowToGame; display.h/sdl_compat.h hooks).\n"
+              "Options/settings UI add a shader-filter entry with a "
               "preset browser; corrupt-ini recovery preserves the file and restarts with "
               "defaults. Packaging scripts install/clear shader caches; docs + a preset QA "
-              "corpus (tools/audit_slang_presets.py) are included.\n"
+              "corpus (tools/audit_slang_presets.py) are included. The shared slangvk build "
+              "moves its MSVC import library aside (slangvk-shared-implib/) so nonstatic "
+              "builds no longer emit duplicate slangvk.lib rules.\n"
               "Stacked on pr/1-sdl3-build-fixes, which the Windows/vendored-SDL3 configure path "
               "requires."),
         mods=pr5_mods, adds=pr5_adds,
@@ -433,7 +492,8 @@ EXPECTED_FILES = {
     "pr/5-gpu-scaler": None,  # too many; checked by count
     "pr/6-sdl3-main-glue": ["Source/main.cpp"],
 }
-PR5_COUNT = 34 + 12
+PR5_COUNT = 34 + 14   # 34 adds + 12 scaler mods + display.h + sdl_compat.h (mouse-mapping fix)
+SUPERSEDED_BRANCHES = ["pr/nonstatic-slangvk-implib", "pr/scaler-mouse-mapping"]
 
 
 def verify(repo: Repo, pr: dict) -> bool:
@@ -452,6 +512,19 @@ def verify(repo: Repo, pr: dict) -> bool:
     branding = repo.git("diff", f"{base}..{br}", "--", "Source", check=False)
     if b"github.com/VTSTech" in branding:
         print(f"  FAIL {br}: branding string in Source diff"); ok = False
+    if br == "pr/5-gpu-scaler":
+        sc = repo.git("show", f"{br}:Source/utils/sdl_compat.h", check=False)
+        if not sc:
+            print(f"  FAIL {br}: Source/utils/sdl_compat.h hook missing "
+                  f"(pre-recut branch - run --recut)")
+            ok = False
+        else:
+            n_qual = sc.count(b"devilution::gpu_scaler::MapWindowToGame(")
+            n_raw = sc.count(b"gpu_scaler::MapWindowToGame(")
+            if n_qual != 2 or n_raw != 2:
+                print(f"  FAIL {br}: sdl_compat.h hook calls unqualified "
+                      f"(qualified {n_qual}/2, total {n_raw}/2) - Linux CI would break")
+                ok = False
     exp = EXPECTED_FILES.get(br)
     if exp is not None:
         if sorted(files) != sorted(exp):
@@ -468,11 +541,35 @@ def main() -> int:
     ap.add_argument("--worktree-root", default=None)
     ap.add_argument("--upstream", default="upstream/master")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--recut", action="store_true",
+                    help="refresh flow: fetch refs, rebuild every pr/* from the current "
+                         "fork tip (implies --force); run after validating the fixes")
+    ap.add_argument("--push", action="store_true",
+                    help="after a clean build, force-push (lease) pr/1..6 to origin")
+    ap.add_argument("--prune", action="store_true",
+                    help="after a clean build, delete the superseded fix-stage branches")
     ap.add_argument("--verify-only", action="store_true")
     args = ap.parse_args()
 
     repo = Repo(os.path.abspath(args.repo))
     wt_root = args.worktree_root or os.path.join(os.path.dirname(repo.path), "r4-worktrees")
+
+    if args.recut:
+        args.force = True
+        old_tip = repo.git("rev-parse", f"{FORK}^{{commit}}").decode().strip()
+        fetches = [("origin", "libslang-vk")]
+        if "/" in args.upstream:
+            fetches.append((args.upstream.split("/", 1)[0], args.upstream.split("/", 1)[1]))
+        for remote, ref in fetches:
+            r = subprocess.run(["git", "-C", repo.path, "fetch", remote, ref],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if r.returncode != 0:
+                err = r.stderr.decode(errors="replace").strip().splitlines()
+                print(f"WARN: fetch {remote} {ref} failed ({err[-1] if err else 'git error'})"
+                      " - continuing on stale refs")
+        new_tip = repo.git("rev-parse", f"{FORK}^{{commit}}").decode().strip()
+        print(f"payload tip {FORK}: {old_tip[:9]} -> {new_tip[:9]}"
+              + (" (unchanged)" if old_tip == new_tip else ""))
 
     # Preflight
     for rev in (args.upstream, FORK, FORK_R3):
@@ -489,11 +586,12 @@ def main() -> int:
     for pr in prs:
         br, base = pr["branch"], pr["base"]
         print(f"== {br} (base {base}) ==")
+        old_tip = None
         if repo.git("branch", "--list", br, check=False).strip():
             if not args.force:
-                print("  SKIP: branch exists (use --force to rebuild)")
+                print("  SKIP: branch exists (use --force/--recut to rebuild)")
                 continue
-            repo.git("branch", "-D", br)
+            old_tip = repo.git("rev-parse", "--verify", f"{br}^{{commit}}").decode().strip()
         if base != args.upstream and not repo.git(
                 "rev-parse", "--verify", "-q", base, check=False):
             raise RuntimeError(f"base branch missing: {base}")
@@ -524,17 +622,47 @@ def main() -> int:
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             # point the branch in the main repo at the worktree commit
             tip = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD"],
-                                 check=True, stdout=subprocess.PIPE).stdout.strip()
-            repo.git("update-ref", f"refs/heads/{br}", tip.decode())
-            stat = repo.git("diff", "--stat", f"{base}..{br}").decode().splitlines()[-1]
-            print(f"  {stat}")
+                                 check=True, stdout=subprocess.PIPE).stdout.strip().decode()
+            tree = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD^{tree}"],
+                                  check=True, stdout=subprocess.PIPE).stdout.strip().decode()
+            keep = False
+            if old_tip is not None:
+                old_tree = repo.git("rev-parse", f"{old_tip}^{{tree}}").decode().strip()
+                old_base = repo.git("rev-parse", f"{old_tip}^").decode().strip()
+                base_commit = repo.git("rev-parse", "--verify",
+                                       f"{base}^{{commit}}").decode().strip()
+                keep = (old_tree == tree and old_base == base_commit)
+            if keep:
+                print(f"  unchanged vs {old_tip[:9]} (same tree, same base) - branch kept")
+            else:
+                if old_tip is not None:
+                    repo.git("branch", "-D", br)
+                repo.git("update-ref", f"refs/heads/{br}", tip)
+                stat = repo.git("diff", "--stat", f"{base}..{br}").decode().splitlines()[-1]
+                print(f"  {stat}")
             if not verify(repo, pr):
                 failures += 1
         finally:
             subprocess.run(["git", "-C", repo.path, "worktree", "remove", "--force", wt],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("DONE:", "all branches verified" if not failures else f"{failures} branch(es) failed")
-    return 1 if failures else 0
+    if failures:
+        print("DONE:", f"{failures} branch(es) failed - --push/--prune skipped")
+        return 1
+    if args.push:
+        for pr in prs:
+            repo.git("push", "--force-with-lease", "origin", pr["branch"])
+        print("pushed:", " ".join(pr["branch"] for pr in prs))
+        print("PR bases: pr/1..4 + pr/6 -> diasurgical:master; "
+              "pr/5 -> this fork's pr/1-sdl3-build-fixes branch")
+    if args.prune:
+        for br in SUPERSEDED_BRANCHES:
+            if repo.git("branch", "--list", br, check=False).strip():
+                repo.git("branch", "-D", br)
+                print(f"pruned superseded local branch: {br}")
+        print("note: keep fix/sdl-compat-scaler-decl until it is merged into libslang-vk "
+              "(that is what restores the fork branch's own Linux CI)")
+    print("DONE: all branches verified")
+    return 0
 
 
 if __name__ == "__main__":
