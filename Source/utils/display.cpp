@@ -515,12 +515,26 @@ SDL_DisplayMode GetNearestDisplayMode(Size preferredSize,
 #endif
 
 void AdjustToScreenGeometry(Size windowSize)
-{
-	gnScreenWidth = windowSize.width;
-	gnScreenHeight = windowSize.height;
-	CalculateUIRectangle();
-	CalculatePanelAreas();
+ {
+#ifdef USE_GPU_SCALER
+if (*GetOptions().Graphics.upscale && gpu_scaler::ScalerWanted() && !gpu_scaler::HasFailed()) {
+	// Shader filter active: render the game into a fixed 4:3 960x720 base
+	// canvas and hand exactly that image to the slang chain. The window and
+	// the swapchain keep the selected Resolution; the chain letterboxes its
+	// output to the game aspect and maps mouse coordinates through the
+	// present rect, so a canvas smaller than the window is fully supported.
+	// libslang-vk derives every pass FBO from the input size, so this base
+	// smaller than the swapchain is what gives upscaler presets (ScaleFX,
+	// HQx) the headroom they need to visibly rework the game art. CRT-style
+	// overlays (scanlines, masks, grids) are output-space effects and keep
+	// working at any input size.
+	windowSize.width = 960;
+	windowSize.height = 720;
 }
+#endif
+ 	gnScreenWidth = windowSize.width;
+ 	gnScreenHeight = windowSize.height;
+ 	CalculateUIRectangle();
 
 float GetDpiScalingFactor()
 {
