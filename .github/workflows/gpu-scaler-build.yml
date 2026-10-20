@@ -39,7 +39,6 @@ on:
     branches:
       - master
       - libslang-vk
-      - wav-mixer-fix
       - 'gpu-*'
     paths-ignore:
       - '*.md'

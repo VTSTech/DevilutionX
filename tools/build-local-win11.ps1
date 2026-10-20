@@ -241,19 +241,6 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Die "git not found on PATH - install Git for Windows (https://git-scm.com/download/win)"
 }
 
-# Make Git for Windows' usr\bin visible so CMake's find_package(Patch) finds
-# patch.exe: 3rdParty/SDL3_mixer applies the WAV-decoder patch through it.
-# Without it the mixer builds UNPATCHED and 1996-era WAVs (Diablo SFX) fail
-# to decode at runtime. Harmless no-op when patch.exe is already findable.
-$gitExe = (Get-Command git).Source
-$gitUsrBin = Join-Path (Split-Path (Split-Path $gitExe -Parent) -Parent) 'usr\bin'
-if (Test-Path (Join-Path $gitUsrBin 'patch.exe')) {
-    $env:PATH = "$gitUsrBin;$env:PATH"
-    Write-Info "patch.exe: $gitUsrBin (SDL3_mixer WAV-decoder patch will apply)"
-} else {
-    Write-Warn2 "patch.exe not found next to git - SDL3_mixer may build without the zero-length-RIFF WAV fix"
-}
-
 # ----------------------------------------------------------------------------
 # 1b. Package output folder: <repo>\dist-local (NEVER <repo>\dist)
 # ----------------------------------------------------------------------------
