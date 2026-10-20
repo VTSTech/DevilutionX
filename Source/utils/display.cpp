@@ -532,9 +532,11 @@ if (*GetOptions().Graphics.upscale && gpu_scaler::ScalerWanted() && !gpu_scaler:
 	windowSize.height = 720;
 }
 #endif
- 	gnScreenWidth = windowSize.width;
- 	gnScreenHeight = windowSize.height;
- 	CalculateUIRectangle();
+	gnScreenWidth = windowSize.width;
+	gnScreenHeight = windowSize.height;
+	CalculateUIRectangle();
+	CalculatePanelAreas();
+}
 
 float GetDpiScalingFactor()
 {
