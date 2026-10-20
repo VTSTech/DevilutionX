@@ -491,6 +491,12 @@ namespace {
 constexpr int kShaderFilterNavUp = -1;      // Go up one folder ("..").
 constexpr int kShaderFilterNavDirBase = -2; // Enter subdirectory N (base - N).
 
+// Persistent action entry below the built-ins in every browsed folder:
+// activating it cycles the shader base resolution without leaving the
+// browser (negative value, so the settings list view treats it as
+// navigation and rebuilds the list in place).
+constexpr int kShaderFilterBaseResolutionEntry = -1000000;
+
 /** @brief Joins a browsed folder with a subdirectory name. */
 std::string JoinShaderDir(const std::string &parent, const std::string &name)
 {
@@ -545,6 +551,17 @@ void OptionEntryShaderFilter::RebuildListEntries()
 	const PresetDirListing listing = ListPresetDir(ShaderRootDir(), currentDir_);
 	subdirs_ = listing.subdirs;
 	presets_ = listing.presets;
+
+	// Persistent entry right below the built-ins ("Off"), in every browsed
+	// folder: shows the current shader base resolution; activating it
+	// cycles to the next value without leaving the browser.
+	{
+		auto &baseRes = GetOptions().Graphics.shaderBaseResolution;
+		const size_t activeIndex = baseRes.GetActiveListIndex();
+		storage.emplace_back(std::string(baseRes.GetName()) + ": " + std::string(baseRes.GetListDescription(activeIndex)));
+		entryValues.push_back(kShaderFilterBaseResolutionEntry);
+		entryNames.emplace_back(storage.back());
+	}
 
 	if (!currentDir_.empty()) {
 		entryValues.push_back(kShaderFilterNavUp);
@@ -637,12 +654,26 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 		return;
 	const int entryValue = entryValues[index];
 
+	if (entryValue == kShaderFilterBaseResolutionEntry) {
+		// Cycle the shader base resolution and stay on this entry. The
+		// value change notifies listeners synchronously (ResizeWindow ->
+		// scaler reinit), same as changing the standalone option row.
+		auto &baseRes = GetOptions().Graphics.shaderBaseResolution;
+		const size_t count = baseRes.GetListSize();
+		if (count != 0) {
+			baseRes.SetActiveListIndex((baseRes.GetActiveListIndex() + 1) % count);
+		}
+		RebuildListEntries(); // refresh the entry label with the new value
+		pendingFocusIndex_ = builtinCount_; // the entry sits below the built-ins
+		return;
+	}
+
 	if (entryValue == kShaderFilterNavUp) {
 		// Go up one folder; focus the entry of the folder we came from.
 		const std::string childName = BaseShaderName(currentDir_);
 		currentDir_ = ParentShaderDir(currentDir_);
 		RebuildListEntries();
-		pendingFocusIndex_ = builtinCount_ + (currentDir_.empty() ? 0 : 1);
+		pendingFocusIndex_ = builtinCount_ + 1 + (currentDir_.empty() ? 0 : 1);
 		for (size_t i = 0; i < subdirs_.size(); i++) {
 			if (subdirs_[i] == childName) {
 				pendingFocusIndex_ += i;
@@ -659,8 +690,8 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 			return;
 		currentDir_ = JoinShaderDir(currentDir_, subdirs_[subdirIndex]);
 		RebuildListEntries();
-		const size_t firstPresetIndex = builtinCount_ + (currentDir_.empty() ? 0 : 1) + subdirs_.size();
-		pendingFocusIndex_ = !presets_.empty() ? firstPresetIndex : (currentDir_.empty() ? 0 : builtinCount_);
+		const size_t firstPresetIndex = builtinCount_ + 1 + (currentDir_.empty() ? 0 : 1) + subdirs_.size();
+		pendingFocusIndex_ = !presets_.empty() ? firstPresetIndex : (currentDir_.empty() ? 0 : builtinCount_ + 1);
 		return;
 	}
 
