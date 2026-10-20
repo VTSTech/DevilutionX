@@ -110,6 +110,12 @@ std::vector<uint8_t> gStaging;
 int gGameWidth = 0;
 int gGameHeight = 0;
 
+// Geometry of the last actually-presented frame: the game size it was
+// uploaded for and the swapchain rect the final pass was drawn into. The
+// mouse-coordinate mapping (MapWindowToGame / MapGameToWindow) derives the
+// window <-> game transform from it. Cleared with the swapchain.
+slv::Rect gLastPresentRect {};
+
 // Sizes the chain was last (re)built or resized for, so Present only calls
 // Chain::resize when something actually changed.
 uint32_t gChainInputWidth = 0;
@@ -402,6 +408,9 @@ void DestroySwapchain()
 	}
 	gSwapchainFormat = VK_FORMAT_UNDEFINED;
 	gSwapchainExtent = { 0, 0 };
+	// The cached present rect describes the destroyed swapchain; the mouse
+	// mapping must not keep using it.
+	gLastPresentRect = slv::Rect {};
 }
 
 // Releases everything that is bound to the current window (swapchain, views,
@@ -1257,6 +1266,9 @@ void PresentFrame(const SDL_Surface &frame)
 	target.width = gSwapchainExtent.width;
 	target.height = gSwapchainExtent.height;
 	target.outputRect = ComputePresentRect();
+	// Cache the rect the frame is presented into: MapWindowToGame /
+	// MapGameToWindow derive the window <-> game transform from it.
+	gLastPresentRect = target.outputRect;
 	target.acquireSemaphore = gAcquireSemaphore;
 
 	slv::InputFrame input;
@@ -1296,6 +1308,50 @@ void PresentFrame(const SDL_Surface &frame)
 		LogFailHard(StrCat("vkQueuePresentKHR failed (", static_cast<int>(presented), ")"));
 		return;
 	}
+}
+
+bool MapWindowToGame(float *x, float *y)
+{
+	if (x == nullptr || y == nullptr || !IsActive() || gWindow == nullptr)
+		return false;
+	if (gGameWidth <= 0 || gGameHeight <= 0 || gLastPresentRect.width == 0
+	    || gLastPresentRect.height == 0 || gSwapchainExtent.width == 0
+	    || gSwapchainExtent.height == 0)
+		return false;
+	int windowWidth = 0;
+	int windowHeight = 0;
+	SDL_GetWindowSize(gWindow, &windowWidth, &windowHeight);
+	if (windowWidth <= 0 || windowHeight <= 0)
+		return false;
+
+	// SDL delivers mouse events in window points; the swapchain and the
+	// present rect live in window pixels.
+	const float pixelX = *x * static_cast<float>(gSwapchainExtent.width) / static_cast<float>(windowWidth);
+	const float pixelY = *y * static_cast<float>(gSwapchainExtent.height) / static_cast<float>(windowHeight);
+	*x = (pixelX - static_cast<float>(gLastPresentRect.x)) * static_cast<float>(gGameWidth) / static_cast<float>(gLastPresentRect.width);
+	*y = (pixelY - static_cast<float>(gLastPresentRect.y)) * static_cast<float>(gGameHeight) / static_cast<float>(gLastPresentRect.height);
+	return true;
+}
+
+bool MapGameToWindow(float *x, float *y)
+{
+	if (x == nullptr || y == nullptr || !IsActive() || gWindow == nullptr)
+		return false;
+	if (gGameWidth <= 0 || gGameHeight <= 0 || gLastPresentRect.width == 0
+	    || gLastPresentRect.height == 0 || gSwapchainExtent.width == 0
+	    || gSwapchainExtent.height == 0)
+		return false;
+	int windowWidth = 0;
+	int windowHeight = 0;
+	SDL_GetWindowSize(gWindow, &windowWidth, &windowHeight);
+	if (windowWidth <= 0 || windowHeight <= 0)
+		return false;
+
+	const float densityX = static_cast<float>(gSwapchainExtent.width) / static_cast<float>(windowWidth);
+	const float densityY = static_cast<float>(gSwapchainExtent.height) / static_cast<float>(windowHeight);
+	*x = (static_cast<float>(gLastPresentRect.x) + *x * static_cast<float>(gLastPresentRect.width) / static_cast<float>(gGameWidth)) / densityX;
+	*y = (static_cast<float>(gLastPresentRect.y) + *y * static_cast<float>(gLastPresentRect.height) / static_cast<float>(gGameHeight)) / densityY;
+	return true;
 }
 
 namespace {

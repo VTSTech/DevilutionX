@@ -123,6 +123,31 @@ void ApplyFrameRateControl();
 void PresentFrame(const SDL_Surface &frame);
 
 /**
+ * @brief Maps window coordinates (as delivered by SDL mouse events: window
+ * points) to game backbuffer coordinates while the GPU scaler owns the
+ * window.
+ *
+ * The scaler presents through its own Vulkan swapchain and deliberately has
+ * no SDL_Renderer, so SDL's logical-presentation event conversion is
+ * unavailable and raw window coordinates would reach the game as if they
+ * were game coordinates - highlighting and picking up at the wrong spot
+ * whenever the presented frame is scaled or letterboxed (resolution below
+ * the window pixel size, shader chain upscaling, OS display scaling, where
+ * window points are a fraction of window pixels).
+ *
+ * Uses the last presented frame's size and present rect; returns false and
+ * leaves the inputs unchanged when the scaler is inactive or no frame has
+ * been presented yet.
+ */
+bool MapWindowToGame(float *x, float *y);
+
+/**
+ * @brief Inverse of MapWindowToGame: maps game backbuffer coordinates to
+ * window coordinates (points, the space SDL_WarpMouseInWindow expects).
+ */
+bool MapGameToWindow(float *x, float *y);
+
+/**
  * @brief Appends a timestamped line to the GPU scaler diagnostic log
  * (gpu-scaler.log next to the executable). Used by load/present phase
  * instrumentation to diagnose remote hangs and crashes.
