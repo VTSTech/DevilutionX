@@ -12,6 +12,7 @@ Usage (inside a clone of VTSTech/DevilutionX-libslang-vk):
     python3 build_r4_branches.py --recut          # refresh: delete old local plan branches, cut new
     python3 build_r4_branches.py --recut --push   # ... and force-push (lease) them to origin
     python3 build_r4_branches.py --recut --prune  # ... and drop retired/superseded branches (local + origin)
+    python3 build_r4_branches.py --check-prs      # report upstream PR state for the plan branches
 
     --recut fetches origin/libslang-vk + upstream/master first, then rebuilds
     every pr/* branch from the fetched tip (implies --force). Branches whose
@@ -26,7 +27,8 @@ sanitized on the way out as a belt-and-braces gate, see below.)
 PR status (2026-10-20): #8750 (pr/1), #8753 (pr/4), #8754 (pr/5) and
 #8755 (pr/6) are open; #8751 (pr/2) and #8752 (pr/3) were closed by the
 author and are RETIRED from this plan - --prune removes both branches
-(local and origin when they still exist there):
+(local and origin when they still exist there). Check the live state of
+the four plan PRs with --check-prs before a --push/--prune run:
   * pr/2: upstream sanitizes the broken audio data itself now (the merged
     hellfire.mpq audio sanitizer), so the WAV-fallback/decoder-robustness
     payload is not wanted upstream - the same layer is being dropped from
@@ -67,10 +69,13 @@ Branches produced:
 """
 import argparse
 import difflib
+import json
 import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 FORK = "origin/libslang-vk"   # validated payload source (see docstring)
 FORK_R3 = "29d1fe27"         # r3 snapshot: still supplies the 3 lean-dropped docs/tools files
@@ -458,6 +463,14 @@ SUPERSEDED_BRANCHES = [
     "fix/sdl-compat-scaler-decl",    # merged into libslang-vk (dea220af4)
 ]
 
+UPSTREAM_REPO = "diasurgical/DevilutionX"
+PLAN_PRS = {                      # plan branch -> upstream PR number
+    BR1: 8750,
+    "pr/4-test-missing-asset-guards": 8753,
+    "pr/5-gpu-scaler": 8754,
+    "pr/6-sdl3-main-glue": 8755,
+}
+
 
 def verify(repo: Repo, pr: dict) -> bool:
     ok = True
@@ -498,6 +511,61 @@ def verify(repo: Repo, pr: dict) -> bool:
     return ok
 
 
+def check_prs() -> int:
+    """Report the upstream PR state for every planned branch (--check-prs).
+
+    Automates the pr/2 + pr/3 lesson: those retirements had to be noticed by
+    hand. Plain HTTPS against the GitHub API, stdlib only. Unauthenticated
+    calls (60/h) cover the four plan PRs comfortably; set GH_TOKEN to raise
+    the limit to 5000/h.
+    """
+    width = max(len(b) for b in PLAN_PRS)
+    token = os.environ.get("GH_TOKEN", "")
+    print("== upstream PR status ==")
+    unknown = 0
+    action = 0
+    for br in sorted(PLAN_PRS, key=lambda b: PLAN_PRS[b]):
+        n = PLAN_PRS[br]
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{UPSTREAM_REPO}/pulls/{n}",
+            headers={"User-Agent": "build_r4_branches.py",
+                     "Accept": "application/vnd.github+json"})
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.load(r)
+        except urllib.error.HTTPError as e:
+            unknown += 1
+            hint = " - rate limited? set GH_TOKEN" if e.code in (403, 429) else ""
+            print(f"WARN   {br:<{width}}  #{n}  HTTP {e.code}{hint}")
+            continue
+        except urllib.error.URLError as e:
+            unknown += 1
+            print(f"WARN   {br:<{width}}  #{n}  {e.reason}")
+            continue
+        state = data.get("state", "unknown")
+        merged_at = data.get("merged_at")
+        if merged_at:
+            action += 1
+            print(f"MERGED {br:<{width}}  #{n}  merged {merged_at[:10]} - rerun "
+                  "--recut --push --prune, then add the branch to SUPERSEDED_BRANCHES")
+        elif state == "closed":
+            action += 1
+            print(f"CLOSED {br:<{width}}  #{n}  closed (not merged) - retire: add "
+                  "to SUPERSEDED_BRANCHES and run --prune")
+        else:
+            print(f"OK     {br:<{width}}  #{n}  open")
+    if unknown:
+        print(f"PR-CHECK: INCOMPLETE ({unknown} of {len(PLAN_PRS)} unknown)")
+        return 1
+    if action:
+        print(f"PR-CHECK: {action} plan PR(s) need action (see above)")
+        return 1
+    print(f"PR-CHECK: OK - all {len(PLAN_PRS)} plan PRs open")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=os.getcwd())
@@ -511,11 +579,17 @@ def main() -> int:
                     help="after a clean build, force-push (lease) the plan branches to origin")
     ap.add_argument("--prune", action="store_true",
                     help="after a clean build, delete retired/superseded branches (local + origin)")
+    ap.add_argument("--check-prs", action="store_true",
+                    help="query the upstream PR state for the plan branches, flag "
+                         "closed/merged ones as retire/prune candidates, and exit")
     ap.add_argument("--verify-only", action="store_true")
     args = ap.parse_args()
 
     repo = Repo(os.path.abspath(args.repo))
     wt_root = args.worktree_root or os.path.join(os.path.dirname(repo.path), "r4-worktrees")
+
+    if args.check_prs:
+        return check_prs()
 
     if args.recut:
         args.force = True
