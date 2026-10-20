@@ -50,6 +50,7 @@
 #endif
 #include "engine/backbuffer_state.hpp"
 #include "engine/dx.h"
+#include "game_mode.hpp"
 #include "headless_mode.hpp"
 #include "options.h"
 #ifdef USE_GPU_SCALER
@@ -1038,8 +1039,16 @@ void ReinitializeRenderer()
 			// hand-off above, or the GPU-failure fallback in dx.cpp) destroyed
 			// them with it. Reload the art first because its source surfaces
 			// were already consumed by an earlier createTextures pass in-game.
-			InitVirtualGamepadGFX();
-			InitVirtualGamepadTextures(*renderer);
+			// ROB-27: only inside a game session. The gameplay art set includes
+			// the potion strip, which derives its size from item-cursor art via
+			// GetInvItemSize() - art that only exists once a level has loaded.
+			// The virtual gamepad is never drawn outside a session either
+			// (RenderVirtualGamepad early-outs on !gbRunGame), and the level
+			// load path re-initializes the art when a session begins.
+			if (gbRunGame) {
+				InitVirtualGamepadGFX();
+				InitVirtualGamepadTextures(*renderer);
+			}
 		}
 
 #ifdef USE_SDL3
