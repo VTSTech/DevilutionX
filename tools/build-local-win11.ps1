@@ -588,6 +588,14 @@ function Build-Variant([string]$variant) {
         '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
         '-DVCPKG_TARGET_TRIPLET=x64-windows',
         '-DDISABLE_LTO=ON',
+
+        # The script always configures explicitly right before building, so
+        # Ninja's auto-regeneration edge is redundant here - and when it
+        # misfires (mtime quirks, future timestamps, MAX_PATH denials -
+        # ninja-build/ninja#1535) `cmake --build` re-runs configure in an
+        # endless loop and never compiles. Suppress it; the explicit
+        # configure above is the single source of truth for the flags.
+        '-DCMAKE_SUPPRESS_REGENERATION=ON',
         '-DUSE_SDL3=ON',
         '-DUSE_GPU_SCALER=ON',
         '-DDEVILUTIONX_SYSTEM_SDL3=OFF',
