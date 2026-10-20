@@ -258,6 +258,14 @@ public:
 		return false;
 	}
 
+	/** @brief The sub-list to browse when this navigation entry is activated
+	 *  (nullptr = plain folder navigation): the settings list view swaps to
+	 *  the returned list and resumes this list once the sub-list is left. */
+	[[nodiscard]] virtual OptionEntryListBase *GetNavigationSubList(size_t index) const
+	{
+		return nullptr;
+	}
+
 	[[nodiscard]] OptionEntryType GetType() const override;
 	[[nodiscard]] std::string_view GetValueDescription() const override;
 
@@ -353,6 +361,7 @@ public:
 
 	void SetActiveListIndex(size_t index) override;
 	[[nodiscard]] bool IsListNavigationEntry(size_t index) const override;
+	[[nodiscard]] OptionEntryListBase *GetNavigationSubList(size_t index) const override;
 	[[nodiscard]] size_t GetActiveListIndex() const override;
 
 	[[nodiscard]] ShaderFilter operator*() const
@@ -379,7 +388,9 @@ private:
 /** @brief The canvas size handed to the shader chain while a filter is
  *  active: a 16:9 base smaller than the window gives upscaler presets
  *  (ScaleFX, HQx) the input < output headroom they are designed for.
- *  The value is the base height in pixels; 0 = Auto = window size. */
+ *  The value is the base height in pixels; 0 = Auto = window size. Hidden
+ *  as a standalone row: the settings menu edits it through the sub-list
+ *  opened from the Shader Filter browser entry. */
 class OptionEntryShaderBaseResolution : public OptionEntryEnumBase {
 public:
 	OptionEntryShaderBaseResolution();

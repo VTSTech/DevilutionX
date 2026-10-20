@@ -57,6 +57,9 @@ std::vector<std::unique_ptr<UiItemBase>> vecDialog;
 std::vector<OptionEntryBase *> vecOptions;
 OptionCategoryBase *selectedCategory = nullptr;
 OptionEntryBase *selectedOption = nullptr;
+// Nested list browsing (e.g. the shader base resolution sub-list of the
+// shader preset browser): the parent lists left behind, innermost last.
+std::vector<OptionEntryBase *> listOptionStack;
 
 enum class ShownMenuType : uint8_t {
 	Categories,
@@ -133,7 +136,18 @@ void GoBackOneMenuLevel()
 		shownMenu = ShownMenuType::Categories;
 		break;
 	default:
-		shownMenu = ShownMenuType::Settings;
+		if (shownMenu == ShownMenuType::ListOption && !listOptionStack.empty()) {
+			// Leaving a nested list (shader base resolution): resume the
+			// parent browser, refreshing its dynamic entries (labels).
+			selectedOption = listOptionStack.back();
+			listOptionStack.pop_back();
+#ifdef USE_GPU_SCALER
+			GetOptions().Graphics.shaderFilter.RescanCustomEntries();
+#endif
+			shownMenu = ShownMenuType::ListOption;
+		} else {
+			shownMenu = ShownMenuType::Settings;
+		}
 		break;
 	}
 }
@@ -332,6 +346,13 @@ void ItemSelected(size_t value)
 			// Folder navigation inside the list (shader preset browser):
 			// rebuild this list view in place instead of closing it.
 			pOptionList->SetActiveListIndex(vecItemValue);
+			if (auto *subList = pOptionList->GetNavigationSubList(vecItemValue)) {
+				// Drill into a nested list (shader base resolution): the
+				// same view browses it, and GoBackOneMenuLevel resumes
+				// this list when the sub-list is left.
+				listOptionStack.push_back(pOptionList);
+				selectedOption = subList;
+			}
 			endMenu = true;
 		} else {
 			ChangeOptionValue(selectedOption, vecItemValue);
@@ -381,6 +402,7 @@ void UiSettingsMenu()
 	shownMenu = ShownMenuType::Categories;
 	selectedCategory = nullptr;
 	selectedOption = nullptr;
+	listOptionStack.clear();
 
 	do {
 		endMenu = false;

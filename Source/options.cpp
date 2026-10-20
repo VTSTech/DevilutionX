@@ -638,6 +638,13 @@ bool OptionEntryShaderFilter::IsListNavigationEntry(size_t index) const
 	return index < entryValues.size() && entryValues[index] < 0;
 }
 
+OptionEntryListBase *OptionEntryShaderFilter::GetNavigationSubList(size_t index) const
+{
+	if (index < entryValues.size() && entryValues[index] == kShaderFilterBaseResolutionEntry)
+		return &GetOptions().Graphics.shaderBaseResolution;
+	return nullptr;
+}
+
 size_t OptionEntryShaderFilter::GetActiveListIndex() const
 {
 	if (pendingFocusIndex_ != static_cast<size_t>(-1)) {
@@ -655,16 +662,9 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 	const int entryValue = entryValues[index];
 
 	if (entryValue == kShaderFilterBaseResolutionEntry) {
-		// Cycle the shader base resolution and stay on this entry. The
-		// value change notifies listeners synchronously (ResizeWindow ->
-		// scaler reinit), same as changing the standalone option row.
-		auto &baseRes = GetOptions().Graphics.shaderBaseResolution;
-		const size_t count = baseRes.GetListSize();
-		if (count != 0) {
-			baseRes.SetActiveListIndex((baseRes.GetActiveListIndex() + 1) % count);
-		}
-		RebuildListEntries(); // refresh the entry label with the new value
-		pendingFocusIndex_ = builtinCount_; // the entry sits below the built-ins
+		// The settings menu opens the base resolution sub-list for this
+		// entry (GetNavigationSubList) and commits values from there;
+		// the filter value itself is untouched.
 		return;
 	}
 
@@ -714,7 +714,7 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 }
 
 OptionEntryShaderBaseResolution::OptionEntryShaderBaseResolution()
-    : OptionEntryEnumBase("Shader Base Resolution", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI,
+    : OptionEntryEnumBase("Shader Base Resolution", OptionEntryFlags::Invisible | OptionEntryFlags::CantChangeInGame,
           N_("Shader Base Resolution"),
           N_("Resolution of the canvas handed to the shader filter. Smaller bases give the shader more room to upscale for a bigger, chunkier look. Auto keeps the window resolution. Non-16:9 windows letterbox."),
           540)
@@ -1273,6 +1273,7 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
                 // only re-activated when the user opened the Graphics menu.
                 &shaderFilterPreset,
                 &shaderFilter,
+                // Invisible; edited through the Shader Filter browser sub-list.
                 &shaderBaseResolution,
 #endif
 #endif
