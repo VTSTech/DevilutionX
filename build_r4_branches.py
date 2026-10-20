@@ -9,9 +9,9 @@ Usage (inside a clone of VTSTech/DevilutionX-libslang-vk):
     git remote add upstream https://github.com/diasurgical/DevilutionX.git  # if absent
     python3 build_r4_branches.py [--repo PATH] [--worktree-root PATH]
                                  [--upstream upstream/master] [--force] [--verify-only]
-    python3 build_r4_branches.py --recut          # refresh: delete old local pr/1..6, cut new
+    python3 build_r4_branches.py --recut          # refresh: delete old local plan branches, cut new
     python3 build_r4_branches.py --recut --push   # ... and force-push (lease) them to origin
-    python3 build_r4_branches.py --recut --prune  # ... and drop the superseded fix-stage branches
+    python3 build_r4_branches.py --recut --prune  # ... and drop retired/superseded branches (local + origin)
 
     --recut fetches origin/libslang-vk + upstream/master first, then rebuilds
     every pr/* branch from the fetched tip (implies --force). Branches whose
@@ -19,9 +19,23 @@ Usage (inside a clone of VTSTech/DevilutionX-libslang-vk):
     only rewrite what actually moved and --push does not spam force-pushes.
 
 Payload source: origin/libslang-vk at its CURRENT tip - the hardware-
-validated tree the user tests on. (The fork branch's own Linux CI is red
-until fix/sdl-compat-scaler-decl is merged into libslang-vk; the PR branches
-are unaffected - sdl_compat.h is sanitized on the way out, see below.)
+validated tree the user tests on. (fix/sdl-compat-scaler-decl is merged -
+the tip carries the qualified gpu_scaler calls; sdl_compat.h is still
+sanitized on the way out as a belt-and-braces gate, see below.)
+
+PR status (2026-10-20): #8750 (pr/1), #8753 (pr/4), #8754 (pr/5) and
+#8755 (pr/6) are open; #8751 (pr/2) and #8752 (pr/3) were closed by the
+author and are RETIRED from this plan - --prune removes both branches
+(local and origin when they still exist there):
+  * pr/2: upstream sanitizes the broken audio data itself now (the merged
+    hellfire.mpq audio sanitizer), so the WAV-fallback/decoder-robustness
+    payload is not wanted upstream - the same layer is being dropped from
+    the fork tip as well ("Drop the WAV fallback/robustness layer").
+  * pr/3: review (StephenCWills) showed the menu-time item-cursor crash was
+    fork-side - the scaler's renderer-recreation path called
+    InitVirtualGamepadGFX() outside a game session; the fork now gates that
+    on gbRunGame (tip "Update display.cpp"), and the remaining capture.cpp
+    LogError one-liner is left for upstream to fix.
 
 As of 994bdb57a the tip carries the two out-of-plan fixes already squashed
 on the branch, and the recut folds both into pr/5:
@@ -39,15 +53,14 @@ on the branch, and the recut folds both into pr/5:
 docs/GPU_SHADERS.md, docs/SLANG_SPEC.md and tools/audit_slang_presets.py are
 lean-dropped from libslang-vk and still come from the r3 snapshot (29d1fe278).
 
-Superseded by a --recut: the fix-stage branches pr/nonstatic-slangvk-implib
-and pr/scaler-mouse-mapping (their content now lives inside pr/5) - remove
-them with --prune. fix/sdl-compat-scaler-decl stays until merged into
-libslang-vk (it restores the fork branch's own Linux CI).
+Retired branches, removed by --prune (local + origin when still present
+there): pr/2-wav-audio-robustness and pr/3-robustness-guards (closed PRs,
+see above), plus the fix-stage branches pr/nonstatic-slangvk-implib,
+pr/scaler-mouse-mapping and fix/sdl-compat-scaler-decl (their content lives
+on the tip / inside pr/5).
 
 Branches produced:
     pr/1-sdl3-build-fixes        (base: upstream/master)
-    pr/2-wav-audio-robustness    (base: upstream/master)
-    pr/3-robustness-guards       (base: upstream/master)
     pr/4-test-missing-asset-guards (base: upstream/master)
     pr/5-gpu-scaler              (base: pr/1-sdl3-build-fixes  <-- set GitHub PR base to it)
     pr/6-sdl3-main-glue          (base: upstream/master)
@@ -69,12 +82,6 @@ ATTR_CPP = [
     "// License: MIT",
 ]
 
-PR2_BULLET = (
-    "- Recover 1990s-era WAV sound effects that SDL3_mixer 3.2.0 cannot parse "
-    "(zero-length RIFF chunks): skip empty chunks in the vendored decoder and "
-    "add an SDL_LoadWAV_IO-based fallback (DEVILUTIONX_WAV_FALLBACK, default ON); "
-    "undecodable sounds now log an error instead of aborting the game"
-)
 PR5_BULLET = (
     "- Optional Vulkan GPU scaler: render through libretro slang shader presets "
     "via the MIT-licensed libslang-vk library (new USE_GPU_SCALER CMake option, "
@@ -284,15 +291,11 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
                             after=b"target_link_libraries(${test_target} PRIVATE GTest::gtest_main",
                             new_lines=GMOCK_BLOCK, eol=tests_eol, prefix=True)
     up_cmake = up("CMakeLists.txt")
-    cmake_eol = eol_of(up_cmake)
-    wav_line = [l for l in split_lines(repo.blob(FORK, "CMakeLists.txt"))
-                if strip_eol(l).startswith(b"option(DEVILUTIONX_WAV_FALLBACK")]
-    assert len(wav_line) == 1, "wav option line not found in fork-tip CMakeLists.txt"
-    pr2_cmake = insert_once(split_lines(up_cmake),
-                            before=b"set(STREAM_ALL_AUDIO_MIN_FILE_SIZE",
-                            new_lines=[strip_eol(wav_line[0])], eol=cmake_eol, prefix=True)
     fk_cmake_lines = split_lines(repo.blob(FORK, "CMakeLists.txt"))
-    pr5_cmake_src = remove_lines(fk_cmake_lines, b"option(DEVILUTIONX_WAV_FALLBACK")
+    # Tolerant filter: the fork tip no longer carries the retired WAV option
+    # (pr/2 dropped), but keep working against older tips that still have it.
+    pr5_cmake_src = [l for l in fk_cmake_lines
+                     if not strip_eol(l).startswith(b"option(DEVILUTIONX_WAV_FALLBACK")]
 
     pr5_tests_base = None  # filled at runtime from the pr/1 branch
 
@@ -351,45 +354,6 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
             "3rdParty/libpng/CMakeLists.txt": norm("3rdParty/libpng/CMakeLists.txt"),
             "vcpkg.json": norm("vcpkg.json"),
             "CMake/Tests.cmake": render(pr1_tests),
-        },
-        adds={}, chmod=[]))
-
-    prs.append(dict(
-        branch="pr/2-wav-audio-robustness", base=upstream,
-        title="Audio: recover WAVs SDL3_mixer cannot parse (zero-length RIFF chunks) and stop fatal-erroring on undecodable sounds",
-        body=("1996-era WAVs (original Diablo SFX) contain zero-length RIFF chunks that "
-              "SDL3_mixer 3.2.0 rejects, after which sound_file_load() called app_fatal().\n"
-              "Layers: patched vendored WAV decoder (skips empty chunks), DEVILUTIONX_WAV_FALLBACK "
-              "(SDL_LoadWAV_IO -> canonical RIFF re-encode retry, default ON), and graceful "
-              "degradation: undecodable sounds log an error and playback skips them.\n"
-              "MpqArchive::path() names the archive in the failure diagnostics."),
-        mods={
-            "docs/CHANGELOG.md": changelog_add_bullet(up("docs/CHANGELOG.md"),
-                                                      b"### Bug Fixes", b"#### Graphics / Audio", PR2_BULLET),
-            "CMakeLists.txt": render(pr2_cmake),
-            "CMake/Definitions.cmake": norm("CMake/Definitions.cmake"),
-            "3rdParty/SDL3_mixer/CMakeLists.txt": norm("3rdParty/SDL3_mixer/CMakeLists.txt"),
-            "3rdParty/SDL3_mixer/0001-WAV-decoder-skip-zero-length-chunks.patch": fk(
-                "3rdParty/SDL3_mixer/0001-WAV-decoder-skip-zero-length-chunks.patch"),
-            "Source/engine/sound.cpp": norm("Source/engine/sound.cpp"),
-            "Source/utils/soundsample.cpp": norm("Source/utils/soundsample.cpp"),
-            "Source/utils/soundsample.h": norm("Source/utils/soundsample.h"),
-            "Source/mpq/mpq_reader.hpp": norm("Source/mpq/mpq_reader.hpp"),
-        },
-        adds={}, chmod=[]))
-
-    prs.append(dict(
-        branch="pr/3-robustness-guards", base=upstream,
-        title="Guard menu-time item-cursor art access and fix the screenshot failure log format",
-        body=("GetInvItemSize() dereferenced the CLX data of item-cursor art that is only "
-              "loaded inside a game session; building the virtual gamepad's potion strip in "
-              "the main menu (e.g. while changing shader settings) crashed. Report zero size "
-              "and skip instead. Also fix LogError(\"...at {}: {}\") which had one placeholder "
-              "for two arguments."),
-        mods={
-            "Source/cursor.cpp": norm("Source/cursor.cpp"),
-            "Source/controls/touch/renderers.cpp": norm("Source/controls/touch/renderers.cpp"),
-            "Source/capture.cpp": norm("Source/capture.cpp"),
         },
         adds={}, chmod=[]))
 
@@ -478,13 +442,6 @@ def build_prs(repo: Repo, upstream: str) -> list[dict]:
 EXPECTED_FILES = {
     BR1: ["3rdParty/SDL3_image/CMakeLists.txt", "3rdParty/libpng/CMakeLists.txt",
           "CMake/Dependencies.cmake", "CMake/Tests.cmake", "vcpkg.json"],
-    "pr/2-wav-audio-robustness": [
-        "3rdParty/SDL3_mixer/0001-WAV-decoder-skip-zero-length-chunks.patch",
-        "3rdParty/SDL3_mixer/CMakeLists.txt", "CMake/Definitions.cmake", "CMakeLists.txt",
-        "Source/engine/sound.cpp", "Source/mpq/mpq_reader.hpp",
-        "Source/utils/soundsample.cpp", "Source/utils/soundsample.h", "docs/CHANGELOG.md"],
-    "pr/3-robustness-guards": ["Source/capture.cpp", "Source/cursor.cpp",
-                               "Source/controls/touch/renderers.cpp"],
     "pr/4-test-missing-asset-guards": ["test/ui_test.hpp"] + [
         f"test/{t}_test.cpp" for t in ["char_panel", "game_menu", "inventory_ui",
                                        "panel_state", "spell_ui", "stash",
@@ -493,7 +450,13 @@ EXPECTED_FILES = {
     "pr/6-sdl3-main-glue": ["Source/main.cpp"],
 }
 PR5_COUNT = 34 + 14   # 34 adds + 12 scaler mods + display.h + sdl_compat.h (mouse-mapping fix)
-SUPERSEDED_BRANCHES = ["pr/nonstatic-slangvk-implib", "pr/scaler-mouse-mapping"]
+SUPERSEDED_BRANCHES = [
+    "pr/2-wav-audio-robustness",     # PR #8751 closed - upstream sanitizes the audio data itself
+    "pr/3-robustness-guards",        # PR #8752 closed - crash was fork-side, gated on the tip
+    "pr/nonstatic-slangvk-implib",   # fix-stage, folded into pr/5
+    "pr/scaler-mouse-mapping",       # fix-stage, folded into pr/5
+    "fix/sdl-compat-scaler-decl",    # merged into libslang-vk (dea220af4)
+]
 
 
 def verify(repo: Repo, pr: dict) -> bool:
@@ -545,9 +508,9 @@ def main() -> int:
                     help="refresh flow: fetch refs, rebuild every pr/* from the current "
                          "fork tip (implies --force); run after validating the fixes")
     ap.add_argument("--push", action="store_true",
-                    help="after a clean build, force-push (lease) pr/1..6 to origin")
+                    help="after a clean build, force-push (lease) the plan branches to origin")
     ap.add_argument("--prune", action="store_true",
-                    help="after a clean build, delete the superseded fix-stage branches")
+                    help="after a clean build, delete retired/superseded branches (local + origin)")
     ap.add_argument("--verify-only", action="store_true")
     args = ap.parse_args()
 
@@ -652,15 +615,29 @@ def main() -> int:
         for pr in prs:
             repo.git("push", "--force-with-lease", "origin", pr["branch"])
         print("pushed:", " ".join(pr["branch"] for pr in prs))
-        print("PR bases: pr/1..4 + pr/6 -> diasurgical:master; "
+        print("PR bases: pr/1, pr/4, pr/6 -> diasurgical:master; "
               "pr/5 -> this fork's pr/1-sdl3-build-fixes branch")
     if args.prune:
+        heads = subprocess.run(["git", "-C", repo.path, "ls-remote", "--heads", "origin"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        remote_heads = set()
+        if heads.returncode == 0:
+            remote_heads = {l.split(b"\t", 1)[1][len(b"refs/heads/"):].decode()
+                            for l in heads.stdout.splitlines() if b"\t" in l}
+        else:
+            print("note: ls-remote origin failed - skipping remote branch cleanup")
         for br in SUPERSEDED_BRANCHES:
             if repo.git("branch", "--list", br, check=False).strip():
                 repo.git("branch", "-D", br)
-                print(f"pruned superseded local branch: {br}")
-        print("note: keep fix/sdl-compat-scaler-decl until it is merged into libslang-vk "
-              "(that is what restores the fork branch's own Linux CI)")
+                print(f"pruned retired local branch: {br}")
+            if br in remote_heads:
+                d = subprocess.run(["git", "-C", repo.path, "push", "origin", "--delete", br],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if d.returncode == 0:
+                    print(f"pruned retired remote branch: origin/{br}")
+                else:
+                    print(f"WARN: could not delete origin/{br}: "
+                          + d.stderr.decode(errors="replace").strip().splitlines()[-1])
     print("DONE: all branches verified")
     return 0
 
