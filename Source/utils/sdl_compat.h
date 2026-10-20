@@ -427,9 +427,9 @@ inline bool SDLC_ConvertEventToRenderCoordinates(
 	// coordinates to game backbuffer coordinates through the scaler's last
 	// present rect instead (a no-op until the first frame is presented).
 	if (event->type == SDL_EVENT_MOUSE_MOTION) {
-		gpu_scaler::MapWindowToGame(&event->motion.x, &event->motion.y);
+		devilution::gpu_scaler::MapWindowToGame(&event->motion.x, &event->motion.y);
 	} else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
-		gpu_scaler::MapWindowToGame(&event->button.x, &event->button.y);
+		devilution::gpu_scaler::MapWindowToGame(&event->button.x, &event->button.y);
 	}
 #endif
 #elif !defined(USE_SDL1)
