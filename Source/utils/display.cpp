@@ -184,6 +184,7 @@ const auto OptionChangeHandlerResolution = (GetOptions().Graphics.resolution.Set
 const auto OptionChangeHandlerFullscreen = (GetOptions().Graphics.fullscreen.SetValueChangedCallback(SetFullscreenMode), true);
 #ifdef USE_GPU_SCALER
 const auto OptionChangeHandlerShaderFilter = (GetOptions().Graphics.shaderFilter.SetValueChangedCallback(ResizeWindow), true);
+const auto OptionChangeHandlerShaderBaseResolution = (GetOptions().Graphics.shaderBaseResolution.SetValueChangedCallback(ResizeWindow), true);
 #endif
 
 void OptionGrabInputChanged()
@@ -515,25 +516,35 @@ SDL_DisplayMode GetNearestDisplayMode(Size preferredSize,
 #endif
 
 void AdjustToScreenGeometry(Size windowSize)
- {
+{
+	Size canvas = windowSize;
 #ifdef USE_GPU_SCALER
-if (*GetOptions().Graphics.upscale && gpu_scaler::ScalerWanted() && !gpu_scaler::HasFailed()) {
-	// Shader filter active: render the game into a fixed 4:3 960x720 base
-	// canvas and hand exactly that image to the slang chain. The window and
-	// the swapchain keep the selected Resolution; the chain letterboxes its
-	// output to the game aspect and maps mouse coordinates through the
-	// present rect, so a canvas smaller than the window is fully supported.
-	// libslang-vk derives every pass FBO from the input size, so this base
-	// smaller than the swapchain is what gives upscaler presets (ScaleFX,
-	// HQx) the headroom they need to visibly rework the game art. CRT-style
-	// overlays (scanlines, masks, grids) are output-space effects and keep
-	// working at any input size.
-	windowSize.width = 960;
-	windowSize.height = 720;
-}
+	if (*GetOptions().Graphics.upscale && gpu_scaler::ScalerWanted() && !gpu_scaler::HasFailed()) {
+		// Shader filter active: render the game into the configured 16:9
+		// base canvas and hand exactly that image to the slang chain, while
+		// the window and the swapchain keep the selected Resolution (the
+		// base must never leak into the window size). The chain maps mouse
+		// coordinates through the present rect, so a canvas smaller than
+		// the window is fully supported, and a window smaller than the
+		// base keeps its own size. libslang-vk derives every pass FBO from
+		// the input size, so this base smaller than the swapchain is what
+		// gives upscaler presets (ScaleFX, HQx) the headroom they need to
+		// visibly rework the game art. CRT-style overlays (scanlines,
+		// masks, grids) are output-space effects and keep working at any
+		// input size. Configure under Graphics > Shader Base Resolution
+		// (Auto = window size).
+		const int baseHeight = *GetOptions().Graphics.shaderBaseResolution;
+		if (baseHeight > 0) {
+			const int baseWidth = baseHeight * 16 / 9;
+			if (windowSize.width >= baseWidth && windowSize.height >= baseHeight) {
+				canvas.width = baseWidth;
+				canvas.height = baseHeight;
+			}
+		}
+	}
 #endif
-	gnScreenWidth = windowSize.width;
-	gnScreenHeight = windowSize.height;
+	gnScreenWidth = canvas.width;
+	gnScreenHeight = canvas.height;
 	CalculateUIRectangle();
 	CalculatePanelAreas();
 }

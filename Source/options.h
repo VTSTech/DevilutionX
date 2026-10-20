@@ -376,6 +376,19 @@ private:
 	/** @brief Entry index to focus after the next list rebuild (one-shot). */
 	mutable size_t pendingFocusIndex_ = static_cast<size_t>(-1);
 };
+/** @brief The canvas size handed to the shader chain while a filter is
+ *  active: a 16:9 base smaller than the window gives upscaler presets
+ *  (ScaleFX, HQx) the input < output headroom they are designed for.
+ *  The value is the base height in pixels; 0 = Auto = window size. */
+class OptionEntryShaderBaseResolution : public OptionEntryEnumBase {
+public:
+	OptionEntryShaderBaseResolution();
+
+	[[nodiscard]] int operator*() const
+	{
+		return GetValueInternal();
+	}
+};
 #endif
 
 class OptionEntryIntBase : public OptionEntryListBase {
@@ -666,6 +679,8 @@ struct GraphicsOptions : OptionCategoryBase {
 	OptionEntryShaderFilter shaderFilter;
 	/** @brief Relative path of the selected custom preset (see shaderFilter). */
 	OptionEntryShaderFilterPreset shaderFilterPreset;
+	/** @brief Canvas size handed to the shader chain (see shaderFilter). */
+	OptionEntryShaderBaseResolution shaderBaseResolution;
 #endif
 #endif
 	/** @brief Limit frame rate either for vsync or CPU load. */

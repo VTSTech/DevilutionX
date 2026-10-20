@@ -681,6 +681,20 @@ void OptionEntryShaderFilter::SetActiveListIndex(size_t index)
 	}
 	OptionEntryEnumBase::SetActiveListIndex(index);
 }
+
+OptionEntryShaderBaseResolution::OptionEntryShaderBaseResolution()
+    : OptionEntryEnumBase("Shader Base Resolution", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI,
+          N_("Shader Base Resolution"),
+          N_("Resolution of the canvas handed to the shader filter. Smaller bases give the shader more room to upscale for a bigger, chunkier look. Auto keeps the window resolution. Non-16:9 windows letterbox."),
+          540)
+{
+	AddEntry(0, N_("Auto (window size)"));
+	AddEntry(360, N_("640 x 360"));
+	AddEntry(540, N_("960 x 540"));
+	AddEntry(720, N_("1280 x 720"));
+	AddEntry(900, N_("1600 x 900"));
+	AddEntry(1080, N_("1920 x 1080"));
+}
 #endif
 
 void OptionEntryIntBase::LoadFromIni(std::string_view category)
@@ -1167,6 +1181,7 @@ GraphicsOptions::GraphicsOptions()
 #ifdef USE_GPU_SCALER
     , shaderFilter()
     , shaderFilterPreset()
+    , shaderBaseResolution()
 #endif
 #endif
     , frameRateControl("Frame Rate Control",
@@ -1227,6 +1242,7 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
                 // only re-activated when the user opened the Graphics menu.
                 &shaderFilterPreset,
                 &shaderFilter,
+                &shaderBaseResolution,
 #endif
 #endif
                 &frameRateControl,
