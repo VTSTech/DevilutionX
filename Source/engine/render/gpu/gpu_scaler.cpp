@@ -104,9 +104,12 @@ std::string gPresetLastError;
 
 // The chain input image (the converted RGBA game frame, uploaded per present).
 std::optional<slv::Image> gGameImage;
-// Tightly packed copy of the SDL_Surface frame: slv::Image::update requires
-// pitch == width * 4, which the game surface does not promise.
-std::vector<uint8_t> gStaging;
+// Persistently mapped staging buffer with the tightly packed copy of the
+// SDL_Surface frame (the surface pitch is not promised to equal width * 4).
+// Created once per game size; the frame's own submit copies it into the input
+// image (InputFrame::pixelBuffer), so the per-frame upload costs one memcpy
+// and no separate submit->fence-wait cycle.
+std::optional<slv::Device::MappedBuffer> gStagingBuffer;
 int gGameWidth = 0;
 int gGameHeight = 0;
 
@@ -621,14 +624,22 @@ bool EnsureSwapchainCurrent(bool &minimized, std::string &error)
 	return true;
 }
 
+// Releases the staging buffer (must run before the Device goes away).
+void ReleaseStagingBuffer()
+{
+	if (gStagingBuffer) {
+		gDevice->destroyMappedBuffer(*gStagingBuffer);
+		gStagingBuffer.reset();
+	}
+}
+
 // Creates the input image the game frame is uploaded into every present.
 bool EnsureGameImage(int width, int height, std::string &error)
 {
 	if (gGameImage && gGameWidth == width && gGameHeight == height)
 		return true;
 	gGameImage.reset();
-	gStaging.clear();
-	gStaging.shrink_to_fit();
+	ReleaseStagingBuffer();
 	gGameWidth = 0;
 	gGameHeight = 0;
 
@@ -645,6 +656,14 @@ bool EnsureGameImage(int width, int height, std::string &error)
 		return false;
 	}
 	gGameImage.emplace(std::move(*image));
+
+	const size_t pixelBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+	auto staging = gDevice->createMappedBuffer(static_cast<VkDeviceSize>(pixelBytes));
+	if (!staging) {
+		error = StrCat("frame staging buffer creation failed: ", staging.error().message);
+		return false;
+	}
+	gStagingBuffer.emplace(std::move(*staging));
 	gGameWidth = width;
 	gGameHeight = height;
 	return true;
@@ -654,8 +673,7 @@ bool EnsureGameImage(int width, int height, std::string &error)
 void ReleaseFrameResources()
 {
 	gGameImage.reset();
-	gStaging.clear();
-	gStaging.shrink_to_fit();
+	ReleaseStagingBuffer();
 	gGameWidth = 0;
 	gGameHeight = 0;
 }
@@ -715,11 +733,21 @@ bool EnsurePresetLoaded()
 			// taken at load time; a changed mtime or size reloads the chain, so
 			// pack edits and failed-load retries land without detouring through
 			// another preset. A stat that fails here (file briefly unavailable)
-			// keeps the running chain.
+			// keeps the running chain. Perf: the stat runs at most every 500 ms
+			// (it is a disk/filesystem call; every frame was measurable under
+			// uncapped frame rates).
+			static Uint32 sLastStatTick = 0;
+			const Uint32 now = SDL_GetTicks();
+			if (gLoadedPresetMtimeNs == 0)
+				return true;
+			if (sLastStatTick != 0 && now - sLastStatTick < 500)
+				return true;
+			sLastStatTick = now;
 			SDL_PathInfo info;
-			if (gLoadedPresetMtimeNs == 0 || !SDL_GetPathInfo(path.c_str(), &info)
-			    || (info.modify_time == static_cast<SDL_Time>(gLoadedPresetMtimeNs)
-				&& info.size == gLoadedPresetFileSize))
+			if (!SDL_GetPathInfo(path.c_str(), &info))
+				return true;
+			if (info.modify_time == static_cast<SDL_Time>(gLoadedPresetMtimeNs)
+			    && info.size == gLoadedPresetFileSize)
 				return true;
 			LogFileLine(StrCat("preset file changed on disk; reloading: ", path));
 		} else {
@@ -1086,6 +1114,15 @@ void HandbackWindow(SDL_Window *window)
 	// back to the regular renderer immediately.
 }
 
+// Per-phase EMA averages shared between the heartbeat printer (top of
+// PresentFrame) and the EMA updater (bottom): upload memcpy, chain render,
+// acquire+present. Milliseconds.
+namespace {
+double sHeartbeatUploadMs = 0.0;
+double sHeartbeatRenderMs = 0.0;
+double sHeartbeatPresentMs = 0.0;
+} // namespace
+
 void PresentFrame(const SDL_Surface &frame)
 {
 	if (!IsActive())
@@ -1108,9 +1145,13 @@ void PresentFrame(const SDL_Surface &frame)
 		if (sLastHeartbeat == 0)
 			sLastHeartbeat = now;
 		if (now - sLastHeartbeat >= 5000) {
+			char phaseLine[128];
+			std::snprintf(phaseLine, sizeof(phaseLine),
+			    ", upload=%.2fms, render=%.2fms, present=%.2fms)",
+			    sHeartbeatUploadMs, sHeartbeatRenderMs, sHeartbeatPresentMs);
 			LogFileLine(StrCat("heartbeat: ", sHeartbeatFrames, " frames (", sSkippedFrames,
 			    " skipped, ", sDestSkipFrames, " dest-skipped, ", sTotalFrames,
-			    " total, filter=", static_cast<int>(gFilter), ")"));
+			    " total, filter=", static_cast<int>(gFilter), phaseLine));
 			sLastHeartbeat = now;
 			sHeartbeatFrames = 0;
 			sSkippedFrames = 0;
@@ -1131,6 +1172,18 @@ void PresentFrame(const SDL_Surface &frame)
 	if (sLastFrameTick != 0)
 		frameDeltaUs = static_cast<Uint64>(nowTick - sLastFrameTick) * 1000U;
 	sLastFrameTick = nowTick;
+
+	// Per-phase rolling timings (EMA, ms): the heartbeat prints them so a
+	// field log separates CPU upload cost from chain GPU cost from
+	// acquire/present cost. SDL_GetPerformanceCounter, not SDL_GetTicks:
+	// the phases are sub-millisecond.
+	const Uint64 perfFreq = SDL_GetPerformanceFrequency();
+	double uploadMs = 0.0;
+	double renderMs = 0.0;
+	double presentMs = 0.0;
+	auto elapsedMs = [perfFreq](Uint64 start, Uint64 end) {
+		return perfFreq != 0 ? static_cast<double>(end - start) * 1000.0 / static_cast<double>(perfFreq) : 0.0;
+	};
 
 	// Lazy completion path: Reinit can return with no swapchain when the
 	// window had no surface extent yet (minimized at init). Build both the
@@ -1192,30 +1245,27 @@ void PresentFrame(const SDL_Surface &frame)
 		LogFailHard(error);
 		return;
 	}
-	// Upload the frame through a tightly packed staging copy: the surface
-	// pitch is not promised to equal width * 4. The library stages the copy
-	// into the input image synchronously.
+	// Copy the frame into the persistent mapped staging buffer: the surface
+	// pitch is not promised to equal width * 4. The frame's own submit
+	// (Chain::render via InputFrame::pixelBuffer) records the buffer->image
+	// copy, so the upload adds no submit->fence-wait cycle of its own.
 	{
-		const size_t tightlyPacked = static_cast<size_t>(gameWidth) * static_cast<size_t>(gameHeight) * 4;
-		gStaging.resize(tightlyPacked);
-		const size_t bytesPerRow = static_cast<size_t>(gameWidth) * 4;
-		auto *dst = gStaging.data();
+		const Uint64 phaseStart = SDL_GetPerformanceCounter();
+		auto *dst = static_cast<uint8_t *>(gStagingBuffer->mapped);
 		const auto *src = static_cast<const uint8_t *>(frame.pixels);
 		if (frame.pixels == nullptr) {
 			LogFailHard("frame pixels unavailable");
 			return;
 		}
+		const size_t bytesPerRow = static_cast<size_t>(gameWidth) * 4;
 		if (static_cast<size_t>(frame.pitch) == bytesPerRow) {
-			std::memcpy(dst, src, tightlyPacked);
+			std::memcpy(dst, src, bytesPerRow * static_cast<size_t>(gameHeight));
 		} else {
 			for (int y = 0; y < gameHeight; ++y)
 				std::memcpy(dst + static_cast<size_t>(y) * bytesPerRow,
 				    src + static_cast<size_t>(y) * static_cast<size_t>(frame.pitch), bytesPerRow);
 		}
-		if (!gGameImage->update(gStaging.data(), gStaging.size())) {
-			LogFailHard("frame upload failed");
-			return;
-		}
+		uploadMs = elapsedMs(phaseStart, SDL_GetPerformanceCounter());
 	}
 
 	// Keep the chain's output target sized to the current swapchain extent
@@ -1240,6 +1290,7 @@ void PresentFrame(const SDL_Surface &frame)
 	// Acquire (timed, non-blocking): a timed-out or unavailable acquire skips
 	// the frame — the same contract the previous path had for unavailable
 	// swapchain images (minimized window, resize, driver quirk).
+	const Uint64 acquireStart = SDL_GetPerformanceCounter();
 	uint32_t imageIndex = 0;
 	const VkResult acquired = vkAcquireNextImageKHR(gDevice->device(), gSwapchain, kAcquireTimeoutNs,
 	    gAcquireSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -1278,12 +1329,14 @@ void PresentFrame(const SDL_Surface &frame)
 	input.width = static_cast<uint32_t>(gameWidth);
 	input.height = static_cast<uint32_t>(gameHeight);
 	input.rotation = slv::Rotation::None; // orientation is a shader-side concern
+	input.pixelBuffer = gStagingBuffer->buffer;
 
 	slv::FrameInfo frameInfo;
 	frameInfo.frameCount = gFrameCount++;
 	frameInfo.frameDeltaUs = static_cast<float>(frameDeltaUs);
 	frameInfo.frameDirection = 1;
 
+	const Uint64 renderStart = SDL_GetPerformanceCounter();
 	auto rendered = gChain->render(input, target, frameInfo);
 	if (!rendered) {
 		LogFailHard(StrCat("preset run failed: ", rendered.error().message));
@@ -1293,6 +1346,7 @@ void PresentFrame(const SDL_Surface &frame)
 		RecreateAcquireSemaphore();
 		return;
 	}
+	renderMs = elapsedMs(renderStart, SDL_GetPerformanceCounter());
 
 	VkPresentInfoKHR present {};
 	present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1302,12 +1356,27 @@ void PresentFrame(const SDL_Surface &frame)
 	// Chain::render is synchronous (fenced), so the present needs no wait
 	// semaphore (the documented SwapchainFrame contract of the library).
 	const VkResult presented = vkQueuePresentKHR(gDevice->graphicsQueue(), &present);
+	presentMs = elapsedMs(acquireStart, SDL_GetPerformanceCounter());
 	if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
 		gSwapchainDirty = true;
 	} else if (presented != VK_SUCCESS) {
 		LogFailHard(StrCat("vkQueuePresentKHR failed (", static_cast<int>(presented), ")"));
 		return;
 	}
+
+	// Rolling EMA of the per-phase costs (α = 1/32; ~converged within a
+	// second of frames, stable under rate spikes).
+	static double sUploadAvg = 0.0;
+	static double sRenderAvg = 0.0;
+	static double sPresentAvg = 0.0;
+	constexpr double kAlpha = 1.0 / 32.0;
+	sUploadAvg += (uploadMs - sUploadAvg) * kAlpha;
+	sRenderAvg += (renderMs - sRenderAvg) * kAlpha;
+	sPresentAvg += (presentMs - sPresentAvg) * kAlpha;
+	// Share the averages with the heartbeat timer block via statics.
+	sHeartbeatUploadMs = sUploadAvg;
+	sHeartbeatRenderMs = sRenderAvg;
+	sHeartbeatPresentMs = sPresentAvg;
 }
 
 bool MapWindowToGame(float *x, float *y)
