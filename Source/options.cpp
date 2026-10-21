@@ -595,7 +595,10 @@ void OptionEntryShaderFilter::RescanCustomEntries()
 	std::string foundPath;
 	if (!storedPath.empty()) {
 		InitBrowserShaderRoot();
-		const std::vector<PresetEntry> all = ScanPresets(ShaderRootDir());
+		// Depth 8: the stock slang-shaders corpus keeps presets up to 7 levels
+		// deep; the scan default (3) missed those, which made the stored
+		// selection look gone and silently reset Shader Filter to Off.
+		const std::vector<PresetEntry> all = ScanPresets(ShaderRootDir(), 8);
 		const auto it = std::find_if(all.begin(), all.end(), [&storedPath](const PresetEntry &entry) {
 			return entry.relativePath == storedPath;
 		});

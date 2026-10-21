@@ -702,6 +702,185 @@ std::string PresetDisplayNameFromPath(std::string_view storedPath)
 	return stem;
 }
 
+// ---------------------------------------------------------------------------
+// Host SPIR-V disk cache (libslang-vk M4.07 "cache enabler").
+//
+// The library compiles every pass with glslang at Preset::load and keeps no
+// disk cache of its own (that is the host's business). What it does provide
+// is a per-pass content key: a hex SHA-256 over the exact GLSL handed to
+// glslang (include graph resolved, preset overrides applied) plus the
+// compiler version and target environment - the key changes exactly when
+// the compiled output would, so an entry cached under it can never go
+// stale. Preset::load asks this cache for a pass's bytes before compiling
+// (a hit skips glslang entirely) and hands the fresh result back on a miss.
+//
+// Storage: one file per pass under <shader root>/cache/spv/<key>.bin - the
+// layout the Packaging clear_shader_cache scripts already wipe. Every read
+// is validated (magic, framing, SPIR-V header) so a torn or hand-edited
+// file degrades to a recompile, never to a broken preset; writes go through
+// a temp file + rename so a crash mid-store cannot leave a torn file.
+// ---------------------------------------------------------------------------
+
+// "DXSC" + version 1: file identity for the little-endian framing below.
+constexpr uint8_t kSpirvCacheMagic[4] = { 'D', 'X', 'S', 'C' };
+constexpr uint32_t kSpirvCacheVersion = 1;
+// Sanity cap per stage: real passes are a few KB; anything past this is a
+// corrupt or hostile file, not a cache we want to serve or keep.
+constexpr size_t kMaxCachedStageBytes = 64 * 1024 * 1024;
+// The SPIR-V module magic word (0x07230203) as little-endian bytes; the
+// framing helpers below encode explicitly, so this works regardless of the
+// host's byte order.
+constexpr uint8_t kSpvMagicLe[4] = { 0x03, 0x02, 0x23, 0x07 };
+
+void StoreU32Le(uint8_t *dst, uint32_t value)
+{
+	dst[0] = static_cast<uint8_t>(value);
+	dst[1] = static_cast<uint8_t>(value >> 8);
+	dst[2] = static_cast<uint8_t>(value >> 16);
+	dst[3] = static_cast<uint8_t>(value >> 24);
+}
+
+uint32_t LoadU32Le(const uint8_t *src)
+{
+	return static_cast<uint32_t>(src[0]) | (static_cast<uint32_t>(src[1]) << 8)
+	    | (static_cast<uint32_t>(src[2]) << 16) | (static_cast<uint32_t>(src[3]) << 24);
+}
+
+std::filesystem::path SpirvCacheDir()
+{
+	return std::filesystem::path(slv::preset::ShaderRootDir()) / "cache" / "spv";
+}
+
+// The pass key is a hex digest produced by the library. Accept plain
+// lowercase hex of a sane length only, so a key can never smuggle a path
+// separator, a "..", or an overlong name into the cache directory; any
+// other shape simply bypasses the cache.
+bool IsValidPassKey(std::string_view key)
+{
+	if (key.size() < 16 || key.size() > 64)
+		return false;
+	for (const char c : key) {
+		const bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+		if (!isHex)
+			return false;
+	}
+	return true;
+}
+
+// A cached stage must be a plausible SPIR-V module; an empty stage is valid
+// (the pass may not have that stage).
+bool LooksLikeSpv(const std::vector<uint8_t> &code)
+{
+	if (code.empty())
+		return true;
+	if (code.size() < 8 || code.size() % 4 != 0)
+		return false;
+	return std::memcmp(code.data(), kSpvMagicLe, sizeof(kSpvMagicLe)) == 0;
+}
+
+bool ReadWholeFile(const std::filesystem::path &path, std::vector<uint8_t> &out)
+{
+	FILE *file = std::fopen(path.string().c_str(), "rb");
+	if (file == nullptr)
+		return false;
+	std::fseek(file, 0, SEEK_END);
+	const long size = std::ftell(file);
+	// The size cap rejects the pathological cases (a directory in place of
+	// the file reports a huge ftell) before the resize below.
+	if (size <= 0 || size > static_cast<long>(2 * kMaxCachedStageBytes + 16)) {
+		std::fclose(file);
+		return false;
+	}
+	std::fseek(file, 0, SEEK_SET);
+	out.resize(static_cast<size_t>(size));
+	const bool ok = std::fread(out.data(), 1, out.size(), file) == out.size();
+	std::fclose(file);
+	return ok;
+}
+
+// Writes through a temp file + rename so a crash mid-store leaves at worst
+// a stale .tmp, never a torn cache entry. Windows' rename refuses to
+// replace: remove the destination first (a load racing that gap just sees
+// a miss and recompiles).
+bool WriteFileAtomically(const std::filesystem::path &path, const uint8_t *data, size_t size)
+{
+	std::filesystem::path tmp = path;
+	tmp += ".tmp";
+	FILE *file = std::fopen(tmp.string().c_str(), "wb");
+	if (file == nullptr)
+		return false;
+	const bool ok = std::fwrite(data, 1, size, file) == size && std::fflush(file) == 0;
+	std::fclose(file);
+	if (!ok) {
+		std::remove(tmp.string().c_str());
+		return false;
+	}
+	std::error_code ec;
+	std::filesystem::remove(path, ec);
+	std::filesystem::rename(tmp, path, ec);
+	return !ec;
+}
+
+std::optional<slv::PassSpirv> LoadCachedSpirv(std::string_view passKey)
+{
+	std::optional<slv::PassSpirv> result;
+	if (!IsValidPassKey(passKey))
+		return result;
+	const std::filesystem::path file = SpirvCacheDir() / (std::string(passKey) + ".bin");
+	std::vector<uint8_t> bytes;
+	if (!ReadWholeFile(file, bytes))
+		return result; // not cached (or unreadable): a miss, the library compiles
+	if (bytes.size() < 16 || std::memcmp(bytes.data(), kSpirvCacheMagic, sizeof(kSpirvCacheMagic)) != 0)
+		return result;
+	if (LoadU32Le(bytes.data() + 4) != kSpirvCacheVersion)
+		return result;
+	const uint32_t vertexLen = LoadU32Le(bytes.data() + 8);
+	const uint32_t fragmentLen = LoadU32Le(bytes.data() + 12);
+	if (vertexLen > kMaxCachedStageBytes || fragmentLen > kMaxCachedStageBytes)
+		return result;
+	const size_t total = 16 + static_cast<size_t>(vertexLen) + static_cast<size_t>(fragmentLen);
+	if (bytes.size() != total)
+		return result;
+	const uint8_t *vertexSrc = bytes.data() + 16;
+	const uint8_t *fragmentSrc = vertexSrc + vertexLen;
+	slv::PassSpirv spirv;
+	spirv.vertex.assign(vertexSrc, vertexSrc + vertexLen);
+	spirv.fragment.assign(fragmentSrc, fragmentSrc + fragmentLen);
+	if (!LooksLikeSpv(spirv.vertex) || !LooksLikeSpv(spirv.fragment))
+		return result; // torn or hand-edited: a miss, and the next store overwrites it
+	result = std::move(spirv);
+	return result;
+}
+
+void StoreCachedSpirv(std::string_view passKey, const slv::PassSpirv &spirv)
+{
+	if (!IsValidPassKey(passKey))
+		return;
+	if (spirv.vertex.size() > kMaxCachedStageBytes || spirv.fragment.size() > kMaxCachedStageBytes)
+		return;
+	const std::filesystem::path dir = SpirvCacheDir();
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	if (ec)
+		return; // a read-only shader folder just means no cache
+	std::vector<uint8_t> bytes(16 + spirv.vertex.size() + spirv.fragment.size());
+	std::memcpy(bytes.data(), kSpirvCacheMagic, sizeof(kSpirvCacheMagic));
+	StoreU32Le(bytes.data() + 4, kSpirvCacheVersion);
+	StoreU32Le(bytes.data() + 8, static_cast<uint32_t>(spirv.vertex.size()));
+	StoreU32Le(bytes.data() + 12, static_cast<uint32_t>(spirv.fragment.size()));
+	std::memcpy(bytes.data() + 16, spirv.vertex.data(), spirv.vertex.size());
+	std::memcpy(bytes.data() + 16 + spirv.vertex.size(), spirv.fragment.data(), spirv.fragment.size());
+	WriteFileAtomically(dir / (std::string(passKey) + ".bin"), bytes.data(), bytes.size());
+}
+
+// One preset load's cache summary, for the load-ok log line. The cache
+// callbacks run once per pass on the loading thread and stay quiet
+// themselves - a crt-royale-class preset would drown the log otherwise.
+struct SpirvCacheStats {
+	unsigned hits = 0;
+	unsigned misses = 0;
+};
+
 // Parses, translates, compiles and loads the runtime preset selected in the
 // options through libslang-vk (Preset::load does all three; Chain::create
 // builds the Vulkan pass runtime). A failure here is a soft failure (the
@@ -769,7 +948,25 @@ bool EnsurePresetLoaded()
 	chainOptions.outputHeight = gSwapchainExtent.height;
 	chainOptions.outputFormat = gSwapchainFormat;
 
-	auto preset = slv::Preset::load(*gDevice, std::filesystem::path(path), {});
+	// The host SPIR-V disk cache (see the helpers above): the library asks
+	// for a pass's compiled bytes before invoking glslang and hands the
+	// fresh result back on a miss. A hit skips the compile entirely, which
+	// is what makes preset switching and the changed-on-disk reload
+	// near-instant the second time a preset is loaded.
+	SpirvCacheStats cacheStats;
+	slv::PresetLoadOptions loadOptions;
+	loadOptions.spirvCache.load = [&cacheStats](std::string_view passKey) {
+		std::optional<slv::PassSpirv> cached = LoadCachedSpirv(passKey);
+		if (cached)
+			++cacheStats.hits;
+		else
+			++cacheStats.misses;
+		return cached;
+	};
+	loadOptions.spirvCache.store = [](std::string_view key, const slv::PassSpirv &spirv) {
+		StoreCachedSpirv(key, spirv);
+	};
+	auto preset = slv::Preset::load(*gDevice, std::filesystem::path(path), loadOptions);
 	if (!preset) {
 		gPresetLastError = preset.error().message;
 		LogFileLine(StrCat("preset load failed (", gPresetDisplayName, "): ", gPresetLastError));
@@ -804,7 +1001,8 @@ bool EnsurePresetLoaded()
 	gChainOutputWidth = 0;
 	gChainOutputHeight = 0;
 	gPresetLastError.clear();
-	LogOk(StrCat("preset '", gPresetDisplayName, "' loaded (", gPreset->passCount(), " passes)"));
+	LogOk(StrCat("preset '", gPresetDisplayName, "' loaded (", gPreset->passCount(), " passes; spv cache: ",
+	    cacheStats.hits, " hits, ", cacheStats.misses, " compiled)"));
 	return true;
 }
 

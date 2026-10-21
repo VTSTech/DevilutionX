@@ -176,7 +176,7 @@ if(USE_GPU_SCALER)
   include(FetchContent)
   FetchContent_Declare(libslang-vk
     GIT_REPOSITORY https://github.com/VTSTech/libslang-vk.git
-    GIT_TAG 5b72331117408c3a38569e09862e387b5ed4f51a # M4.07 Pre-Release
+    GIT_TAG d176d1bfa15e01b84fa5e40d5a3700e1de824b86 # M4.07
     )
   FetchContent_MakeAvailable(libslang-vk)
 
@@ -187,8 +187,8 @@ if(USE_GPU_SCALER)
   # static archive - both targets generate
   # _deps/libslang-vk-build/slangvk.lib, and Ninja refuses the build graph
   # with "multiple rules generate slangvk.lib" (Linux never sees this:
-  # libslangvk.a vs libslangvk.so). Fixed here, from the consumer side, so
-  # the libslang-vk pin can stay at M4.05: on WIN32 the shared variant gets
+  # libslangvk.a vs libslangvk.so). Fixed here, from the consumer side:
+  # on WIN32 the shared variant gets
   # the documented libslangvk artifact name (libslangvk.dll - the name the
   # packaging comments and the local build script's DLL collection expect)
   # and its import library (the ARCHIVE output) moves into its own folder,
