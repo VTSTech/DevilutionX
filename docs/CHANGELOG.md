@@ -12,11 +12,16 @@ history lives in [docs/CHANGELOG_UPSTREAM.md](docs/CHANGELOG_UPSTREAM.md)
 and is not modified.
 
 
-The `libslang-vk` integration branch does not cut numbered releases; its
-integration milestones are recorded under *Unreleased* below, dated by their
-commit window.
+The `libslang-vk` integration branch records its integration milestones
+under *Unreleased* below, dated by their commit window; when a window
+closes, the accumulated work is cut into a `1.6.0-dev-<commit>` snapshot
+named for the commit a build or overlay was produced from.
 
-## Unreleased — libslang-vk integration (2026-10-17 to 2026-10-20)
+## Unreleased — libslang-vk integration
+
+*(open — the next integration window will be recorded here)*
+
+## 1.6.0-dev-ca56c4608 (2026-10-21 09:03:35 PM)
 
 Integration-track work since the last release snapshot below. The
 upstream-facing payload of this work is split one topical PR per change
@@ -26,6 +31,12 @@ stacked on pr/1), #8755 (pr/6, SDL3 main glue) — all open. The resolution/DPI
 fix (#8746: SDL_GetWindowDisplayScale() handling, above-native resolution
 selection, OS-UI-scale exclusion for physical-pixel modes) intentionally
 rides as a separate lightweight PR outside the r4 plan.
+
+The 2026-10-21 wave moves onto upstream **libslang-vk M4.07 final**: the
+dependency pin leaves the pre-release for `d176d1b`, the scaler gains a
+SPIR-V disk cache keyed by the library's pass key, and it learns to recover
+from a lost Vulkan device — plus the deep-preset browser scan fix that had
+been hiding nested stock presets.
 
 ### Added
 
@@ -45,6 +56,38 @@ rides as a separate lightweight PR outside the r4 plan.
   `--prune` / `--verify-only`, and `--check-prs` for live upstream PR state
   (flags closed/merged plan PRs as retire/prune candidates instead of leaving
   the next one to be noticed by hand).
+
+#### libslang-vk M4.07 — SPIR-V disk cache and device-lost recovery
+
+- SPIR-V disk cache: the scaler wires up `PresetLoadOptions::spirvCache`
+  (the M4.07 cache enabler) — one file per pass under
+  `shaders/cache/spv/<key>.bin`, the layout the Packaging
+  `clear_shader_cache` scripts already wipe. The key is the library's (a
+  SHA-256 over the exact GLSL handed to glslang plus the compiler version
+  and target environment), so an entry can never serve a stale binary the
+  way the fork's old in-tree GLSL-only hash would have across a glslang
+  upgrade. Reads are validated (container magic and version, framing,
+  SPIR-V header, a 64 MB per-stage sanity cap, path-traversal rejection),
+  so a torn or hand-edited file degrades to a recompile instead of a broken
+  preset; stores go through a temp file + rename, so a crash mid-store
+  cannot leave a torn entry. First field run: a 20-pass and a 2-pass preset
+  each compiled once, then 20/20 and 2/2 passes served from the cache on
+  every later load.
+- Device-lost recovery, host side of the M4.06 contract: a
+  `VK_ERROR_DEVICE_LOST` on any of the three surfaces the host touches
+  (`vkAcquireNextImageKHR`, `Chain::render`, `vkQueuePresentKHR`) recovers
+  in place instead of ending the shader path. The render case is the
+  library-driven one — the library has already replaced the device and
+  rebuilt the chain, and reports `Errc::vk_device_lost` so the host
+  recreates its own device-side resources; acquire and present are
+  host-driven, calling `Device::recover()` directly. Either way the host
+  forgets its stale objects (game image, swapchain, acquire semaphore,
+  staging buffer), frees the staging `MappedBuffer` through the old
+  allocator (it is not in the device's release registry), re-binds the
+  exe's own volk device table (GPU_SCALER_SHARED builds carry a separate
+  copy), and lets the chain rebuild itself on the next render through the
+  generation check. Three recoveries in a row without a completed frame
+  give up and fall back to the stock renderer.
 
 ### Fixed
 
@@ -78,6 +121,20 @@ rides as a separate lightweight PR outside the r4 plan.
 - Dead `patch.exe` PATH block removed from the build script (no patch
   application remains in the tree since the WAV layer drop).
 
+#### GPU scaler / libslang-vk
+
+- Deep-preset browser scan: `ScanPresets()` scanned three levels deep while
+  the stock shader corpus nests up to seven (API.md §4.2), so deeper
+  presets never appeared in the browser — and the stored-preset self-heal
+  then wiped such a selection at startup as missing. The scan now runs at
+  depth 8.
+- First-acquire semaphore: the acquire path could reach its first
+  `vkAcquireNextImageKHR` with a `VK_NULL_HANDLE` semaphore and a null
+  fence — the semaphore used to be created only after a failed render, and
+  an acquire needs one of the two. The semaphore is now created before the
+  first acquire and rebuilt after a failed render leaves it signaled
+  without a wait, so every acquire is well-formed.
+
 ### Changed
 
 #### CI (fork-only gate)
@@ -93,6 +150,17 @@ rides as a separate lightweight PR outside the r4 plan.
 
 - README.md: branch-aware phrasing for the master references and the branch
   table; the deleted `wav-mixer-fix` branch row dropped.
+
+#### libslang-vk
+
+- Dependency pin: the CMake `FetchContent` tag moved from `5b72331`
+  ("M4.07 Pre-Release") to `d176d1b` (M4.07 final) — the pre-release
+  lacked the SPIR-V cache enabler the disk cache above is built on. The
+  stale M4.05 comment above the pin went with it.
+- README.md: the shader-cache section now describes the `shaders/cache/spv/`
+  disk cache and drops the stale references to the removed in-tree cache
+  scripts; the Vulkan render-path section documents the in-place
+  device-lost recovery.
 
 ### Removed
 
