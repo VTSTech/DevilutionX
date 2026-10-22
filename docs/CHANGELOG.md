@@ -21,7 +21,7 @@ named for the commit a build or overlay was produced from.
 
 *(open — the next integration window will be recorded here)*
 
-## 1.6.0-dev-ca56c4608 (2026-10-21 09:03:35 PM)
+## 1.6.0-dev-fd578d1 (2026-10-21 09:03:35 PM)
 
 Integration-track work since the last release snapshot below. The
 upstream-facing payload of this work is split one topical PR per change
