@@ -84,6 +84,21 @@ VkSemaphore gAcquireSemaphore = VK_NULL_HANDLE;
 bool gSwapchainDirty = false;
 bool gVsync = false;
 
+// Device-lost recovery (libslang-vk M4.06, host side). The device
+// generation the host-side Vulkan objects (swapchain + views, acquire
+// semaphore, staging buffer, game image) were created on.
+// Device::recover() swaps the VkDevice for a new one and bumps
+// Device::generation(); a mismatch means every host handle is stale: it
+// must be dropped - never destroyed through the replacement device - and
+// recreated lazily by the next present.
+uint64_t gHostObjectGeneration = 0;
+// Consecutive device-lost recoveries without a completed frame in
+// between. A driver that keeps losing the device would otherwise
+// ping-pong recovery forever; past the cap the scaler gives up and the
+// game falls back.
+int gDeviceLostStreak = 0;
+constexpr int kMaxDeviceLostStreak = 3;
+
 // The loaded slang preset chain (parse + translate + glslang compile + the
 // Vulkan pass runner all live inside libslang-vk).
 std::optional<slv::Preset> gPreset;
@@ -392,11 +407,34 @@ VkFormat GameTextureVkFormat()
 // playing. A timed-out acquire just skips the frame; the next frame retries.
 constexpr uint64_t kAcquireTimeoutNs = 50'000'000; // 50 ms
 
+// Forgets the swapchain without destroying anything. After a device
+// replacement (Device::recover) the old swapchain's handles are stale:
+// destroying them through the new device is undefined behaviour. The
+// next present rebuilds the swapchain from the surface (gSwapchainDirty).
+void ForgetSwapchain()
+{
+	gSwapchain = VK_NULL_HANDLE;
+	gSwapchainViews.clear();
+	gSwapchainImages.clear();
+	gSwapchainFormat = VK_FORMAT_UNDEFINED;
+	gSwapchainExtent = { 0, 0 };
+	gSwapchainDirty = true;
+	gLastPresentRect = slv::Rect {};
+}
+
 // Destroys the swapchain and its image views. Must be called while gDevice
 // holds a valid device. Waits for the device to go idle first so no pending
 // frame still references the views.
 void DestroySwapchain()
 {
+	if (gDevice && gDevice->device() != VK_NULL_HANDLE
+	    && gDevice->generation() != gHostObjectGeneration) {
+		// The device was replaced since this swapchain was created: its
+		// handles are stale, so forget them instead of destroying them
+		// through the replacement device.
+		ForgetSwapchain();
+		return;
+	}
 	if (gDevice && gDevice->device() != VK_NULL_HANDLE)
 		vkDeviceWaitIdle(gDevice->device());
 	for (const VkImageView view : gSwapchainViews) {
@@ -426,7 +464,9 @@ void ReleaseWindowResources()
 		return;
 	}
 	if (gAcquireSemaphore != VK_NULL_HANDLE) {
-		vkDestroySemaphore(gDevice->device(), gAcquireSemaphore, nullptr);
+		// Stale after a device replacement: forget instead of destroy.
+		if (gDevice->generation() == gHostObjectGeneration)
+			vkDestroySemaphore(gDevice->device(), gAcquireSemaphore, nullptr);
 		gAcquireSemaphore = VK_NULL_HANDLE;
 	}
 	DestroySwapchain();
@@ -453,6 +493,66 @@ void RecreateAcquireSemaphore()
 		// skipped frame by the caller.
 		LogFail("acquire semaphore recreation failed");
 	}
+}
+
+// Handles a VK_ERROR_DEVICE_LOST report (the libslang-vk M4.06
+// contract). The library may already have replaced the device - its
+// render path recovers first and then reports Errc::vk_device_lost;
+// when it has not (the error surfaced in this file's own acquire or
+// present calls), the host replaces it via Device::recover(). Either
+// way every host-side Vulkan object is stale afterwards: they are
+// dropped (never destroyed through the replacement device) and
+// recreated lazily by the next present. The chain rebuilds itself on
+// its next render when it notices the new device generation.
+//
+// Returns true when the session continues (the caller skips this frame
+// and the next one retries with the rebuilt device); false after a hard
+// failure.
+bool HandleDeviceLost(std::string_view source)
+{
+	++gDeviceLostStreak;
+	const bool libraryAlreadyRecovered
+	    = gDevice.has_value() && gDevice->generation() != gHostObjectGeneration;
+
+	// Drop the host's device-bound objects first. While the old device
+	// and its allocator are still alive (host-driven recovery below), the
+	// staging buffer can still be freed properly; after the library's own
+	// recovery the old allocator is already gone, so its handles are
+	// simply forgotten. The game image releases itself correctly either
+	// way (it is generation-aware and registered with the device).
+	if (gStagingBuffer) {
+		if (!libraryAlreadyRecovered)
+			gDevice->destroyMappedBuffer(*gStagingBuffer);
+		gStagingBuffer.reset();
+	}
+	gGameImage.reset();
+	gGameWidth = 0;
+	gGameHeight = 0;
+	ForgetSwapchain();
+	gAcquireSemaphore = VK_NULL_HANDLE; // stale; recreated below
+
+	if (gDeviceLostStreak > kMaxDeviceLostStreak) {
+		LogFailHard(StrCat("Vulkan device lost again (", source, "); ", kMaxDeviceLostStreak,
+		    " recoveries already attempted without a completed frame, giving up"));
+		return false;
+	}
+	if (!libraryAlreadyRecovered) {
+		auto recovered = gDevice->recover();
+		if (!recovered) {
+			LogFailHard(StrCat("device lost (", source, "): recovery failed: ",
+			    recovered.error().message));
+			return false;
+		}
+	}
+	// Rebind this translation unit's volk device-level table: recover()
+	// reloaded the library's own copy, but the exe's separate copy
+	// (GPU_SCALER_SHARED build) still addresses the old VkDevice handle.
+	volkLoadDevice(gDevice->device());
+	gHostObjectGeneration = gDevice->generation();
+	RecreateAcquireSemaphore();
+	LogFileLine(StrCat("device lost (", source, "): recovered (device generation ",
+	    gHostObjectGeneration, "); swapchain and frame resources rebuild next frame"));
+	return true;
 }
 
 // (Re)creates the swapchain for the current window surface. Lifted from the
@@ -628,7 +728,11 @@ bool EnsureSwapchainCurrent(bool &minimized, std::string &error)
 void ReleaseStagingBuffer()
 {
 	if (gStagingBuffer) {
-		gDevice->destroyMappedBuffer(*gStagingBuffer);
+		// After a device replacement the buffer belongs to the old device's
+		// allocator; destroying it through the new one would feed stale
+		// handles to vmaDestroyBuffer. Forget it instead.
+		if (gDevice && gDevice->generation() == gHostObjectGeneration)
+			gDevice->destroyMappedBuffer(*gStagingBuffer);
 		gStagingBuffer.reset();
 	}
 }
@@ -1076,6 +1180,10 @@ bool CreateVulkanDevice(SDL_Window *window)
 	}
 	volkLoadInstance(gDevice->instance());
 	volkLoadDevice(gDevice->device());
+	// Baseline for the device-lost path (M4.06): a later generation bump
+	// means the device was replaced and the host-side Vulkan objects
+	// built on the old one are stale.
+	gHostObjectGeneration = gDevice->generation();
 
 	const VkPhysicalDeviceProperties &props = gDevice->properties();
 	Log("GPU scaler: libslang-vk Vulkan backend ready (device: {})", props.deviceName);
@@ -1489,6 +1597,18 @@ void PresentFrame(const SDL_Surface &frame)
 	// the frame — the same contract the previous path had for unavailable
 	// swapchain images (minimized window, resize, driver quirk).
 	const Uint64 acquireStart = SDL_GetPerformanceCounter();
+	if (gAcquireSemaphore == VK_NULL_HANDLE) {
+		// First acquire of the session, or the semaphore was dropped by a
+		// device-lost recovery whose recreation failed. Acquire needs a
+		// semaphore or a fence; passing neither is invalid usage (a latent
+		// gap in the old path: the semaphore used to be created only after
+		// a failed render).
+		RecreateAcquireSemaphore();
+		if (gAcquireSemaphore == VK_NULL_HANDLE) {
+			LogFailHard("acquire semaphore unavailable");
+			return;
+		}
+	}
 	uint32_t imageIndex = 0;
 	const VkResult acquired = vkAcquireNextImageKHR(gDevice->device(), gSwapchain, kAcquireTimeoutNs,
 	    gAcquireSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -1500,6 +1620,14 @@ void PresentFrame(const SDL_Surface &frame)
 	if (acquired == VK_TIMEOUT || acquired == VK_NOT_READY) {
 		// No image became available in time (minimized window); skip.
 		++sSkippedFrames;
+		return;
+	}
+	if (acquired == VK_ERROR_DEVICE_LOST) {
+		// The device died before this frame was recorded; the chain has
+		// not seen the loss yet, so the recovery is host-driven (M4.06):
+		// the chain rebuilds itself on the next render.
+		if (HandleDeviceLost("vkAcquireNextImageKHR"))
+			++sSkippedFrames;
 		return;
 	}
 	if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
@@ -1537,6 +1665,15 @@ void PresentFrame(const SDL_Surface &frame)
 	const Uint64 renderStart = SDL_GetPerformanceCounter();
 	auto rendered = gChain->render(input, target, frameInfo);
 	if (!rendered) {
+		if (rendered.error().code == slv::Errc::vk_device_lost) {
+			// M4.06 contract: the library already replaced the device,
+			// re-uploaded the preset's textures and rebuilt the chain; it
+			// reports the loss so the host recreates its own device-side
+			// resources. Skip this frame; the next one retries end-to-end.
+			if (HandleDeviceLost("preset run"))
+				++sSkippedFrames;
+			return;
+		}
 		LogFailHard(StrCat("preset run failed: ", rendered.error().message));
 		// The acquire semaphore protocol may be out of step after a failed
 		// render (signaled without a wait); rebuild it so the next acquire is
@@ -1557,10 +1694,18 @@ void PresentFrame(const SDL_Surface &frame)
 	presentMs = elapsedMs(acquireStart, SDL_GetPerformanceCounter());
 	if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
 		gSwapchainDirty = true;
+	} else if (presented == VK_ERROR_DEVICE_LOST) {
+		// The frame was rendered, but the device died at present; the
+		// chain has not seen the loss yet, so the recovery is host-driven
+		// (the chain rebuilds itself on the next render).
+		HandleDeviceLost("vkQueuePresentKHR");
+		return;
 	} else if (presented != VK_SUCCESS) {
 		LogFailHard(StrCat("vkQueuePresentKHR failed (", static_cast<int>(presented), ")"));
 		return;
 	}
+	// A frame completed the whole pipeline: any device-lost streak is over.
+	gDeviceLostStreak = 0;
 
 	// Rolling EMA of the per-phase costs (α = 1/32; ~converged within a
 	// second of frames, stable under rate spikes).
